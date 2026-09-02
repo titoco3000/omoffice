@@ -41,3 +41,28 @@ output "backend_env_file" {
     JWT_SECRET_ID=${aws_secretsmanager_secret.jwt.name}
   EOT
 }
+
+output "frontend_bucket" {
+  description = "S3 bucket the frontend deploy syncs the built assets into."
+  value       = aws_s3_bucket.frontend.bucket
+}
+
+output "frontend_distribution_id" {
+  description = "CloudFront distribution the frontend deploy invalidates."
+  value       = aws_cloudfront_distribution.frontend.id
+}
+
+output "frontend_url" {
+  description = "Public URL of the frontend."
+  value       = "https://${aws_cloudfront_distribution.frontend.domain_name}"
+}
+
+output "frontend_env_file" {
+  description = "Paste this into frontend/.env.<stage>."
+  value       = <<-EOT
+    API_URL=${aws_apigatewayv2_stage.default.invoke_url}
+    FRONTEND_BUCKET=${aws_s3_bucket.frontend.bucket}
+    FRONTEND_DISTRIBUTION_ID=${aws_cloudfront_distribution.frontend.id}
+    FRONTEND_URL=https://${aws_cloudfront_distribution.frontend.domain_name}
+  EOT
+}

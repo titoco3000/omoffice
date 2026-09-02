@@ -1,5 +1,12 @@
-use axum::{extract::Extension, middleware, routing::get, Json, Router};
+use axum::{
+    extract::{Extension, Path},
+    middleware,
+    routing::{get, post},
+    Json, Router,
+};
+use serde::Deserialize;
 use serde_json::{json, Value};
+use tower_http::cors::{Any, CorsLayer};
 
 mod auth;
 
@@ -19,6 +26,37 @@ async fn private_me(Extension(claims): Extension<Claims>) -> Json<Value> {
     Json(json!({ "email": claims.sub, "expires_at": claims.exp }))
 }
 
+/// Body of `POST /private/sample-post/{var}`.
+#[derive(Debug, Deserialize)]
+struct SamplePost {
+    name: String,
+    male: bool,
+}
+
+/// Sample write route: one path parameter plus a JSON body, echoed back with
+/// the caller taken from the verified token.
+async fn private_sample_post(
+    Extension(claims): Extension<Claims>,
+    Path(var): Path<String>,
+    Json(body): Json<SamplePost>,
+) -> Json<Value> {
+    Json(json!({
+        "received": { "var": var, "name": body.name, "male": body.male },
+        "by": claims.sub,
+    }))
+}
+
+/// Wide-open CORS. The API is a public, token-authenticated JSON endpoint with
+/// no cookies or other ambient credentials, so any origin may call it; the
+/// bearer token is what grants access. Narrow this to the frontend origins if
+/// the API ever starts trusting the browser's identity.
+fn cors() -> CorsLayer {
+    CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods(Any)
+        .allow_headers(Any)
+}
+
 fn app(keys: KeySource) -> Router {
     let auth = AuthConfig::new(keys)
         // Every route under these prefixes needs a valid bearer token.
@@ -32,11 +70,15 @@ fn app(keys: KeySource) -> Router {
         .route("/health", get(health))
         .route("/auth/request-key/{email}", get(auth::request_key))
         .route("/private/me", get(private_me))
+        .route("/private/sample-post/{var}", post(private_sample_post))
         // One layer for the whole router; it only challenges protected prefixes.
         .layer(middleware::from_fn_with_state(
             auth.clone(),
             auth::require_bearer,
         ))
+        // Outermost, so a CORS preflight is answered before the auth middleware
+        // can reject it: an OPTIONS request carries no Authorization header.
+        .layer(cors())
         .with_state(auth)
 }
 
@@ -86,6 +128,17 @@ mod tests {
 
     fn get(uri: &str) -> Request<Body> {
         Request::builder().uri(uri).body(Body::empty()).unwrap()
+    }
+
+    fn post_json(uri: &str, token: Option<&str>, body: Value) -> Request<Body> {
+        let mut builder = Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header("content-type", "application/json");
+        if let Some(token) = token {
+            builder = builder.header("authorization", format!("Bearer {token}"));
+        }
+        builder.body(Body::from(body.to_string())).unwrap()
     }
 
     fn get_with_auth(uri: &str, header_value: &str) -> Request<Body> {
@@ -179,6 +232,54 @@ mod tests {
         let (status, body) = call(get_with_auth("/private/me", &format!("Bearer {token}"))).await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
         assert_eq!(body["error"], "expired_token");
+    }
+
+    #[tokio::test]
+    async fn sample_post_echoes_the_path_param_and_the_body() {
+        let token = token_for("dev@omoffice.example").await;
+        let (status, body) = call(post_json(
+            "/private/sample-post/abc",
+            Some(&token),
+            json!({ "name": "ada", "male": false }),
+        ))
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["received"]["var"], "abc");
+        assert_eq!(body["received"]["name"], "ada");
+        assert_eq!(body["received"]["male"], false);
+        assert_eq!(body["by"], "dev@omoffice.example");
+    }
+
+    #[tokio::test]
+    async fn sample_post_is_protected() {
+        let (status, body) = call(post_json(
+            "/private/sample-post/abc",
+            None,
+            json!({ "name": "ada", "male": false }),
+        ))
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(body["error"], "missing_token");
+    }
+
+    /// The browser sends this before any authenticated call; it carries no
+    /// Authorization header, so CORS has to answer it ahead of the auth layer.
+    #[tokio::test]
+    async fn a_preflight_for_a_protected_route_is_allowed() {
+        let request = Request::builder()
+            .method("OPTIONS")
+            .uri("/private/sample-post/abc")
+            .header("origin", "http://localhost:5173")
+            .header("access-control-request-method", "POST")
+            .header(
+                "access-control-request-headers",
+                "authorization,content-type",
+            )
+            .body(Body::empty())
+            .unwrap();
+        let response = app(KeySource::fixed(KEY)).oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()["access-control-allow-origin"], "*");
     }
 
     #[tokio::test]

@@ -34,7 +34,7 @@ help:
 	@echo "make init             check terraform, run 'terraform init'"
 	@echo "make plan [stage]     show planned changes"
 	@echo "make deploy [stage]   apply the stack, then print backend env values"
-	@echo "make output [stage]   print outputs to copy into backend/.env.<stage>"
+	@echo "make output [stage]   print outputs to copy into backend/ and frontend/ .env.<stage>"
 	@echo "make destroy [stage]  tear the stage down (asks for confirmation)"
 	@echo "stages: dev, prod"
 
@@ -75,6 +75,11 @@ output:
 	@echo "copy into backend/.env.$(STAGE):"
 	@echo "---8<---"
 	@terraform output -raw backend_env_file
+	@echo "---8<---"
+	@echo ""
+	@echo "copy into frontend/.env.$(STAGE):"
+	@echo "---8<---"
+	@terraform output -raw frontend_env_file
 	@echo "---8<---"
 
 .PHONY: destroy

@@ -1,7 +1,7 @@
 # omoffice
 
-Sample API. Rust backend on AWS Lambda behind an API Gateway HTTP API, with all
-AWS resources managed by Terraform.
+Sample API. Rust backend on AWS Lambda behind an API Gateway HTTP API, with a
+React frontend on S3 + CloudFront, and all AWS resources managed by Terraform.
 
 ```
 .
@@ -9,7 +9,11 @@ AWS resources managed by Terraform.
 │   ├── src/main.rs   routes, auth policy, local/Lambda entrypoint
 │   ├── src/auth.rs   JWT issuing, key lookup, protected-route middleware
 │   └── Makefile      init | run | build | deploy | test | fmt | lint
-└── infra/            Terraform stack (Lambda, API Gateway, IAM, CloudWatch, Secrets Manager)
+├── frontend/         React + Vite + Tailwind. One page of RouteTester cards.
+│   ├── src/components/RouteTester.jsx  a form + a result box for one route
+│   └── Makefile      init | run | build | deploy | preview | lint
+└── infra/            Terraform stack (Lambda, API Gateway, IAM, CloudWatch,
+    │                 Secrets Manager, S3, CloudFront)
     ├── envs/         per-stage tfvars
     ├── rotator/      Python lambda that rotates the JWT key weekly
     └── Makefile      init | plan | deploy | output | destroy
@@ -21,6 +25,7 @@ state is separate.
 ## Requirements
 
 - Rust toolchain (`rustup`), `cargo-lambda`, `zig` (used to cross-compile for Lambda)
+- Node 20+ (for the frontend)
 - Terraform >= 1.5
 - AWS CLI with a configured profile
 
@@ -73,6 +78,60 @@ curl "$API_URL"               # {"message":"hello world!"}
 
 `make output dev` in `infra/` reprints the values at any time.
 
+## Frontend
+
+The same two-step split as the backend: terraform creates the bucket and the
+CloudFront distribution, `make deploy` uploads the built assets.
+
+```sh
+cd frontend
+make init
+make run local                # vite on :5173, calls http://localhost:8000
+make run dev                  # same UI, calls the deployed dev API
+make deploy dev               # build + sync to S3 + invalidate CloudFront
+```
+
+Stages are `local`, `dev` and `prod`; a bare `make run` is `local`. Each stage
+reads `frontend/.env.<stage>`, which the Makefile sources and turns into
+`VITE_API_URL` — Vite's own `.env` loading is not used, because Vite reads
+`.env.local` in *every* mode and would clobber `make run dev`. `local` ships in
+the repo pointing at `localhost:8000`; `dev` and `prod` come from
+`cd infra && make output <stage>`:
+
+```
+API_URL=https://xxxxxxxxxx.execute-api.us-east-1.amazonaws.com/
+FRONTEND_BUCKET=omoffice-frontend-dev-123456789012
+FRONTEND_DISTRIBUTION_ID=E1XXXXXXXXXXXX
+FRONTEND_URL=https://dxxxxxxxxxxxxx.cloudfront.net
+```
+
+`make deploy local` is refused — only `dev` and `prod` have infrastructure.
+
+### RouteTester
+
+The page is one `<RouteTester>` per route. It works out its own form: `{...}`
+placeholders in the route become path inputs, `fields` becomes the JSON body,
+and `onResult` receives the parsed body of a successful response — which is how
+the token reaches the protected routes.
+
+```jsx
+<RouteTester route="/health" />
+<RouteTester route="/auth/request-key/{email}" onResult={r => setToken(r.token)} />
+<RouteTester route="/private/me" token={token} />
+<RouteTester
+  method="POST"
+  route="/private/sample-post/{var}"
+  fields={{ name: "string", male: "boolean" }}
+  token={token}
+/>
+```
+
+Field types are `"string"`, `"boolean"` (a checkbox) and `"number"`; values are
+coerced back to those types before the body is sent.
+
+The API answers any origin with CORS, since it holds no cookies and the bearer
+token is the only thing that grants access.
+
 ## Auth
 
 Routes under a protected prefix need a bearer token. Both the prefixes and the
@@ -99,6 +158,11 @@ curl "$API_URL/auth/request-key/dev@omoffice.example"
 
 curl -H "Authorization: Bearer $TOKEN" "$API_URL/private/me"
 # {"email":"dev@omoffice.example","expires_at":1756900000}
+
+curl -X POST "$API_URL/private/sample-post/hello" \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"name":"ada","male":false}'
+# {"received":{"var":"hello","name":"ada","male":false},"by":"dev@omoffice.example"}
 ```
 
 Tokens are HS256 and last 48h. Failures come back as JSON with a stable slug:
@@ -152,3 +216,5 @@ make destroy dev              # prompts for confirmation
   exposed to anything that matters.
 - Terraform state is local (`infra/terraform.tfstate.d/`). Move it to an S3
   backend before more than one person deploys.
+- The frontend bucket is named with the account id appended, because bucket
+  names are globally unique. It is private; only CloudFront can read it.

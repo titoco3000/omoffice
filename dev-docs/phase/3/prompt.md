@@ -1,0 +1,29 @@
+Create a frontend for this project, using react, vite and tailwind.
+
+Should follow same pattern that infra creates the resources
+
+cd frontend
+make init
+make run local -> usa backend localhost:8000
+make run dev -> usa backend dev
+make run prod
+make deploy dev
+
+After creating, create the RouteTester component.
+
+
+<RouteTester route={"/heath"} />
+
+shows a button to submit and a box with the result
+
+<RouteTester route={"/auth/request-key/{email}"} onResult={r=>setToken(...)} />
+
+Shows a text field for 'email'
+
+<RouteTester route={"/private/me"} token={token} />
+
+<RouteTester method={"POST"} fields={{name:"string", male:"boolean"}} route={"/private/sample-post/{var}"} token={token} />
+
+Shows fields for 'name', 'male' and 'var'
+
+Using that component, in the root page add one for each route. Create a sample post route.
