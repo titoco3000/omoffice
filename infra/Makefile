@@ -13,6 +13,14 @@ TFVARS := envs/$(STAGE).tfvars
 dev prod:
 	@:
 
+define REQUIRE_ENV
+@test -n "$$PROJECT" || { \
+  echo "error: PROJECT is not set -- the root env vars are not exported."; \
+  echo "export them from the repo root first (see README):"; \
+  echo "  set -a; . ./.env; set +a"; \
+  exit 1; }
+endef
+
 define REQUIRE_INIT
 @test -d .terraform || { echo "error: uninitialized -- run 'make init' first"; exit 1; }
 endef
@@ -32,6 +40,7 @@ help:
 
 .PHONY: init
 init:
+	$(REQUIRE_ENV)
 	@command -v terraform >/dev/null || { \
 	  echo "terraform not found -- install it: https://developer.hashicorp.com/terraform/install"; exit 1; }
 	@command -v aws >/dev/null || { \
@@ -43,12 +52,14 @@ init:
 
 .PHONY: plan
 plan:
+	$(REQUIRE_ENV)
 	$(REQUIRE_INIT)
 	$(SELECT_WS)
 	terraform plan -input=false -var-file=$(TFVARS)
 
 .PHONY: deploy
 deploy:
+	$(REQUIRE_ENV)
 	$(REQUIRE_INIT)
 	$(SELECT_WS)
 	terraform apply -input=false -auto-approve -var-file=$(TFVARS)
@@ -56,6 +67,7 @@ deploy:
 
 .PHONY: output
 output:
+	$(REQUIRE_ENV)
 	$(REQUIRE_INIT)
 	$(SELECT_WS)
 	@terraform output
@@ -67,6 +79,7 @@ output:
 
 .PHONY: destroy
 destroy:
+	$(REQUIRE_ENV)
 	$(REQUIRE_INIT)
 	$(SELECT_WS)
 	@echo "about to DESTROY every '$(STAGE)' resource in $$(terraform output -raw region 2>/dev/null || echo 'this stack')."
@@ -87,4 +100,5 @@ destroy-prod:
 
 .PHONY: fmt
 fmt:
+	$(REQUIRE_ENV)
 	terraform fmt -recursive

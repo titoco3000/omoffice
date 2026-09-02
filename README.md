@@ -28,6 +28,9 @@ state is separate.
 export $(grep -v '^#' .env | xargs -d '\n')
 ```
 
+Every make target (except `help`) checks that `PROJECT` is set and stops with
+that reminder if the env was never exported.
+
 ## Local
 
 ```sh
@@ -54,7 +57,7 @@ Copy the printed block into `backend/.env.dev` (see `backend/.env.dev.example`):
 
 ```
 LAMBDA_FUNCTION_NAME=omoffice-api-dev
-API_URL=https://xxxxxxxxxx.execute-api.eu-west-1.amazonaws.com
+API_URL=https://xxxxxxxxxx.execute-api.us-east-1.amazonaws.com
 ```
 
 Then ship the code:
