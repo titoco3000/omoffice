@@ -9,3 +9,4 @@ infra/*.tfstate.*
 infra/terraform.tfstate.d/
 infra/crash.log
 infra/placeholder/*.zip
+infra/rotator.zip

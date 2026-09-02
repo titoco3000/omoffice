@@ -48,3 +48,9 @@ variable "log_retention_days" {
   type        = number
   default     = 14
 }
+
+variable "jwt_rotation_schedule" {
+  description = "When the JWT signing key rotates. Cron is UTC; default is Sundays at 07:00."
+  type        = string
+  default     = "cron(0 7 ? * SUN *)"
+}

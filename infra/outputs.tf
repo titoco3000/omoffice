@@ -23,10 +23,21 @@ output "region" {
   value       = var.region
 }
 
+output "jwt_secret_name" {
+  description = "Secrets Manager secret holding the JWT signing key."
+  value       = aws_secretsmanager_secret.jwt.name
+}
+
+output "jwt_rotation_schedule" {
+  description = "When that key rotates (UTC)."
+  value       = var.jwt_rotation_schedule
+}
+
 output "backend_env_file" {
   description = "Paste this into backend/.env.<stage>."
   value       = <<-EOT
     LAMBDA_FUNCTION_NAME=${aws_lambda_function.api.function_name}
     API_URL=${aws_apigatewayv2_stage.default.invoke_url}
+    JWT_SECRET_ID=${aws_secretsmanager_secret.jwt.name}
   EOT
 }

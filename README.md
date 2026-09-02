@@ -6,10 +6,12 @@ AWS resources managed by Terraform.
 ```
 .
 ├── backend/          Rust crate (axum). One binary: local HTTP server + Lambda handler.
-│   ├── src/main.rs
+│   ├── src/main.rs   routes, auth policy, local/Lambda entrypoint
+│   ├── src/auth.rs   JWT issuing, key lookup, protected-route middleware
 │   └── Makefile      init | run | build | deploy | test | fmt | lint
-└── infra/            Terraform stack (Lambda, API Gateway, IAM, CloudWatch)
+└── infra/            Terraform stack (Lambda, API Gateway, IAM, CloudWatch, Secrets Manager)
     ├── envs/         per-stage tfvars
+    ├── rotator/      Python lambda that rotates the JWT key weekly
     └── Makefile      init | plan | deploy | output | destroy
 ```
 
@@ -58,6 +60,7 @@ Copy the printed block into `backend/.env.dev` (see `backend/.env.dev.example`):
 ```
 LAMBDA_FUNCTION_NAME=omoffice-api-dev
 API_URL=https://xxxxxxxxxx.execute-api.us-east-1.amazonaws.com
+JWT_SECRET_ID=omoffice/jwt-key-dev
 ```
 
 Then ship the code:
@@ -69,6 +72,67 @@ curl "$API_URL"               # {"message":"hello world!"}
 ```
 
 `make output dev` in `infra/` reprints the values at any time.
+
+## Auth
+
+Routes under a protected prefix need a bearer token. Both the prefixes and the
+email whitelist are declared next to the routes, in `app()` in `backend/src/main.rs`:
+
+```rust
+let auth = AuthConfig::new(keys)
+    // Every route under these prefixes needs a valid bearer token.
+    .protect(vec!["/private"])
+    // Only these emails may ask for a token.
+    .allow_emails(vec!["admin@omoffice.example", "dev@omoffice.example"])
+    .build();
+```
+
+Adding `"/admin"` to `.protect(...)` protects `/admin` and everything under it.
+Nothing else changes: the middleware is already layered over the whole router.
+
+Get a token — only whitelisted emails are accepted:
+
+```sh
+curl "$API_URL/auth/request-key/dev@omoffice.example"
+# {"token":"eyJ...","token_type":"Bearer","email":"dev@omoffice.example",
+#  "expires_at":1756900000,"expires_in":172800}
+
+curl -H "Authorization: Bearer $TOKEN" "$API_URL/private/me"
+# {"email":"dev@omoffice.example","expires_at":1756900000}
+```
+
+Tokens are HS256 and last 48h. Failures come back as JSON with a stable slug:
+
+| Case | Status | `error` |
+|---|---|---|
+| no/!Bearer `Authorization` header | 401 | `missing_token` |
+| malformed or wrongly signed token | 401 | `invalid_token` |
+| past its `exp` | 401 | `expired_token` |
+| email not whitelisted | 403 | `email_not_allowed` |
+| signing key unreadable | 500 | `key_unavailable` |
+
+### The signing key
+
+Terraform creates a Secrets Manager secret (`omoffice/jwt-key-<stage>`) and a
+small Python lambda that rotates it every Sunday at 07:00 UTC
+(`jwt_rotation_schedule` in `infra/variables.tf`). The API verifies against both
+`AWSCURRENT` and `AWSPREVIOUS`, so a token issued the day before a rotation is
+still good for its full 48h. Keys are cached in the lambda for 5 minutes.
+
+The API picks its key in this order:
+
+1. `JWT_KEY` — a fixed key, for tests and offline work.
+2. `JWT_SECRET_ID` — the rotated secret. Terraform sets this on the deployed
+   lambda; `make run` picks it up from `backend/.env.<stage>` and reads it with
+   your AWS profile.
+3. Neither: local runs fall back to a built-in **insecure** key and log a
+   warning. In Lambda this is a startup error instead.
+
+To force a rotation out of schedule:
+
+```sh
+aws secretsmanager rotate-secret --secret-id omoffice/jwt-key-dev
+```
 
 ## Teardown
 
@@ -82,5 +146,9 @@ make destroy dev              # prompts for confirmation
 - Lambda architecture is `arm64` on both sides. To switch, change
   `lambda_architecture` in `infra/envs/<stage>.tfvars` and `ARCH` in
   `backend/Makefile` together.
+- `/auth/request-key/{email}` hands out a token to anyone who names a
+  whitelisted address — there is no proof of ownership yet. Fine for a sample,
+  not for real users; mail the token instead of returning it before this is
+  exposed to anything that matters.
 - Terraform state is local (`infra/terraform.tfstate.d/`). Move it to an S3
   backend before more than one person deploys.

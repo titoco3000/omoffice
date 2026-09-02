@@ -4,12 +4,33 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+# TLS is pinned to the rustls/ring backend: aws-lc-rs (the default) needs cmake
+# and a C toolchain, which the zig cross-build for Lambda does not have.
+aws-config = { version = "1", default-features = false, features = [
+  "behavior-version-latest",
+  "rt-tokio",
+  "credentials-process",
+  "sso",
+  "legacy-client",
+] }
+aws-sdk-secretsmanager = { version = "1", default-features = false, features = [
+  "behavior-version-latest",
+  "rt-tokio",
+  "rustls",
+] }
 axum = "0.8"
+# rust_crypto is a provider feature: without it jsonwebtoken has no signer.
+jsonwebtoken = { version = "11", default-features = false, features = ["rust_crypto"] }
 lambda_http = "1"
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "net"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "sync"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+[dev-dependencies]
+http-body-util = "0.1"
+tower = { version = "0.5", features = ["util"] }
 
 [profile.release]
 opt-level = "z"

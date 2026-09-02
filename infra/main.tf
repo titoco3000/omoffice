@@ -58,12 +58,14 @@ resource "aws_lambda_function" "api" {
       STAGE          = var.stage
       RUST_LOG       = "info"
       RUST_BACKTRACE = "1"
+      JWT_SECRET_ID  = aws_secretsmanager_secret.jwt.name
     }
   }
 
   depends_on = [
     aws_iam_role_policy_attachment.lambda_basic,
     aws_cloudwatch_log_group.lambda,
+    aws_iam_role_policy.api_read_jwt_secret,
   ]
 
   # Code is owned by the backend deploy, not terraform.

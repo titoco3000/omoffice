@@ -46,7 +46,8 @@ init:
 .PHONY: run
 run:
 	$(REQUIRE_ENV)
-	PORT=$${PORT:-8000} cargo run
+	@set -a; if [ -f $(ENV_FILE) ]; then . ./$(ENV_FILE); fi; set +a; \
+	  PORT=$${PORT:-8000} cargo run
 
 .PHONY: build
 build:
