@@ -17,13 +17,13 @@ variable "stage" {
 variable "region" {
   description = "AWS region."
   type        = string
-  default     = "eu-west-1"
+  default     = "us-east-1"
 }
 
 variable "lambda_memory_mb" {
   description = "Lambda memory size in MB."
   type        = number
-  default     = 128
+  default     = 256
 }
 
 variable "lambda_timeout_s" {
