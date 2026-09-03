@@ -11,6 +11,24 @@ import { callApi, describeFailure } from "../api";
 import ControlPanel from "./ControlPanel";
 import ParticipantTile from "./ParticipantTile";
 
+/// Moderation travels as a Chime data message, on this topic.
+///
+/// The message is a broadcast — Chime has no per-attendee delivery — so it
+/// carries its target and every client but the target ignores it. The target
+/// then mutes itself *at the source*, which is what makes A muting B silent
+/// for C too: nothing is being enforced per-listener. There is no "unmute"
+/// action for the same reason there is no unmute button on someone else's
+/// tile: only B can unmute B.
+///
+/// A hostile client could simply not listen. Real enforcement would need the
+/// backend to hold the roster and use Chime's server-side mute; this is a
+/// sample, and every client here is ours.
+const MODERATION_TOPIC = "moderation";
+
+/// How long Chime keeps the message for an attendee who is not connected right
+/// now. Short: a mute aimed at this moment should not land a minute later.
+const MODERATION_LIFETIME_MS = 5000;
+
 /// While one participant is expanded, the rest sit in a strip. `flow` orders
 /// the two children (the expanded tile is always first in the DOM), `box`
 /// sizes and scrolls the strip, `item` sizes one tile inside it.
@@ -56,6 +74,7 @@ const STRIP = {
 export default function Meeting({ code, token, onLeave }) {
   const [status, setStatus] = useState("joining"); // joining | live | error | ended
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState(""); // "X muted you", and the like
   const [roster, setRoster] = useState([]);
   const [muted, setMuted] = useState(false);
   const [cameraOn, setCameraOn] = useState(false);
@@ -72,6 +91,7 @@ export default function Meeting({ code, token, onLeave }) {
   const boundElements = useRef(new Map()); // tileId -> the element bound to it
   const volumeSubscriptions = useRef(new Set()); // attendee ids already watched
   const meRef = useRef(null); // this browser's attendee id
+  const noticeTimer = useRef(null);
 
   /// Add or patch one attendee, keeping the order they arrived in.
   ///
@@ -148,6 +168,35 @@ export default function Meeting({ code, token, onLeave }) {
     onLeave?.();
   }, [disposeSession, onLeave]);
 
+  /// Show a line over the video for a few seconds.
+  const showNotice = useCallback((text) => {
+    setNotice(text);
+    clearTimeout(noticeTimer.current);
+    noticeTimer.current = setTimeout(() => setNotice(""), 5000);
+  }, []);
+
+  useEffect(() => () => clearTimeout(noticeTimer.current), []);
+
+  /// Stop the local camera. Both the button and a moderator's request end here.
+  const stopCamera = useCallback(async (audioVideo) => {
+    audioVideo.stopLocalVideoTile();
+    await audioVideo.stopVideoInput();
+    setCameraOn(false);
+  }, []);
+
+  /// Ask another attendee's client to mute itself, or to drop its camera.
+  function moderate(cell, action) {
+    const audioVideo = sessionRef.current?.audioVideo;
+    if (!audioVideo) return;
+    audioVideo.realtimeSendDataMessage(
+      MODERATION_TOPIC,
+      { action, target: cell.key },
+      MODERATION_LIFETIME_MS,
+    );
+    const what = action === "mute" ? "muted" : "stopped the camera of";
+    showNotice(`you ${what} ${cell.label}`);
+  }
+
   /// Build the session and wire the observers. Nothing fires until `start()`.
   function buildSession({ Meeting: meeting, Attendee: attendee }) {
     const logger = new ConsoleLogger("chime", LogLevel.WARN);
@@ -218,6 +267,32 @@ export default function Meeting({ code, token, onLeave }) {
         setStatus("ended");
       },
     });
+
+    // Moderation aimed at this browser. Everything else on the topic is
+    // somebody else's business, including the copy of our own broadcast.
+    audioVideo.realtimeSubscribeToReceiveDataMessage(
+      MODERATION_TOPIC,
+      (message) => {
+        if (message.throttled) return;
+        let payload;
+        try {
+          payload = message.json();
+        } catch {
+          return; // Not ours, or not JSON.
+        }
+        if (payload?.target !== me) return;
+
+        const who = shortLabel(message.senderExternalUserId);
+        if (payload.action === "mute") {
+          audioVideo.realtimeMuteLocalAudio();
+          setMuted(true);
+          showNotice(`${who} muted you`);
+        } else if (payload.action === "camera-off") {
+          void stopCamera(audioVideo);
+          showNotice(`${who} turned your camera off`);
+        }
+      },
+    );
 
     audioVideo.addContentShareObserver({
       contentShareDidStart: () => setSharing(true),
@@ -300,9 +375,7 @@ export default function Meeting({ code, token, onLeave }) {
     if (!audioVideo) return;
 
     if (cameraOn) {
-      audioVideo.stopLocalVideoTile();
-      await audioVideo.stopVideoInput();
-      setCameraOn(false);
+      await stopCamera(audioVideo);
       return;
     }
 
@@ -355,6 +428,8 @@ export default function Meeting({ code, token, onLeave }) {
         expanded={isExpanded}
         onToggle={() => setFocused(isExpanded ? null : cell.key)}
         onBindVideo={bindVideo}
+        onMute={() => moderate(cell, "mute")}
+        onCameraOff={() => moderate(cell, "camera-off")}
       />
     );
   }
@@ -423,9 +498,15 @@ export default function Meeting({ code, token, onLeave }) {
             onToggleShare={toggleShare}
             onLeave={leave}
           />
-          {error && (
-            <p className="absolute top-3 left-1/2 z-10 max-w-[80%] -translate-x-1/2 rounded-lg border border-rose-800 bg-slate-950/90 px-3 py-1.5 font-mono text-xs break-all text-rose-300">
-              {error}
+          {(error || notice) && (
+            <p
+              className={`absolute top-3 left-1/2 z-10 max-w-[80%] -translate-x-1/2 rounded-lg border bg-slate-950/90 px-3 py-1.5 font-mono text-xs break-all ${
+                error
+                  ? "border-rose-800 text-rose-300"
+                  : "border-slate-700 text-slate-300"
+              }`}
+            >
+              {error || notice}
             </p>
           )}
         </>
@@ -440,7 +521,11 @@ export default function Meeting({ code, token, onLeave }) {
 /// The backend appends a per-join suffix to keep ExternalUserIds unique, and
 /// Chime appends `#content` to a screen share's; show the email in front.
 function cellLabel({ externalUserId, local, content }) {
-  const name = String(externalUserId ?? "").split("#")[0] || "attendee";
+  const name = shortLabel(externalUserId);
   if (content) return `${name} — screen`;
   return local ? `${name} (you)` : name;
+}
+
+function shortLabel(externalUserId) {
+  return String(externalUserId ?? "").split("#")[0] || "attendee";
 }

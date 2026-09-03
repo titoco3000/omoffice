@@ -23,6 +23,8 @@ export default function ParticipantTile({
   expanded,
   onToggle,
   onBindVideo,
+  onMute,
+  onCameraOff,
 }) {
   const { tileId } = cell;
   const hasVideo = tileId !== null;
@@ -66,19 +68,22 @@ export default function ParticipantTile({
       </div>
 
       <div className="absolute top-1.5 right-1.5 flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
-        {/* Moderation over another attendee needs a backend signalling path;
-            the controls are here so the layout is final, and do nothing yet. */}
+        {/* Moderation only ever takes something away: the request reaches that
+            attendee's own client, which mutes itself at the source, so it is
+            silent for everyone. Giving it back is theirs alone. */}
         {!cell.local && !cell.content && (
           <>
             <TileButton
               icon={<IconMicOff className="h-4 w-4" />}
-              label="mute participant (not wired up yet)"
-              disabled
+              label={cell.muted ? "already muted" : "mute for everyone"}
+              onClick={onMute}
+              disabled={cell.muted}
             />
             <TileButton
               icon={<IconCameraOff className="h-4 w-4" />}
-              label="stop participant camera (not wired up yet)"
-              disabled
+              label={hasVideo ? "turn their camera off" : "camera already off"}
+              onClick={onCameraOff}
+              disabled={!hasVideo}
             />
           </>
         )}
