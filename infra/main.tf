@@ -66,6 +66,7 @@ resource "aws_lambda_function" "api" {
     aws_iam_role_policy_attachment.lambda_basic,
     aws_cloudwatch_log_group.lambda,
     aws_iam_role_policy.api_read_jwt_secret,
+    aws_iam_role_policy.api_chime,
   ]
 
   # Code is owned by the backend deploy, not terraform.

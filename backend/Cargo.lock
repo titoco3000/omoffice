@@ -123,6 +123,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "aws-sdk-chimesdkmeetings"
+version = "1.110.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cd67550e97b33b873960c2f64a1a817e8d410b3f17ebe128e8f18681d4e1c24b"
+dependencies = [
+ "arc-swap",
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-http",
+ "aws-smithy-json",
+ "aws-smithy-observability",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-schema",
+ "aws-smithy-types",
+ "aws-types",
+ "bytes",
+ "fastrand",
+ "http 0.2.12",
+ "http 1.5.0",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
 name = "aws-sdk-secretsmanager"
 version = "1.114.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1642,6 +1668,7 @@ name = "omoffice-api"
 version = "0.1.0"
 dependencies = [
  "aws-config",
+ "aws-sdk-chimesdkmeetings",
  "aws-sdk-secretsmanager",
  "axum",
  "http-body-util",

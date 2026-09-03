@@ -13,6 +13,11 @@ aws-config = { version = "1", default-features = false, features = [
   "sso",
   "legacy-client",
 ] }
+aws-sdk-chimesdkmeetings = { version = "1", default-features = false, features = [
+  "behavior-version-latest",
+  "rt-tokio",
+  "rustls",
+] }
 aws-sdk-secretsmanager = { version = "1", default-features = false, features = [
   "behavior-version-latest",
   "rt-tokio",

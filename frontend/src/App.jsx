@@ -1,9 +1,10 @@
 import { useState } from "react";
+import MeetingPanel from "./components/MeetingPanel";
 import RouteTester from "./components/RouteTester";
 import { API_URL, STAGE } from "./api";
 
-/// One RouteTester per route the API serves. The token from
-/// /auth/request-key/{email} is held here and handed to the protected ones.
+/// The meeting panel, then one RouteTester per route the API serves. The token
+/// from /auth/request-key/{email} is held here and handed to both.
 export default function App() {
   const [token, setToken] = useState("");
 
@@ -36,6 +37,10 @@ export default function App() {
           </p>
         </section>
 
+        <div className="mb-8">
+          <MeetingPanel token={token} />
+        </div>
+
         <div className="grid gap-4">
           <RouteTester route="/" />
           <RouteTester route="/health" />
@@ -49,6 +54,12 @@ export default function App() {
             method="POST"
             route="/private/sample-post/{var}"
             fields={{ name: "string", male: "boolean" }}
+            token={token}
+          />
+          <RouteTester method="POST" route="/private/meetings" token={token} />
+          <RouteTester
+            method="POST"
+            route="/private/meetings/{code}/attendees"
             token={token}
           />
         </div>

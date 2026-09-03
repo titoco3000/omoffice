@@ -8,9 +8,11 @@ React frontend on S3 + CloudFront, and all AWS resources managed by Terraform.
 ├── backend/          Rust crate (axum). One binary: local HTTP server + Lambda handler.
 │   ├── src/main.rs   routes, auth policy, local/Lambda entrypoint
 │   ├── src/auth.rs   JWT issuing, key lookup, protected-route middleware
+│   ├── src/chime.rs  Chime SDK meetings: create a meeting, join one by code
 │   └── Makefile      init | run | build | deploy | test | fmt | lint
-├── frontend/         React + Vite + Tailwind. One page of RouteTester cards.
-│   ├── src/components/RouteTester.jsx  a form + a result box for one route
+├── frontend/         React + Vite + Tailwind. A meeting panel over RouteTester cards.
+│   ├── src/components/RouteTester.jsx   a form + a result box for one route
+│   ├── src/components/MeetingPanel.jsx  create/join a meeting, run the media session
 │   └── Makefile      init | run | build | deploy | preview | lint
 └── infra/            Terraform stack (Lambda, API Gateway, IAM, CloudWatch,
     │                 Secrets Manager, S3, CloudFront)
@@ -131,6 +133,35 @@ coerced back to those types before the body is sent.
 
 The API answers any origin with CORS, since it holds no cookies and the bearer
 token is the only thing that grants access.
+
+## Meetings
+
+Amazon Chime SDK meetings, behind the same bearer token as everything else
+under `/private`:
+
+```sh
+curl -X POST "$API_URL/private/meetings" -H "Authorization: Bearer $TOKEN"
+# {"code":"a6ff7e2e-...","created_by":"dev@omoffice.example","Meeting":{...}}
+
+curl -X POST "$API_URL/private/meetings/$CODE/attendees" \
+  -H "Authorization: Bearer $TOKEN"
+# {"code":"a6ff7e2e-...","Meeting":{...},"Attendee":{...}}
+```
+
+The meeting code *is* the Chime `MeetingId`; nothing is stored on our side, and
+joining is a `GetMeeting` plus a `CreateAttendee`. A code stops working once the
+meeting ends — Chime drops a meeting nobody is in — which comes back as
+`404 meeting_not_found`.
+
+`Meeting` and `Attendee` are keyed the way the browser SDK's
+`MeetingSessionConfiguration` reads them, so the frontend hands the response
+straight to it. The meeting panel on the page does exactly that: **create
+meeting** shows the code, and the join form starts the real audio/video session
+(mute, camera and leave included). The browser needs microphone permission and a
+secure origin — `localhost` or the CloudFront URL, not a plain-HTTP host.
+
+The media region is `CHIME_MEDIA_REGION`, else the region the AWS SDK resolved.
+The lambda's IAM policy for these calls is `infra/chime.tf`.
 
 ## Auth
 

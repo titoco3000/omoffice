@@ -9,8 +9,10 @@ use serde_json::{json, Value};
 use tower_http::cors::{Any, CorsLayer};
 
 mod auth;
+mod chime;
 
 use auth::{AuthConfig, Claims, KeySource};
+use chime::ChimeState;
 
 /// Health/root endpoint. Same handler serves local HTTP and Lambda.
 async fn root() -> Json<Value> {
@@ -57,7 +59,7 @@ fn cors() -> CorsLayer {
         .allow_headers(Any)
 }
 
-fn app(keys: KeySource) -> Router {
+fn app(keys: KeySource, chime: ChimeState) -> Router {
     let auth = AuthConfig::new(keys)
         // Every route under these prefixes needs a valid bearer token.
         .protect(vec!["/private"])
@@ -71,6 +73,14 @@ fn app(keys: KeySource) -> Router {
         .route("/auth/request-key/{email}", get(auth::request_key))
         .route("/private/me", get(private_me))
         .route("/private/sample-post/{var}", post(private_sample_post))
+        .route("/private/meetings", post(chime::create_meeting))
+        .route(
+            "/private/meetings/{code}/attendees",
+            post(chime::join_meeting),
+        )
+        // The Chime client reaches its handlers as an extension, so the auth
+        // policy stays the router's only `State`.
+        .layer(Extension(chime))
         // One layer for the whole router; it only challenges protected prefixes.
         .layer(middleware::from_fn_with_state(
             auth.clone(),
@@ -93,15 +103,16 @@ async fn main() -> Result<(), lambda_http::Error> {
     // AWS_LAMBDA_RUNTIME_API is only set by the Lambda execution environment.
     let in_lambda = std::env::var("AWS_LAMBDA_RUNTIME_API").is_ok();
     let keys = KeySource::from_env(in_lambda).await;
+    let chime = ChimeState::from_env().await;
 
     if in_lambda {
-        return lambda_http::run(app(keys)).await;
+        return lambda_http::run(app(keys, chime)).await;
     }
 
     let port = std::env::var("PORT").unwrap_or_else(|_| "8000".to_string());
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}")).await?;
     println!("listening on http://localhost:{port}");
-    axum::serve(listener, app(keys)).await?;
+    axum::serve(listener, app(keys, chime)).await?;
     Ok(())
 }
 
@@ -115,11 +126,14 @@ mod tests {
 
     const KEY: &str = "test-key";
 
+    /// A router with a fixed signing key and no Chime client, so nothing here
+    /// touches AWS.
+    fn test_app() -> Router {
+        app(KeySource::fixed(KEY), ChimeState::disabled())
+    }
+
     async fn call(request: Request<Body>) -> (StatusCode, Value) {
-        let response = app(KeySource::fixed(KEY))
-            .oneshot(request)
-            .await
-            .expect("router responds");
+        let response = test_app().oneshot(request).await.expect("router responds");
         let status = response.status();
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
         let body = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
@@ -262,6 +276,35 @@ mod tests {
         assert_eq!(body["error"], "missing_token");
     }
 
+    #[tokio::test]
+    async fn creating_a_meeting_is_protected() {
+        let (status, body) = call(post_json("/private/meetings", None, json!({}))).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(body["error"], "missing_token");
+    }
+
+    #[tokio::test]
+    async fn joining_a_meeting_is_protected() {
+        let (status, body) = call(post_json(
+            "/private/meetings/some-code/attendees",
+            None,
+            json!({}),
+        ))
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(body["error"], "missing_token");
+    }
+
+    /// `test_app` has no Chime client, so an authenticated call gets a 503
+    /// rather than reaching AWS.
+    #[tokio::test]
+    async fn meeting_routes_report_a_missing_chime_client() {
+        let token = token_for("dev@omoffice.example").await;
+        let (status, body) = call(post_json("/private/meetings", Some(&token), json!({}))).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body["error"], "chime_unavailable");
+    }
+
     /// The browser sends this before any authenticated call; it carries no
     /// Authorization header, so CORS has to answer it ahead of the auth layer.
     #[tokio::test]
@@ -277,17 +320,14 @@ mod tests {
             )
             .body(Body::empty())
             .unwrap();
-        let response = app(KeySource::fixed(KEY)).oneshot(request).await.unwrap();
+        let response = test_app().oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(response.headers()["access-control-allow-origin"], "*");
     }
 
     #[tokio::test]
     async fn unauthorized_responses_carry_a_bearer_challenge() {
-        let response = app(KeySource::fixed(KEY))
-            .oneshot(get("/private/me"))
-            .await
-            .unwrap();
+        let response = test_app().oneshot(get("/private/me")).await.unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         assert_eq!(
             response.headers()["www-authenticate"],

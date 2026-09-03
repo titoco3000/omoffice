@@ -8,6 +8,15 @@ import tailwindcss from "@tailwindcss/vite";
 // which Vite loads in every mode.
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  // amazon-chime-sdk-js tests for browser APIs with node's `global`
+  // (`'document' in global`), which no bundler supplies in the browser; without
+  // this, constructing a meeting session throws "global is not defined".
+  // Both spellings are needed: `define` covers the production build, the
+  // optimizeDeps one covers the dependency esbuild pre-bundles for `vite dev`.
+  define: { global: "globalThis" },
+  optimizeDeps: {
+    esbuildOptions: { define: { global: "globalThis" } },
+  },
   server: {
     port: Number(process.env.PORT ?? 5173),
     strictPort: true,
