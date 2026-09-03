@@ -58,3 +58,10 @@ export async function callApi({ method = "GET", path, token, body }) {
     data,
   };
 }
+
+/// Turn a failed `callApi` result into one line, for anything that shows a
+/// single error string instead of the whole response.
+export function describeFailure({ status, data }) {
+  const detail = data?.message ?? data?.error ?? JSON.stringify(data);
+  return status === 0 ? `request failed: ${detail}` : `${status}: ${detail}`;
+}

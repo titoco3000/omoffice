@@ -10,7 +10,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100">
-      <div className="mx-auto max-w-3xl px-4 py-10">
+      <div className="mx-auto max-w-5xl px-4 py-10">
         <header className="mb-8">
           <h1 className="text-2xl font-semibold">omoffice</h1>
           <p className="mt-1 font-mono text-sm text-slate-400">

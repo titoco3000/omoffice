@@ -64,7 +64,7 @@ fn app(keys: KeySource, chime: ChimeState) -> Router {
         // Every route under these prefixes needs a valid bearer token.
         .protect(vec!["/private"])
         // Only these emails may ask for a token.
-        .allow_emails(vec!["admin@omoffice.example", "dev@omoffice.example", "tito@20dash.com"])
+        .allow_emails(vec!["admin@omoffice.example", "dev@omoffice.example", "tito@20dash.com", "tito.guidotti@gmail.com"])
         .build();
 
     Router::new()
