@@ -4,6 +4,10 @@ SHELL := /bin/bash
 BIN  := omoffice-api
 ARCH ?= arm64
 
+# `make run` reloads on source edits via cargo-watch. WATCH=0 runs once.
+WATCH       ?= 1
+WATCH_PATHS := -w src -w Cargo.toml -w Cargo.lock
+
 # Allow `make run dev` / `make deploy prod`. Bare `make run` defaults to dev.
 STAGE := $(word 2,$(MAKECMDGOALS))
 ifeq ($(STAGE),)
@@ -16,7 +20,7 @@ define REQUIRE_ENV
 @test -n "$$PROJECT" || { \
   echo "error: PROJECT is not set -- the root env vars are not exported."; \
   echo "export them from the repo root first (see README):"; \
-  echo "  set -a; . ./.env; set +a"; \
+  echo "  set -a; . ../.env; set +a"; \
   exit 1; }
 endef
 
@@ -28,7 +32,7 @@ dev prod:
 .PHONY: help
 help:
 	@echo "make init            install toolchain + fetch deps"
-	@echo "make run [stage]     run locally on http://localhost:8000"
+	@echo "make run [stage]     run locally on http://localhost:8000 (reloads on src edits; WATCH=0 disables)"
 	@echo "make build [stage]   cross-compile lambda zip ($(ARCH))"
 	@echo "make deploy [stage]  build + push code to the lambda from infra"
 	@echo "make test | fmt | lint"
@@ -38,6 +42,7 @@ init:
 	$(REQUIRE_ENV)
 	@command -v cargo >/dev/null || { echo "cargo not found: https://rustup.rs"; exit 1; }
 	@command -v cargo-lambda >/dev/null || cargo install cargo-lambda --locked
+	@command -v cargo-watch >/dev/null || cargo install cargo-watch --locked
 	@command -v zig >/dev/null || { echo "zig not found (cargo-lambda cross-compiles with it): https://ziglang.org/download/"; exit 1; }
 	rustup target add aarch64-unknown-linux-gnu x86_64-unknown-linux-gnu
 	cargo fetch
@@ -47,7 +52,17 @@ init:
 run:
 	$(REQUIRE_ENV)
 	@set -a; if [ -f $(ENV_FILE) ]; then . ./$(ENV_FILE); fi; set +a; \
-	  PORT=$${PORT:-8000} cargo run
+	  export PORT=$${PORT:-8000}; \
+	  if [ "$(WATCH)" = "1" ]; then \
+	    command -v cargo-watch >/dev/null || { \
+	      echo "error: cargo-watch not found (needed for hot reload)."; \
+	      echo "run 'make init', or 'make run WATCH=0' to run once without it."; \
+	      exit 1; }; \
+	    echo "watching src/ -- edits rebuild and restart the server"; \
+	    exec cargo watch $(WATCH_PATHS) --why -x run; \
+	  else \
+	    exec cargo run; \
+	  fi
 
 .PHONY: build
 build:

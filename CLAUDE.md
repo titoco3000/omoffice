@@ -24,8 +24,8 @@ Every make target except `help` starts with `$(REQUIRE_ENV)`, which fails if
 Backend (`cd backend`):
 
 ```sh
-make init            # verify cargo/zig, install cargo-lambda, add linux targets, cargo fetch
-make run dev         # local server on http://localhost:8000 (PORT overrides)
+make init            # verify cargo/zig, install cargo-lambda + cargo-watch, add linux targets, cargo fetch
+make run dev         # local server on http://localhost:8000, rebuilds+restarts on src edits (PORT overrides, WATCH=0 disables)
 make build dev       # cross-compile the lambda zip via cargo-lambda (ARCH, default arm64)
 make deploy dev      # build, then aws lambda update-function-code from .env.<stage>
 make test            # cargo test

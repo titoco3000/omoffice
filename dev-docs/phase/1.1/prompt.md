@@ -1,1 +1,0 @@
-In the makefiles, always check if env includes a PROJECT. If no, ask the user to export the env vars first

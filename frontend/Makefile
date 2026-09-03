@@ -15,7 +15,7 @@ define REQUIRE_ENV
 @test -n "$$PROJECT" || { \
   echo "error: PROJECT is not set -- the root env vars are not exported."; \
   echo "export them from the repo root first (see README):"; \
-  echo "  set -a; . ./.env; set +a"; \
+  echo "  set -a; . ../.env; set +a"; \
   exit 1; }
 endef
 

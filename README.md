@@ -45,7 +45,7 @@ that reminder if the env was never exported.
 ```sh
 cd backend
 make init
-make run dev                  # http://localhost:8000
+make run dev                  # http://localhost:8000, reloads on src/ edits
 curl localhost:8000           # {"message":"hello world!"}
 ```
 

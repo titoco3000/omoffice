@@ -3,7 +3,7 @@ use axum::{
     middleware,
     routing::{get, post},
     Json, Router,
-};
+}; 
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tower_http::cors::{Any, CorsLayer};
@@ -64,7 +64,7 @@ fn app(keys: KeySource, chime: ChimeState) -> Router {
         // Every route under these prefixes needs a valid bearer token.
         .protect(vec!["/private"])
         // Only these emails may ask for a token.
-        .allow_emails(vec!["admin@omoffice.example", "dev@omoffice.example"])
+        .allow_emails(vec!["admin@omoffice.example", "dev@omoffice.example", "tito@20dash.com"])
         .build();
 
     Router::new()
