@@ -8,10 +8,12 @@ resources managed by Terraform.
 .
 ├── backend/          Rust crate (axum). One binary: local HTTP server + Lambda handler.
 │   ├── src/main.rs   routes, auth policy, local/Lambda entrypoint
-│   ├── src/auth.rs   JWT issuing, key lookup, protected-route middleware
-│   ├── src/chime.rs  Chime SDK meetings: create a meeting, join one by code
-│   ├── src/db.rs     Aurora DSQL pool, IAM auth tokens, the queries
 │   ├── src/migrate.rs  the migration runner (`omoffice-api migrate ...`)
+│   ├── src/auth/     JWT issuing, key lookup, protected-route middleware
+│   ├── src/users/    the `users` table: who has asked for a key
+│   ├── src/meetings/ the `meetings` table + routes: Chime plus a history row
+│   ├── src/core/     low-level only, no routes: db.rs (DSQL pool, IAM tokens),
+│   │                 chime.rs (Chime client)
 │   ├── migrations/   ordered <version>_<name>.up.sql / .down.sql pairs
 │   └── Makefile      init | run | build | deploy | test | fmt | lint | db-*
 ├── frontend/         React + Vite + Tailwind. A meeting panel over RouteTester cards.
@@ -324,7 +326,7 @@ So every `query!` fails the build, and `cargo sqlx prepare` fails for the same
 reason — which also rules out the `.sqlx` offline cache, since there is no way
 to generate one. Nothing about it is configurable; the block is unconditional.
 
-`backend/src/db.rs` therefore uses runtime `sqlx::query` / `query_as` with
+`backend/src/core/db.rs` therefore uses runtime `sqlx::query` / `query_as` with
 `.bind(...)`. Nothing to prepare, nothing to commit, no offline mode — and no
 compile-time check either: a column that a migration renamed becomes a 500 at
 runtime instead of a build error.

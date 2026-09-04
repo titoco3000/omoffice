@@ -9,13 +9,14 @@ use serde_json::{json, Value};
 use tower_http::cors::{Any, CorsLayer};
 
 mod auth;
-mod chime;
-mod db;
+mod core;
+mod meetings;
 mod migrate;
+mod users;
 
 use auth::{AuthConfig, Claims, KeySource};
-use chime::ChimeState;
-use db::{Db, DbError};
+use core::chime::ChimeState;
+use core::db::Db;
 
 /// Health/root endpoint. Same handler serves local HTTP and Lambda.
 async fn root() -> Json<Value> {
@@ -51,17 +52,6 @@ async fn private_sample_post(
     }))
 }
 
-/// `GET /private/meetings` — the meetings this caller has created, newest
-/// first. Chime knows nothing about past meetings, so this is the one route
-/// that reads from the database and nowhere else.
-async fn list_meetings(
-    Extension(db): Extension<Db>,
-    Extension(claims): Extension<Claims>,
-) -> Result<Json<Value>, DbError> {
-    let meetings = db.meetings_created_by(&claims.sub).await?;
-    Ok(Json(json!({ "meetings": meetings })))
-}
-
 /// Wide-open CORS. The API is a public, token-authenticated JSON endpoint with
 /// no cookies or other ambient credentials, so any origin may call it; the
 /// bearer token is what grants access. Narrow this to the frontend origins if
@@ -94,12 +84,9 @@ fn app(keys: KeySource, chime: ChimeState, db: Db) -> Router {
         .route("/private/sample-post/{var}", post(private_sample_post))
         .route(
             "/private/meetings",
-            post(chime::create_meeting).get(list_meetings),
+            post(meetings::create).get(meetings::list),
         )
-        .route(
-            "/private/meetings/{code}/attendees",
-            post(chime::join_meeting),
-        )
+        .route("/private/meetings/{code}/attendees", post(meetings::join))
         // The Chime client and the database pool reach their handlers as
         // extensions, so the auth policy stays the router's only `State`.
         .layer(Extension(chime))

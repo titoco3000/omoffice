@@ -30,7 +30,7 @@ use chrono::{DateTime, Utc};
 use sqlx::postgres::PgPool;
 use sqlx::Row;
 
-use crate::db::Db;
+use crate::core::db::Db;
 
 /// Where the ordered `.up.sql` / `.down.sql` pairs live.
 const DEFAULT_MIGRATIONS_DIR: &str = "migrations";

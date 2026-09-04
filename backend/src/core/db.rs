@@ -18,6 +18,11 @@
 //! the real `dev` cluster, the same way `make run dev` already reads the real
 //! per-stage JWT secret.
 //!
+//! This module knows nothing about what is stored in it. It hands out a live
+//! pool, retries a conflicting write and words a failure as HTTP; the tables,
+//! the queries and the row types belong to the modules that own them
+//! (`users.rs`, `meetings.rs`). Nothing here should ever name a column.
+//!
 //! The queries are built at runtime rather than with `sqlx::query!`. The macro
 //! opens its own connection to describe each query at compile time, and the
 //! first thing it sends is a `DO $$ ... $$` block to set `plan_cache_mode`.
@@ -36,8 +41,6 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
-use chrono::{DateTime, Utc};
-use serde::Serialize;
 use sqlx::postgres::{PgConnectOptions, PgPool, PgPoolOptions, PgSslMode};
 
 /// How long a generated IAM token stays valid.
@@ -155,64 +158,6 @@ impl Db {
         inner.refresh_token_if_stale().await?;
         Ok(&inner.pool)
     }
-
-    /// Record the email a token was just issued to. Idempotent: the same person
-    /// asks for a key many times.
-    pub async fn record_user(&self, email: &str) -> Result<(), DbError> {
-        let pool = self.pool().await?;
-        retry_on_conflict(|| async move {
-            sqlx::query("INSERT INTO users (email) VALUES ($1) ON CONFLICT (email) DO NOTHING")
-                .bind(email)
-                .execute(pool)
-                .await
-                .map(|_| ())
-        })
-        .await
-    }
-
-    /// Record a meeting that was just created. The `users` row is written first
-    /// because `meetings.created_by` references it — the caller may hold a
-    /// token issued before this table existed.
-    pub async fn record_meeting(&self, code: &str, created_by: &str) -> Result<(), DbError> {
-        self.record_user(created_by).await?;
-        let pool = self.pool().await?;
-        retry_on_conflict(|| async move {
-            sqlx::query(
-                "INSERT INTO meetings (code, created_by) VALUES ($1, $2)
-                 ON CONFLICT (code) DO NOTHING",
-            )
-            .bind(code)
-            .bind(created_by)
-            .execute(pool)
-            .await
-            .map(|_| ())
-        })
-        .await
-    }
-
-    /// Meetings this email created, newest first.
-    pub async fn meetings_created_by(&self, email: &str) -> Result<Vec<MeetingRecord>, DbError> {
-        let pool = self.pool().await?;
-        let rows = sqlx::query_as::<_, MeetingRecord>(
-            "SELECT code, created_by, created_at
-             FROM meetings
-             WHERE created_by = $1
-             ORDER BY created_at DESC
-             LIMIT 100",
-        )
-        .bind(email)
-        .fetch_all(pool)
-        .await?;
-        Ok(rows)
-    }
-}
-
-/// One row of `meetings`, as the API returns it.
-#[derive(Debug, Serialize, sqlx::FromRow)]
-pub struct MeetingRecord {
-    pub code: String,
-    pub created_by: String,
-    pub created_at: DateTime<Utc>,
 }
 
 impl Inner {

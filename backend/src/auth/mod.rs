@@ -28,10 +28,11 @@ use jsonwebtoken::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::db::Db;
+use crate::core::db::Db;
+use crate::users;
 
 /// How long an issued token is valid.
-const TOKEN_TTL: Duration = Duration::from_secs(48 * 60 * 60);
+const TOKEN_TTL: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 
 /// How long a key fetched from Secrets Manager is reused before refetching.
 /// Rotation is weekly, so a few minutes of staleness is harmless — and a token
@@ -414,7 +415,7 @@ pub async fn request_key(
 
     // Best effort on purpose: the token is already signed and valid, so a
     // database that is unreachable should not stop anyone getting one.
-    if let Err(err) = db.record_user(&email).await {
+    if let Err(err) = users::record(&db, &email).await {
         tracing::warn!("could not record the user who asked for a key: {err:?}");
     }
 
