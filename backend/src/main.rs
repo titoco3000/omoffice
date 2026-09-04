@@ -3,16 +3,19 @@ use axum::{
     middleware,
     routing::{get, post},
     Json, Router,
-}; 
+};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tower_http::cors::{Any, CorsLayer};
 
 mod auth;
 mod chime;
+mod db;
+mod migrate;
 
 use auth::{AuthConfig, Claims, KeySource};
 use chime::ChimeState;
+use db::{Db, DbError};
 
 /// Health/root endpoint. Same handler serves local HTTP and Lambda.
 async fn root() -> Json<Value> {
@@ -48,6 +51,17 @@ async fn private_sample_post(
     }))
 }
 
+/// `GET /private/meetings` — the meetings this caller has created, newest
+/// first. Chime knows nothing about past meetings, so this is the one route
+/// that reads from the database and nowhere else.
+async fn list_meetings(
+    Extension(db): Extension<Db>,
+    Extension(claims): Extension<Claims>,
+) -> Result<Json<Value>, DbError> {
+    let meetings = db.meetings_created_by(&claims.sub).await?;
+    Ok(Json(json!({ "meetings": meetings })))
+}
+
 /// Wide-open CORS. The API is a public, token-authenticated JSON endpoint with
 /// no cookies or other ambient credentials, so any origin may call it; the
 /// bearer token is what grants access. Narrow this to the frontend origins if
@@ -59,12 +73,17 @@ fn cors() -> CorsLayer {
         .allow_headers(Any)
 }
 
-fn app(keys: KeySource, chime: ChimeState) -> Router {
+fn app(keys: KeySource, chime: ChimeState, db: Db) -> Router {
     let auth = AuthConfig::new(keys)
         // Every route under these prefixes needs a valid bearer token.
         .protect(vec!["/private"])
         // Only these emails may ask for a token.
-        .allow_emails(vec!["admin@omoffice.example", "dev@omoffice.example", "tito@20dash.com", "tito.guidotti@gmail.com"])
+        .allow_emails(vec![
+            "admin@omoffice.example",
+            "dev@omoffice.example",
+            "tito@20dash.com",
+            "tito.guidotti@gmail.com",
+        ])
         .build();
 
     Router::new()
@@ -73,14 +92,18 @@ fn app(keys: KeySource, chime: ChimeState) -> Router {
         .route("/auth/request-key/{email}", get(auth::request_key))
         .route("/private/me", get(private_me))
         .route("/private/sample-post/{var}", post(private_sample_post))
-        .route("/private/meetings", post(chime::create_meeting))
+        .route(
+            "/private/meetings",
+            post(chime::create_meeting).get(list_meetings),
+        )
         .route(
             "/private/meetings/{code}/attendees",
             post(chime::join_meeting),
         )
-        // The Chime client reaches its handlers as an extension, so the auth
-        // policy stays the router's only `State`.
+        // The Chime client and the database pool reach their handlers as
+        // extensions, so the auth policy stays the router's only `State`.
         .layer(Extension(chime))
+        .layer(Extension(db))
         // One layer for the whole router; it only challenges protected prefixes.
         .layer(middleware::from_fn_with_state(
             auth.clone(),
@@ -94,25 +117,45 @@ fn app(keys: KeySource, chime: ChimeState) -> Router {
 
 #[tokio::main]
 async fn main() -> Result<(), lambda_http::Error> {
+    // `omoffice-api migrate <status|up|down>` runs the schema tool instead of
+    // the server: one binary, and the runner shares the connection code. It
+    // prints its own report, so the AWS SDK's INFO chatter is turned down to
+    // leave that readable.
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let migrating = args.first().is_some_and(|arg| arg == "migrate");
+
     tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::INFO)
+        .with_max_level(if migrating {
+            tracing::Level::WARN
+        } else {
+            tracing::Level::INFO
+        })
         .with_target(false)
         .without_time()
         .init();
+
+    if migrating {
+        if let Err(message) = migrate::run(&args[1..]).await {
+            eprintln!("error: {message}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
 
     // AWS_LAMBDA_RUNTIME_API is only set by the Lambda execution environment.
     let in_lambda = std::env::var("AWS_LAMBDA_RUNTIME_API").is_ok();
     let keys = KeySource::from_env(in_lambda).await;
     let chime = ChimeState::from_env().await;
+    let db = Db::from_env().await;
 
     if in_lambda {
-        return lambda_http::run(app(keys, chime)).await;
+        return lambda_http::run(app(keys, chime, db)).await;
     }
 
     let port = std::env::var("PORT").unwrap_or_else(|_| "8000".to_string());
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}")).await?;
     println!("listening on http://localhost:{port}");
-    axum::serve(listener, app(keys, chime)).await?;
+    axum::serve(listener, app(keys, chime, db)).await?;
     Ok(())
 }
 
@@ -126,10 +169,14 @@ mod tests {
 
     const KEY: &str = "test-key";
 
-    /// A router with a fixed signing key and no Chime client, so nothing here
-    /// touches AWS.
+    /// A router with a fixed signing key and neither a Chime client nor a
+    /// database, so nothing here touches AWS.
     fn test_app() -> Router {
-        app(KeySource::fixed(KEY), ChimeState::disabled())
+        app(
+            KeySource::fixed(KEY),
+            ChimeState::disabled(),
+            Db::disabled(),
+        )
     }
 
     async fn call(request: Request<Body>) -> (StatusCode, Value) {
@@ -293,6 +340,27 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
         assert_eq!(body["error"], "missing_token");
+    }
+
+    #[tokio::test]
+    async fn listing_meetings_is_protected() {
+        let (status, body) = call(get("/private/meetings")).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(body["error"], "missing_token");
+    }
+
+    /// `test_app` has no database either, so the history route says so instead
+    /// of reaching DSQL.
+    #[tokio::test]
+    async fn listing_meetings_reports_a_missing_database() {
+        let token = token_for("dev@omoffice.example").await;
+        let (status, body) = call(get_with_auth(
+            "/private/meetings",
+            &format!("Bearer {token}"),
+        ))
+        .await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body["error"], "database_unavailable");
     }
 
     /// `test_app` has no Chime client, so an authenticated call gets a 503

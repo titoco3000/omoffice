@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use axum::{
-    extract::{Path, Request, State},
+    extract::{Extension, Path, Request, State},
     http::{header, StatusCode},
     middleware::Next,
     response::{IntoResponse, Response},
@@ -27,6 +27,8 @@ use jsonwebtoken::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+
+use crate::db::Db;
 
 /// How long an issued token is valid.
 const TOKEN_TTL: Duration = Duration::from_secs(48 * 60 * 60);
@@ -394,8 +396,12 @@ fn unix_now() -> u64 {
 }
 
 /// `GET /auth/request-key/{email}` — issue a token to a whitelisted email.
+///
+/// This is also where a person first becomes a row in `users`: the email on the
+/// token is the key every other table hangs off.
 pub async fn request_key(
     State(state): State<AuthState>,
+    Extension(db): Extension<Db>,
     Path(email): Path<String>,
 ) -> Result<Json<Value>, AuthError> {
     let email = email.trim().to_lowercase();
@@ -405,6 +411,13 @@ pub async fn request_key(
     }
 
     let (token, expires_at) = state.issue(&email).await?;
+
+    // Best effort on purpose: the token is already signed and valid, so a
+    // database that is unreachable should not stop anyone getting one.
+    if let Err(err) = db.record_user(&email).await {
+        tracing::warn!("could not record the user who asked for a key: {err:?}");
+    }
+
     Ok(Json(json!({
         "token": token,
         "token_type": "Bearer",

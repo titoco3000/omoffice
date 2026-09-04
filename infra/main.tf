@@ -59,6 +59,9 @@ resource "aws_lambda_function" "api" {
       RUST_LOG       = "info"
       RUST_BACKTRACE = "1"
       JWT_SECRET_ID  = aws_secretsmanager_secret.jwt.name
+      # DSQL takes an IAM token, not a password, so the endpoint is the whole
+      # connection config the lambda needs.
+      DATABASE_ENDPOINT = local.db_endpoint
     }
   }
 
@@ -67,6 +70,7 @@ resource "aws_lambda_function" "api" {
     aws_cloudwatch_log_group.lambda,
     aws_iam_role_policy.api_read_jwt_secret,
     aws_iam_role_policy.api_chime,
+    aws_iam_role_policy.api_dsql,
   ]
 
   # Code is owned by the backend deploy, not terraform.

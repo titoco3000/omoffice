@@ -33,12 +33,23 @@ output "jwt_rotation_schedule" {
   value       = var.jwt_rotation_schedule
 }
 
+output "database_cluster_id" {
+  description = "Aurora DSQL cluster backing this stage."
+  value       = aws_dsql_cluster.main.identifier
+}
+
+output "database_endpoint" {
+  description = "Host the API and the SQL shell connect to (IAM token as the password)."
+  value       = local.db_endpoint
+}
+
 output "backend_env_file" {
   description = "Paste this into backend/.env.<stage>."
   value       = <<-EOT
     LAMBDA_FUNCTION_NAME=${aws_lambda_function.api.function_name}
     API_URL=${aws_apigatewayv2_stage.default.invoke_url}
     JWT_SECRET_ID=${aws_secretsmanager_secret.jwt.name}
+    DATABASE_ENDPOINT=${local.db_endpoint}
   EOT
 }
 

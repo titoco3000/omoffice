@@ -3,7 +3,9 @@
 //! Two routes, both under `/private`, so a caller needs a bearer token:
 //!
 //! * `POST /private/meetings` — create a meeting. The Chime `MeetingId` *is*
-//!   the meeting code; nothing is stored on our side.
+//!   the meeting code; the only thing kept on our side is a row in `meetings`
+//!   recording who created it, which is what `GET /private/meetings` reads.
+//!   Joining still needs nothing but the code — the row is history, not state.
 //! * `POST /private/meetings/{code}/attendees` — look the meeting up by that
 //!   code and mint an attendee for the caller.
 //!
@@ -26,6 +28,7 @@ use axum::{
 use serde_json::{json, Value};
 
 use crate::auth::Claims;
+use crate::db::{Db, DbError};
 
 /// Region the media session runs in when nothing else says otherwise.
 const DEFAULT_MEDIA_REGION: &str = "us-east-1";
@@ -85,11 +88,21 @@ pub enum ChimeError {
     MeetingNotFound,
     /// Anything the Chime API itself rejected.
     Upstream(String),
+    /// The meeting was made, but recording it failed.
+    Database(DbError),
+}
+
+impl From<DbError> for ChimeError {
+    fn from(err: DbError) -> Self {
+        Self::Database(err)
+    }
 }
 
 impl IntoResponse for ChimeError {
     fn into_response(self) -> Response {
         let (status, error, message) = match self {
+            // The database layer already words its own failures.
+            Self::Database(err) => return err.into_response(),
             Self::Unavailable => (
                 StatusCode::SERVICE_UNAVAILABLE,
                 "chime_unavailable",
@@ -116,6 +129,7 @@ impl IntoResponse for ChimeError {
 /// `POST /private/meetings` — create a meeting and hand back its code.
 pub async fn create_meeting(
     Extension(chime): Extension<ChimeState>,
+    Extension(db): Extension<Db>,
     Extension(claims): Extension<Claims>,
 ) -> Result<Json<Value>, ChimeError> {
     let meeting = chime
@@ -131,6 +145,11 @@ pub async fn create_meeting(
         .ok_or_else(|| ChimeError::Upstream("CreateMeeting returned no meeting".to_string()))?;
 
     let code = meeting.meeting_id().unwrap_or_default().to_string();
+
+    // Recorded before the code is handed back, and a failure fails the call:
+    // a meeting missing from the history is worse than one nobody joined, and
+    // Chime drops an empty meeting on its own.
+    db.record_meeting(&code, &claims.sub).await?;
     tracing::info!("meeting {code} created by {}", claims.sub);
 
     Ok(Json(json!({

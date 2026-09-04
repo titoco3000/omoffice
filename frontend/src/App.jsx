@@ -57,6 +57,7 @@ export default function App() {
             token={token}
           />
           <RouteTester method="POST" route="/private/meetings" token={token} />
+          <RouteTester route="/private/meetings" token={token} />
           <RouteTester
             method="POST"
             route="/private/meetings/{code}/attendees"

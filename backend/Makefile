@@ -24,6 +24,25 @@ define REQUIRE_ENV
   exit 1; }
 endef
 
+# Everything that touches the database needs the stage's endpoint. There is no
+# local DSQL -- no emulator, no container -- so `dev` is a real cluster and this
+# is the same handoff as LAMBDA_FUNCTION_NAME and JWT_SECRET_ID.
+define REQUIRE_DB
+@test -f $(ENV_FILE) || { \
+  echo "error: $(ENV_FILE) missing."; \
+  echo "run 'cd ../infra && make output $(STAGE)' and copy the values into backend/$(ENV_FILE)"; \
+  exit 1; }
+@set -a; . ./$(ENV_FILE); set +a; test -n "$$DATABASE_ENDPOINT" || { \
+  echo "error: DATABASE_ENDPOINT unset in $(ENV_FILE)"; \
+  echo "run 'cd ../infra && make output $(STAGE)' and copy the values into backend/$(ENV_FILE)"; \
+  exit 1; }
+endef
+
+# A fresh IAM auth token, used as the password. Nothing is stored, and there is
+# no password to look up. 12h so a `make run` session outlives its own token.
+DSQL_TOKEN = aws dsql generate-db-connect-admin-auth-token \
+  --region "$${AWS_REGION:-us-east-1}" --expires-in 43200 --hostname "$$DATABASE_ENDPOINT"
+
 # Swallow the stage word so make does not treat it as a target.
 .PHONY: dev prod
 dev prod:
@@ -35,6 +54,10 @@ help:
 	@echo "make run [stage]     run locally on http://localhost:8000 (reloads on src edits; WATCH=0 disables)"
 	@echo "make build [stage]   cross-compile lambda zip ($(ARCH))"
 	@echo "make deploy [stage]  build + push code to the lambda from infra"
+	@echo "make db-status [stage]   which migrations are applied, and which are not"
+	@echo "make db-migrate [stage]  apply every pending migration"
+	@echo "make db-revert [stage]   revert the most recent one (destructive, asks first)"
+	@echo "make db-shell [stage]    psql against the stage, with a fresh IAM token"
 	@echo "make test | fmt | lint"
 
 .PHONY: init
@@ -44,6 +67,7 @@ init:
 	@command -v cargo-lambda >/dev/null || cargo install cargo-lambda --locked
 	@command -v cargo-watch >/dev/null || cargo install cargo-watch --locked
 	@command -v zig >/dev/null || { echo "zig not found (cargo-lambda cross-compiles with it): https://ziglang.org/download/"; exit 1; }
+	@command -v psql >/dev/null || echo "note: psql not found -- 'make db-shell' needs it: https://www.postgresql.org/download/"
 	rustup target add aarch64-unknown-linux-gnu x86_64-unknown-linux-gnu
 	cargo fetch
 	@echo "backend ready."
@@ -72,10 +96,7 @@ build:
 .PHONY: deploy
 deploy: build
 	$(REQUIRE_ENV)
-	@test -f $(ENV_FILE) || { \
-	  echo "error: $(ENV_FILE) missing."; \
-	  echo "run 'cd ../infra && make output $(STAGE)' and copy the values into backend/$(ENV_FILE)"; \
-	  exit 1; }
+	$(REQUIRE_DB)
 	@set -a; . ./$(ENV_FILE); set +a; \
 	  test -n "$$LAMBDA_FUNCTION_NAME" || { echo "error: LAMBDA_FUNCTION_NAME unset in $(ENV_FILE)"; exit 1; }; \
 	  echo "uploading $(ZIP) -> $$LAMBDA_FUNCTION_NAME"; \
@@ -100,6 +121,53 @@ fmt:
 lint:
 	$(REQUIRE_ENV)
 	cargo clippy --all-targets -- -D warnings
+
+# ---------------------------------------------------------------------------
+# Database
+#
+# Migrations are ordered .up.sql/.down.sql pairs in migrations/, applied by the
+# runner built into the API binary (src/migrate.rs). It writes a ledger row as
+# `pending`, runs the DDL, then marks it `applied` -- DSQL cannot put the DDL
+# and the ledger write in one transaction, so a crash has to be visible rather
+# than silently half-done.
+# ---------------------------------------------------------------------------
+
+.PHONY: db-status
+db-status:
+	$(REQUIRE_ENV)
+	$(REQUIRE_DB)
+	@set -a; . ./$(ENV_FILE); set +a; cargo run --quiet -- migrate status
+
+.PHONY: db-migrate
+db-migrate:
+	$(REQUIRE_ENV)
+	$(REQUIRE_DB)
+	@set -a; . ./$(ENV_FILE); set +a; cargo run --quiet -- migrate up
+
+.PHONY: db-revert
+db-revert:
+	$(REQUIRE_ENV)
+	$(REQUIRE_DB)
+	@echo "about to REVERT the most recent migration on '$(STAGE)'."
+	@echo "a down migration drops what its up migration created -- dropping a column"
+	@echo "drops the data that was in it, and there is no backup here."
+	@read -r -p "type '$(STAGE)' to confirm: " ans; \
+	  test "$$ans" = "$(STAGE)" || { echo "aborted."; exit 1; }
+	@set -a; . ./$(ENV_FILE); set +a; cargo run --quiet -- migrate down
+
+.PHONY: db-shell
+db-shell:
+	$(REQUIRE_ENV)
+	$(REQUIRE_DB)
+	@command -v psql >/dev/null || { echo "psql not found: https://www.postgresql.org/download/"; exit 1; }
+	@set -a; . ./$(ENV_FILE); set +a; \
+	  echo "connecting to $(STAGE): $$DATABASE_ENDPOINT"; \
+	  export PGPASSWORD=$$($(DSQL_TOKEN)); \
+	  export PGSSLMODE=require; \
+	  exec psql --quiet \
+	    --username "$${DATABASE_USER:-admin}" \
+	    --dbname "$${DATABASE_NAME:-postgres}" \
+	    --host "$$DATABASE_ENDPOINT"
 
 .PHONY: clean
 clean:

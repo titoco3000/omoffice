@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { callApi, describeFailure } from "../api";
 import Meeting from "./Meeting";
+import MeetingHistory from "./MeetingHistory";
 
 /**
  * The lobby in front of `Meeting`: create a meeting, or type a code.
@@ -112,6 +113,16 @@ export default function MeetingPanel({ token }) {
           {error}
         </p>
       )}
+
+      {/* Remounted every time the lobby comes back, so leaving a meeting is
+          what refreshes the list. */}
+      <MeetingHistory
+        token={token}
+        onPick={(picked) => {
+          setCodeInput(picked);
+          setCode(picked);
+        }}
+      />
     </section>
   );
 }
