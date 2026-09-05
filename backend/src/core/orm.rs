@@ -99,10 +99,37 @@ impl Column {
 }
 
 /// One table: its name and its columns, in the order a migration declares them.
+/// Build with [`Table::new`]; add `.primary_key(&[...])` for a table whose key
+/// is more than one column (a plain single-column key stays a `.primary_key()`
+/// on that [`Column`] instead — see there).
 #[derive(Clone, Copy)]
 pub struct Table {
     pub name: &'static str,
     pub columns: &'static [Column],
+    /// Non-empty only for a composite key: `CREATE TABLE`'s trailing
+    /// `PRIMARY KEY (a, b, c)` table constraint, rendered by
+    /// [`TableState::create_sql`]. Empty means "whichever column, if any, has
+    /// its own `.primary_key()` flag set" — the original, single-column path.
+    pub primary_key: &'static [&'static str],
+}
+
+impl Table {
+    pub const fn new(name: &'static str, columns: &'static [Column]) -> Self {
+        Self {
+            name,
+            columns,
+            primary_key: &[],
+        }
+    }
+
+    /// Declares a composite primary key. DSQL fixes it at `CREATE TABLE` time
+    /// just like a single-column one, so this only ever matters for a
+    /// brand-new table — [`diff`] refuses a change to it on an existing one,
+    /// same as it refuses a column's `.primary_key()` flipping.
+    pub const fn primary_key(mut self, columns: &'static [&'static str]) -> Self {
+        self.primary_key = columns;
+        self
+    }
 }
 
 /// The owned, JSON-friendly mirror of a [`Column`] — see the module doc
@@ -195,6 +222,11 @@ impl ColumnState {
 pub struct TableState {
     pub name: String,
     pub columns: Vec<ColumnState>,
+    /// See [`Table::primary_key`]. `#[serde(default)]` so a snapshot written
+    /// before this field existed still deserializes, as an empty (i.e.
+    /// column-level-only) key.
+    #[serde(default)]
+    pub primary_key: Vec<String>,
 }
 
 impl From<&Table> for TableState {
@@ -202,6 +234,7 @@ impl From<&Table> for TableState {
         Self {
             name: table.name.to_string(),
             columns: table.columns.iter().map(ColumnState::from).collect(),
+            primary_key: table.primary_key.iter().map(|s| s.to_string()).collect(),
         }
     }
 }
@@ -209,12 +242,15 @@ impl From<&Table> for TableState {
 impl TableState {
     /// The `CREATE TABLE` this table's shape renders to.
     pub fn create_sql(&self) -> String {
-        let body = self
+        let mut lines: Vec<String> = self
             .columns
             .iter()
             .map(ColumnState::render_for_create_table)
-            .collect::<Vec<_>>()
-            .join(",\n    ");
+            .collect();
+        if !self.primary_key.is_empty() {
+            lines.push(format!("PRIMARY KEY ({})", self.primary_key.join(", ")));
+        }
+        let body = lines.join(",\n    ");
         format!("CREATE TABLE {} (\n    {body}\n);", self.name)
     }
 
@@ -411,6 +447,13 @@ pub fn diff(
             continue; // handled as a whole-table create above
         };
 
+        if old_table.primary_key != new_table.primary_key {
+            return Err(format!(
+                "{}: primary key changed -- DSQL fixes it at CREATE TABLE; this needs a new table",
+                new_table.name
+            ));
+        }
+
         // Columns a rename hint claims, so the drop pass below doesn't also
         // report them as dropped.
         let mut renamed_away: Vec<&str> = Vec::new();
@@ -575,6 +618,7 @@ mod tests {
                     renamed_from: None,
                 })
                 .collect(),
+            primary_key: Vec::new(),
         }
     }
 
@@ -630,6 +674,7 @@ mod tests {
                 foreign_key: Some(("users".to_string(), "email".to_string())),
                 renamed_from: None,
             }],
+            primary_key: Vec::new(),
         }));
         assert_eq!(
             op.render(),
@@ -707,11 +752,13 @@ mod tests {
         let old = [TableState {
             name: "t".to_string(),
             columns: vec![old_col.clone()],
+            primary_key: Vec::new(),
         }];
         old_col.sql_type = "int".to_string();
         let new = [TableState {
             name: "t".to_string(),
             columns: vec![old_col],
+            primary_key: Vec::new(),
         }];
         assert!(diff(&old, &new).is_err());
     }
@@ -797,5 +844,33 @@ mod tests {
             op.reversed().render(),
             "ALTER TABLE t RENAME COLUMN b TO a;"
         );
+    }
+
+    #[test]
+    fn a_composite_primary_key_renders_as_a_trailing_table_constraint() {
+        const COLUMNS: &[Column] = &[
+            Column::new("org_id", "text").not_null(),
+            Column::new("user_email", "text").not_null(),
+            Column::new("role", "text").not_null(),
+        ];
+        let table = Table::new("org_roles", COLUMNS).primary_key(&["org_id", "user_email", "role"]);
+        let state = TableState::from(&table);
+        assert_eq!(
+            state.create_sql(),
+            "CREATE TABLE org_roles (\n    \
+             org_id text NOT NULL,\n    \
+             user_email text NOT NULL,\n    \
+             role text NOT NULL,\n    \
+             PRIMARY KEY (org_id, user_email, role)\n);"
+        );
+    }
+
+    #[test]
+    fn a_changed_composite_primary_key_is_refused() {
+        let mut old = table("t", &[("a", true), ("b", true)]);
+        old.primary_key = vec!["a".to_string()];
+        let mut new = old.clone();
+        new.primary_key = vec!["a".to_string(), "b".to_string()];
+        assert!(diff(&[old], &[new]).is_err());
     }
 }

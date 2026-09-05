@@ -31,23 +31,23 @@ use crate::core::orm::{Column, Table};
 /// `/auth/request-key/{email}` already hands out tokens for, so there is no
 /// separate id to reconcile. See `users/mod.rs` for the code that reads and
 /// writes this table.
-pub const USERS: Table = Table {
-    name: "users",
-    columns: &[
+pub const USERS: Table = Table::new(
+    "users",
+    &[
         Column::new("email", "text").primary_key(),
         Column::new("last_meeting", "text").references("meetings", "code"),
         Column::new("created_at", "timestamptz")
             .not_null()
             .default("now()"),
     ],
-};
+);
 
 /// Meetings created through `POST /private/meetings`. `code` is the Chime
 /// `MeetingId`, already a UUID and unique per meeting, so it is the primary
 /// key rather than a separate one. See `meetings/mod.rs`.
-pub const MEETINGS: Table = Table {
-    name: "meetings",
-    columns: &[
+pub const MEETINGS: Table = Table::new(
+    "meetings",
+    &[
         Column::new("code", "text").primary_key(),
         Column::new("created_by", "text")
             .not_null()
@@ -56,9 +56,42 @@ pub const MEETINGS: Table = Table {
             .not_null()
             .default("now()"),
     ],
-};
+);
 
-pub const TABLES: &[Table] = &[USERS, MEETINGS];
+/// Organizations, created through `POST /private/orgs`. `id` is a
+/// backend-generated UUID, the same shape as `meetings.code`. See
+/// `rbac/mod.rs`.
+pub const ORGANIZATIONS: Table = Table::new(
+    "organizations",
+    &[
+        Column::new("id", "text").primary_key(),
+        Column::new("name", "text").not_null(),
+        Column::new("created_by", "text")
+            .not_null()
+            .references("users", "email"),
+        Column::new("created_at", "timestamptz")
+            .not_null()
+            .default("now()"),
+    ],
+);
+
+/// The user-org-role table: one row per role a user holds in an org, so a
+/// user can hold several roles in the same org at once. See `rbac/mod.rs`.
+pub const ORG_ROLES: Table = Table::new(
+    "org_roles",
+    &[
+        Column::new("org_id", "text")
+            .not_null()
+            .references("organizations", "id"),
+        Column::new("user_email", "text")
+            .not_null()
+            .references("users", "email"),
+        Column::new("role", "text").not_null(),
+    ],
+)
+.primary_key(&["org_id", "user_email", "role"]);
+
+pub const TABLES: &[Table] = &[USERS, MEETINGS, ORGANIZATIONS, ORG_ROLES];
 
 #[cfg(test)]
 mod tests {

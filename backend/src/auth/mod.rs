@@ -215,7 +215,13 @@ impl AuthConfig {
         self
     }
 
-    /// Emails allowed to request a token. Matched case-insensitively.
+    /// Emails allowed to request a token. Matched case-insensitively. An
+    /// empty (the default) or never-called list means no whitelist at all —
+    /// see `is_allowed`. `app()` no longer calls this (org invites need to
+    /// provision arbitrary emails), so only this module's own tests exercise
+    /// it now; kept as public API for a deployment that wants the whitelist
+    /// back.
+    #[allow(dead_code)]
     pub fn allow_emails<I, S>(mut self, emails: I) -> Self
     where
         I: IntoIterator<Item = S>,
@@ -271,8 +277,13 @@ impl AuthState {
         })
     }
 
+    /// An empty configured list means no whitelist at all -- everyone is
+    /// allowed. `app()` relies on this: org invites need to provision
+    /// arbitrary emails, so nothing calls `.allow_emails(...)` there any
+    /// more, and this is what makes that mean "open" rather than "nobody".
     fn is_allowed(&self, email: &str) -> bool {
-        self.0.allowed_emails.iter().any(|allowed| allowed == email)
+        self.0.allowed_emails.is_empty()
+            || self.0.allowed_emails.iter().any(|allowed| allowed == email)
     }
 
     async fn keys(&self) -> Result<Keys, AuthError> {
@@ -516,6 +527,14 @@ mod tests {
         let state = state();
         assert!(state.is_allowed("dev@omoffice.example"));
         assert!(!state.is_allowed("stranger@example.com"));
+    }
+
+    #[test]
+    fn no_whitelist_configured_allows_any_email() {
+        let open = AuthConfig::new(KeySource::fixed("test-key"))
+            .protect(vec!["/private"])
+            .build();
+        assert!(open.is_allowed("anyone@example.com"));
     }
 
     #[tokio::test]

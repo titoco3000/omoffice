@@ -1,7 +1,7 @@
 use axum::{
     extract::{Extension, Path},
     middleware,
-    routing::{get, post},
+    routing::{delete, get, post, put},
     Json, Router,
 };
 use serde::Deserialize;
@@ -12,12 +12,24 @@ mod auth;
 mod core;
 mod meetings;
 mod migrate;
+mod rbac;
 mod schema;
 mod users;
 
 use auth::{AuthConfig, Claims, KeySource};
 use core::chime::ChimeState;
 use core::db::Db;
+use rbac::{RbacError, RolesConfig};
+
+/// Project-specific role, not native to the RBAC: gates the sample-post demo
+/// route below, exactly the example the RBAC was built to support.
+const ROLE_POST: &str = "post";
+
+/// The RBAC's hidden default role (`RolesConfig::default_role`): every
+/// member gets it silently, and neither this route nor the frontend's role
+/// pickers ever mention it — it exists only so `org_roles` always has a row
+/// for a plain participant with no special permission.
+const ROLE_MEMBER: &str = "member";
 
 /// Health/root endpoint. Same handler serves local HTTP and Lambda.
 async fn root() -> Json<Value> {
@@ -33,24 +45,42 @@ async fn private_me(Extension(claims): Extension<Claims>) -> Json<Value> {
     Json(json!({ "email": claims.sub, "expires_at": claims.exp }))
 }
 
-/// Body of `POST /private/sample-post/{var}`.
+/// Body of `POST /private/sample-post/{var}`. `org_id` is the RBAC demo the
+/// prompt names explicitly: the caller needs the `"post"` role in that org.
 #[derive(Debug, Deserialize)]
 struct SamplePost {
+    org_id: String,
     name: String,
     male: bool,
 }
 
 /// Sample write route: one path parameter plus a JSON body, echoed back with
-/// the caller taken from the verified token.
+/// the caller taken from the verified token — gated on the `"post"` role in
+/// the org named by the body, the generic [`rbac::require_role`] check the
+/// RBAC exists to provide.
 async fn private_sample_post(
+    Extension(db): Extension<Db>,
     Extension(claims): Extension<Claims>,
     Path(var): Path<String>,
     Json(body): Json<SamplePost>,
-) -> Json<Value> {
-    Json(json!({
-        "received": { "var": var, "name": body.name, "male": body.male },
+) -> Result<Json<Value>, RbacError> {
+    rbac::require_role(&db, &claims.sub, &body.org_id, ROLE_POST).await?;
+    Ok(Json(json!({
+        "received": { "var": var, "name": body.name, "male": body.male, "org_id": body.org_id },
         "by": claims.sub,
-    }))
+    })))
+}
+
+/// `GET /private/orgs/{org_id}/billing` — a stub, gated on the RBAC-native
+/// `billing` role, giving it a concrete (if trivial) use. Real billing data
+/// belongs to a project-specific module, not this demo.
+async fn private_org_billing(
+    Extension(db): Extension<Db>,
+    Extension(claims): Extension<Claims>,
+    Path(org_id): Path<String>,
+) -> Result<Json<Value>, RbacError> {
+    rbac::require_role(&db, &claims.sub, &org_id, rbac::roles::BILLING).await?;
+    Ok(Json(json!({ "org_id": org_id, "plan": "demo" })))
 }
 
 /// Wide-open CORS. The API is a public, token-authenticated JSON endpoint with
@@ -68,13 +98,18 @@ fn app(keys: KeySource, chime: ChimeState, db: Db) -> Router {
     let auth = AuthConfig::new(keys)
         // Every route under these prefixes needs a valid bearer token.
         .protect(vec!["/private"])
-        // Only these emails may ask for a token.
-        .allow_emails(vec![
-            "admin@omoffice.example",
-            "dev@omoffice.example",
-            "tito@20dash.com",
-            "tito.guidotti@gmail.com",
-        ])
+        // No email whitelist: org invites need to provision arbitrary
+        // people, and the module doc already says there's no proof of email
+        // ownership here anyway. An empty list means `is_allowed` lets
+        // everyone through.
+        .build();
+
+    // The native RBAC roles plus this project's own -- "post" for the
+    // sample-post demo below, and "member" as the hidden default every
+    // member gets, never offered as a choice.
+    let roles = RolesConfig::new()
+        .project_roles([ROLE_POST])
+        .default_role(ROLE_MEMBER)
         .build();
 
     Router::new()
@@ -88,10 +123,33 @@ fn app(keys: KeySource, chime: ChimeState, db: Db) -> Router {
             post(meetings::create).get(meetings::list),
         )
         .route("/private/meetings/{code}/attendees", post(meetings::join))
-        // The Chime client and the database pool reach their handlers as
-        // extensions, so the auth policy stays the router's only `State`.
+        .route(
+            "/private/orgs",
+            post(rbac::create_org_route).get(rbac::list_orgs_route),
+        )
+        .route(
+            "/private/orgs/{org_id}",
+            get(rbac::org_detail_route).delete(rbac::delete_org_route),
+        )
+        .route(
+            "/private/orgs/{org_id}/members",
+            post(rbac::add_member_route),
+        )
+        .route(
+            "/private/orgs/{org_id}/members/{email}/roles",
+            put(rbac::replace_roles_route),
+        )
+        .route(
+            "/private/orgs/{org_id}/members/me",
+            delete(rbac::leave_org_route),
+        )
+        .route("/private/orgs/{org_id}/billing", get(private_org_billing))
+        // The Chime client, the database pool and the project's role list
+        // reach their handlers as extensions, so the auth policy stays the
+        // router's only `State`.
         .layer(Extension(chime))
         .layer(Extension(db))
+        .layer(Extension(roles))
         // One layer for the whole router; it only challenges protected prefixes.
         .layer(middleware::from_fn_with_state(
             auth.clone(),
@@ -222,19 +280,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn whitelisted_email_gets_a_48h_token() {
+    async fn request_key_issues_a_token_to_any_email() {
         let (status, body) = call(get("/auth/request-key/dev@omoffice.example")).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["email"], "dev@omoffice.example");
-        assert_eq!(body["expires_in"], 48 * 60 * 60);
+        // `app()` no longer whitelists emails -- org invites need to be able
+        // to provision arbitrary ones. `TOKEN_TTL` (auth/mod.rs) is 7 days.
+        assert_eq!(body["expires_in"], 7 * 24 * 60 * 60);
         assert!(body["expires_at"].as_u64().unwrap() > now());
     }
 
     #[tokio::test]
-    async fn unlisted_email_is_rejected() {
+    async fn a_never_before_seen_email_also_gets_a_token() {
         let (status, body) = call(get("/auth/request-key/stranger@example.com")).await;
-        assert_eq!(status, StatusCode::FORBIDDEN);
-        assert_eq!(body["error"], "email_not_allowed");
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["email"], "stranger@example.com");
     }
 
     #[tokio::test]
@@ -283,20 +343,21 @@ mod tests {
         assert_eq!(body["error"], "expired_token");
     }
 
+    /// `test_app` has no database, so the `"post"`-role check (`rbac::require_role`)
+    /// can't even run its query -- it reports the same 503 the meeting routes do
+    /// rather than reaching DSQL. Exercising the actual role gate (200 with the
+    /// role, 403 without) needs `make run dev` against the real dev database.
     #[tokio::test]
-    async fn sample_post_echoes_the_path_param_and_the_body() {
+    async fn sample_post_reports_a_missing_database() {
         let token = token_for("dev@omoffice.example").await;
         let (status, body) = call(post_json(
             "/private/sample-post/abc",
             Some(&token),
-            json!({ "name": "ada", "male": false }),
+            json!({ "org_id": "some-org", "name": "ada", "male": false }),
         ))
         .await;
-        assert_eq!(status, StatusCode::OK, "{body}");
-        assert_eq!(body["received"]["var"], "abc");
-        assert_eq!(body["received"]["name"], "ada");
-        assert_eq!(body["received"]["male"], false);
-        assert_eq!(body["by"], "dev@omoffice.example");
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+        assert_eq!(body["error"], "database_unavailable");
     }
 
     #[tokio::test]
@@ -304,7 +365,7 @@ mod tests {
         let (status, body) = call(post_json(
             "/private/sample-post/abc",
             None,
-            json!({ "name": "ada", "male": false }),
+            json!({ "org_id": "some-org", "name": "ada", "male": false }),
         ))
         .await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
@@ -359,6 +420,71 @@ mod tests {
         let (status, body) = call(post_json("/private/meetings", Some(&token), json!({}))).await;
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(body["error"], "chime_unavailable");
+    }
+
+    #[tokio::test]
+    async fn creating_an_org_is_protected() {
+        let (status, body) =
+            call(post_json("/private/orgs", None, json!({ "name": "acme" }))).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(body["error"], "missing_token");
+    }
+
+    #[tokio::test]
+    async fn listing_orgs_is_protected() {
+        let (status, body) = call(get("/private/orgs")).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(body["error"], "missing_token");
+    }
+
+    #[tokio::test]
+    async fn leaving_an_org_is_protected() {
+        let request = Request::builder()
+            .method("DELETE")
+            .uri("/private/orgs/some-org/members/me")
+            .body(Body::empty())
+            .unwrap();
+        let (status, body) = call(request).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(body["error"], "missing_token");
+    }
+
+    #[tokio::test]
+    async fn deleting_an_org_is_protected() {
+        let request = Request::builder()
+            .method("DELETE")
+            .uri("/private/orgs/some-org")
+            .body(Body::empty())
+            .unwrap();
+        let (status, body) = call(request).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(body["error"], "missing_token");
+    }
+
+    #[tokio::test]
+    async fn billing_route_is_protected() {
+        let (status, body) = call(get("/private/orgs/some-org/billing")).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(body["error"], "missing_token");
+    }
+
+    /// `test_app` has no database, so an authenticated call gets the same 503
+    /// every other DB-backed route reports rather than reaching DSQL.
+    #[tokio::test]
+    async fn org_routes_report_a_missing_database() {
+        let token = token_for("dev@omoffice.example").await;
+        let (status, body) = call(post_json(
+            "/private/orgs",
+            Some(&token),
+            json!({ "name": "acme" }),
+        ))
+        .await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+        assert_eq!(body["error"], "database_unavailable");
+
+        let (status, body) = call(get_with_auth("/private/orgs", &format!("Bearer {token}"))).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+        assert_eq!(body["error"], "database_unavailable");
     }
 
     /// The browser sends this before any authenticated call; it carries no
