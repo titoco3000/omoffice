@@ -62,6 +62,9 @@ resource "aws_lambda_function" "api" {
       # DSQL takes an IAM token, not a password, so the endpoint is the whole
       # connection config the lambda needs.
       DATABASE_ENDPOINT = local.db_endpoint
+      # Where `core::apigw_management::ApiGatewayManagement` pushes chat
+      # messages back out through -- see chat.tf.
+      CHAT_MANAGEMENT_ENDPOINT = local.chat_management_endpoint
     }
   }
 
@@ -71,6 +74,7 @@ resource "aws_lambda_function" "api" {
     aws_iam_role_policy.api_read_jwt_secret,
     aws_iam_role_policy.api_chime,
     aws_iam_role_policy.api_dsql,
+    aws_iam_role_policy.api_chat_management,
   ]
 
   # Code is owned by the backend deploy, not terraform.

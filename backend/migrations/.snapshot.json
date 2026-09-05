@@ -158,5 +158,53 @@
       "user_email",
       "role"
     ]
+  },
+  {
+    "name": "connections",
+    "columns": [
+      {
+        "name": "connection_id",
+        "sql_type": "text",
+        "not_null": false,
+        "primary_key": true,
+        "default": null,
+        "foreign_key": null,
+        "renamed_from": null
+      },
+      {
+        "name": "user_email",
+        "sql_type": "text",
+        "not_null": true,
+        "primary_key": false,
+        "default": null,
+        "foreign_key": [
+          "users",
+          "email"
+        ],
+        "renamed_from": null
+      },
+      {
+        "name": "org_id",
+        "sql_type": "text",
+        "not_null": true,
+        "primary_key": false,
+        "default": null,
+        "foreign_key": [
+          "organizations",
+          "id"
+        ],
+        "renamed_from": null
+      },
+      {
+        "name": "connected_at",
+        "sql_type": "timestamptz",
+        "not_null": true,
+        "primary_key": false,
+        "default": "now()",
+        "foreign_key": null,
+        "renamed_from": null
+      }
+    ],
+    "primary_key": []
   }
 ]

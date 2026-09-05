@@ -71,7 +71,7 @@ run:
 	@set -a; . ./$(ENV_FILE); set +a; \
 	  test -n "$$API_URL" || { echo "error: API_URL unset in $(ENV_FILE)"; exit 1; }; \
 	  echo "stage $(STAGE) -> $$API_URL"; \
-	  VITE_API_URL="$$API_URL" VITE_STAGE=$(STAGE) $(NPM) run dev
+	  VITE_API_URL="$$API_URL" VITE_STAGE=$(STAGE) VITE_CHAT_WS_URL="$$CHAT_WS_URL" $(NPM) run dev
 
 .PHONY: build
 build:
@@ -81,7 +81,7 @@ build:
 	@set -a; . ./$(ENV_FILE); set +a; \
 	  test -n "$$API_URL" || { echo "error: API_URL unset in $(ENV_FILE)"; exit 1; }; \
 	  echo "building $(STAGE) against $$API_URL"; \
-	  VITE_API_URL="$$API_URL" VITE_STAGE=$(STAGE) $(NPM) run build
+	  VITE_API_URL="$$API_URL" VITE_STAGE=$(STAGE) VITE_CHAT_WS_URL="$$CHAT_WS_URL" $(NPM) run build
 
 .PHONY: preview
 preview: build

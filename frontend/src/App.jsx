@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { AuthProvider, useAuth } from "./auth/AuthContext";
+import ChatPanel from "./components/ChatPanel";
 import Login from "./components/Login";
 import MeetingPanel from "./components/MeetingPanel";
 import Organizations from "./components/Organizations";
@@ -8,6 +9,7 @@ import { API_URL, STAGE } from "./api";
 
 const TABS = [
   { id: "meetings", label: "meetings" },
+  { id: "chat", label: "chat" },
   { id: "orgs", label: "organizations" },
 ];
 
@@ -71,6 +73,7 @@ function Shell() {
 
         <div className="mb-8">
           {tab === "meetings" && <MeetingPanel token={token} />}
+          {tab === "chat" && <ChatPanel token={token} email={email} />}
           {tab === "orgs" && <Organizations token={token} />}
         </div>
 

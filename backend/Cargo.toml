@@ -13,6 +13,13 @@ aws-config = { version = "1", default-features = false, features = [
   "sso",
   "legacy-client",
 ] }
+# Pushes a chat message to one browser's open connection on the deployed
+# stages -- see `core::apigw_management`.
+aws-sdk-apigatewaymanagement = { version = "1", default-features = false, features = [
+  "behavior-version-latest",
+  "rt-tokio",
+  "rustls",
+] }
 aws-sdk-chimesdkmeetings = { version = "1", default-features = false, features = [
   "behavior-version-latest",
   "rt-tokio",
@@ -28,8 +35,11 @@ aws-sdk-secretsmanager = { version = "1", default-features = false, features = [
   "rt-tokio",
   "rustls",
 ] }
-axum = "0.8"
+# "ws" is the messenger's browser-socket channel (`messenger::websocket`).
+axum = { version = "0.8", features = ["ws"] }
 chrono = { version = "0.4", default-features = false, features = ["serde"] }
+# `messenger::websocket::Hub::bind` splits and drives a `WebSocket` with this.
+futures-util = "0.3"
 # rust_crypto is a provider feature: without it jsonwebtoken has no signer.
 jsonwebtoken = { version = "11", default-features = false, features = ["rust_crypto"] }
 lambda_http = "1"

@@ -275,8 +275,10 @@ pub async fn require_role(db: &Db, email: &str, org_id: &str, role: &str) -> Res
     }
 }
 
-/// Any role at all — gates read access to a roster to members only.
-async fn require_member(db: &Db, email: &str, org_id: &str) -> Result<(), RbacError> {
+/// Any role at all — gates read access to a roster to members only. Also
+/// used by `chat` to gate joining an org's room: chat has no roles of its
+/// own, only membership.
+pub async fn require_member(db: &Db, email: &str, org_id: &str) -> Result<(), RbacError> {
     let pool = db.pool().await?;
     let row: Option<i32> =
         sqlx::query_scalar("SELECT 1 FROM org_roles WHERE org_id = $1 AND user_email = $2")

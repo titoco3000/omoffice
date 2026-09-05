@@ -6,6 +6,29 @@ export const API_URL = (
 
 export const STAGE = import.meta.env.VITE_STAGE ?? "local";
 
+// Set only on the deployed stages (`infra/make output <stage>`'s
+// `chat_ws_url`, from `infra/chat.tf`'s WebSocket API) -- empty locally.
+const CHAT_WS_URL = (import.meta.env.VITE_CHAT_WS_URL ?? "").replace(/\/+$/, "");
+
+/// The chat websocket URL for `orgId`. A browser's `WebSocket` constructor
+/// cannot set an `Authorization` header on the handshake, so the token rides
+/// along as a query param either way (see `backend/src/chat/mod.rs`) -- but
+/// *where* `orgId` goes differs by stage, because the two backend
+/// implementations behind it are genuinely different things:
+///
+/// - Deployed (`CHAT_WS_URL` set): `infra/chat.tf`'s WebSocket API has one
+///   fixed route per event type, no room for a path parameter, so `orgId`
+///   rides the query string too (`chat::lambda_entry`'s `ConnectParams`).
+/// - Local (`make run dev`, no `CHAT_WS_URL`): this API's own
+///   `/chat/ws/{org_id}` (`chat::ws`, a real held-open socket) takes it as a
+///   path parameter, same as every other per-org route this app calls.
+export function chatWsUrl(orgId, token) {
+  const query = `token=${encodeURIComponent(token)}&org_id=${encodeURIComponent(orgId)}`;
+  if (CHAT_WS_URL) return `${CHAT_WS_URL}?${query}`;
+  const base = API_URL.replace(/^http/, "ws");
+  return `${base}/chat/ws/${encodeURIComponent(orgId)}?token=${encodeURIComponent(token)}`;
+}
+
 /// Placeholders in a route template, e.g. "/private/sample-post/{var}" -> ["var"].
 export function pathParams(route) {
   return [...route.matchAll(/\{(\w+)\}/g)].map((match) => match[1]);

@@ -91,7 +91,30 @@ pub const ORG_ROLES: Table = Table::new(
 )
 .primary_key(&["org_id", "user_email", "role"]);
 
-pub const TABLES: &[Table] = &[USERS, MEETINGS, ORGANIZATIONS, ORG_ROLES];
+/// Live websocket connections to the chat feature's WebSocket API, one row
+/// per open browser socket. Written by the `$connect` route, deleted by
+/// `$disconnect` -- both in `chat::connections`. A row surviving its socket
+/// (the lambda never got to run `$disconnect`, e.g. a hard client-side
+/// crash) is not a correctness problem: sending to it just fails with
+/// API Gateway's `GoneException`, and `chat::lambda` deletes the row then,
+/// lazily, the next time something tries. See `chat/mod.rs`.
+pub const CONNECTIONS: Table = Table::new(
+    "connections",
+    &[
+        Column::new("connection_id", "text").primary_key(),
+        Column::new("user_email", "text")
+            .not_null()
+            .references("users", "email"),
+        Column::new("org_id", "text")
+            .not_null()
+            .references("organizations", "id"),
+        Column::new("connected_at", "timestamptz")
+            .not_null()
+            .default("now()"),
+    ],
+);
+
+pub const TABLES: &[Table] = &[USERS, MEETINGS, ORGANIZATIONS, ORG_ROLES, CONNECTIONS];
 
 #[cfg(test)]
 mod tests {

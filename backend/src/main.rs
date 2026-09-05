@@ -9,16 +9,20 @@ use serde_json::{json, Value};
 use tower_http::cors::{Any, CorsLayer};
 
 mod auth;
+mod chat;
 mod core;
 mod meetings;
+mod messenger;
 mod migrate;
 mod rbac;
 mod schema;
 mod users;
 
 use auth::{AuthConfig, Claims, KeySource};
+use core::apigw_management::ApiGatewayManagement;
 use core::chime::ChimeState;
 use core::db::Db;
+use messenger::Messenger;
 use rbac::{RbacError, RolesConfig};
 
 /// Project-specific role, not native to the RBAC: gates the sample-post demo
@@ -88,7 +92,13 @@ fn cors() -> CorsLayer {
         .allow_headers(Any)
 }
 
-fn app(keys: KeySource, chime: ChimeState, db: Db) -> Router {
+fn app(
+    keys: KeySource,
+    chime: ChimeState,
+    db: Db,
+    messenger: Messenger,
+    chat_api: ApiGatewayManagement,
+) -> Router {
     let auth = AuthConfig::new(keys)
         // Every route under these prefixes needs a valid bearer token.
         .protect(vec!["/private"])
@@ -101,14 +111,16 @@ fn app(keys: KeySource, chime: ChimeState, db: Db) -> Router {
     // The native RBAC roles plus this project's own -- "post" for the
     // sample-post demo below. `rbac::roles::DEFAULT` (the empty string) is
     // folded in by the RBAC itself, never offered here as a choice.
-    let roles = RolesConfig::new()
-        .project_roles([ROLE_POST])
-        .build();
+    let roles = RolesConfig::new().project_roles([ROLE_POST]).build();
 
     Router::new()
         .route("/", get(root))
         .route("/health", get(health))
         .route("/auth/request-key/{email}", get(auth::request_key))
+        // Not under `/private`: see `chat/mod.rs` for why the websocket
+        // handshake can't carry a bearer header, and how this authenticates
+        // itself instead.
+        .route("/chat/ws/{org_id}", get(chat::ws))
         .route("/private/me", get(private_me))
         .route("/private/sample-post/{var}", post(private_sample_post))
         .route(
@@ -137,11 +149,19 @@ fn app(keys: KeySource, chime: ChimeState, db: Db) -> Router {
             delete(rbac::leave_org_route),
         )
         .route("/private/orgs/{org_id}/billing", get(private_org_billing))
-        // The Chime client, the database pool and the project's role list
-        // reach their handlers as extensions, so the auth policy stays the
-        // router's only `State`.
+        // Nothing routes here on purpose: it only exists to catch a
+        // WebSocket-API event from `infra/chat.tf`, which never carries a
+        // path any real route would claim. A genuinely unmatched HTTP path
+        // still gets a plain 404 from it -- see `chat::lambda_entry`.
+        .fallback(chat::lambda_entry)
+        // The Chime client, the database pool, the messenger, the chat
+        // WebSocket-API push client and the project's role list reach their
+        // handlers as extensions, so the auth policy stays the router's only
+        // `State`.
         .layer(Extension(chime))
         .layer(Extension(db))
+        .layer(Extension(messenger))
+        .layer(Extension(chat_api))
         .layer(Extension(roles))
         // One layer for the whole router; it only challenges protected prefixes.
         .layer(middleware::from_fn_with_state(
@@ -186,15 +206,17 @@ async fn main() -> Result<(), lambda_http::Error> {
     let keys = KeySource::from_env(in_lambda).await;
     let chime = ChimeState::from_env().await;
     let db = Db::from_env().await;
+    let messenger = Messenger::new();
+    let chat_api = ApiGatewayManagement::from_env().await;
 
     if in_lambda {
-        return lambda_http::run(app(keys, chime, db)).await;
+        return lambda_http::run(app(keys, chime, db, messenger, chat_api)).await;
     }
 
     let port = std::env::var("PORT").unwrap_or_else(|_| "8000".to_string());
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}")).await?;
     println!("listening on http://localhost:{port}");
-    axum::serve(listener, app(keys, chime, db)).await?;
+    axum::serve(listener, app(keys, chime, db, messenger, chat_api)).await?;
     Ok(())
 }
 
@@ -215,6 +237,8 @@ mod tests {
             KeySource::fixed(KEY),
             ChimeState::disabled(),
             Db::disabled(),
+            Messenger::new(),
+            ApiGatewayManagement::disabled(),
         )
     }
 
@@ -508,5 +532,78 @@ mod tests {
             response.headers()["www-authenticate"],
             r#"Bearer error="missing_token""#
         );
+    }
+
+    // `chat::lambda_entry` is the router's fallback (see `app()`), reached by
+    // a WebSocket-API event from `infra/chat.tf`. `lambda_http`'s own event
+    // deserialization (JSON -> `ApiGatewayWebsocketProxyRequest` ->
+    // `http::Request` carrying a `RequestContext::WebSocket` extension) runs
+    // only inside `lambda_http::run`, never inside this test harness, so
+    // these build that extension directly -- the same shape `lambda_http`
+    // would have produced -- rather than exercising a crate that ships its
+    // own test suite for that conversion.
+    use lambda_http::aws_lambda_events::apigw::ApiGatewayWebsocketProxyRequestContext;
+    use lambda_http::request::RequestContext;
+
+    /// A `requestContext` for a websocket event, built by deserializing the
+    /// couple of fields these tests care about -- `ApiGatewayWebsocketProxyRequestContext`
+    /// is `#[non_exhaustive]`, so this crate cannot build one as a struct
+    /// literal the way `lambda_http` itself does.
+    fn ws_context(event_type: &str, connection_id: &str) -> ApiGatewayWebsocketProxyRequestContext {
+        let json = format!(
+            r#"{{"eventType":"{event_type}","connectionId":"{connection_id}","connectedAt":0,"requestTimeEpoch":0}}"#
+        );
+        serde_json::from_str(&json).expect("valid websocket request context fixture")
+    }
+
+    fn ws_event(uri: &str, ctx: ApiGatewayWebsocketProxyRequestContext) -> Request<Body> {
+        Request::builder()
+            .uri(uri)
+            .extension(RequestContext::WebSocket(ctx))
+            .body(Body::empty())
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_connect_event_with_a_bad_token_is_rejected() {
+        let request = ws_event(
+            "/dev?token=not-a-jwt&org_id=some-org",
+            ws_context("CONNECT", "conn-1"),
+        );
+        let (status, body) = call(request).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+        assert_eq!(body["error"], "invalid_token");
+    }
+
+    /// `test_app` has no database, so a valid token still can't get past the
+    /// membership check -- same 503 every other DB-backed route reports.
+    #[tokio::test]
+    async fn a_connect_event_with_a_valid_token_reports_a_missing_database() {
+        let token = token_for("dev@omoffice.example").await;
+        let request = ws_event(
+            &format!("/dev?token={token}&org_id=some-org"),
+            ws_context("CONNECT", "conn-1"),
+        );
+        let (status, body) = call(request).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+        assert_eq!(body["error"], "database_unavailable");
+    }
+
+    /// `$disconnect` always reports success: there is nothing left to reject
+    /// once the client is already gone, even when removing its row fails.
+    #[tokio::test]
+    async fn a_disconnect_event_always_succeeds() {
+        let request = ws_event("/dev", ws_context("DISCONNECT", "conn-1"));
+        let response = test_app().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    /// A genuinely unmatched HTTP path (no `RequestContext::WebSocket`
+    /// extension) still gets a plain 404 from the fallback, same as before
+    /// `chat::lambda_entry` existed.
+    #[tokio::test]
+    async fn an_unmatched_http_path_is_still_a_404() {
+        let response = test_app().oneshot(get("/no/such/route")).await.unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 }
