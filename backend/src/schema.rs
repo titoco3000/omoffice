@@ -1,0 +1,87 @@
+//! Every table's *current* shape, in one place: names, types, primary keys,
+//! foreign keys — the equivalent of a SQLAlchemy `Table`/`Column` block. This
+//! is the only file you edit to change the schema; `Column`/`Table`
+//! themselves are generic and live in `core::orm`.
+//!
+//! It is still *not* how a table gets created: DSQL is only ever reached
+//! through `migrations/*.up.sql`, run by `make db-migrate` (see `migrate.rs`
+//! for why migrations are hand-written SQL files rather than something a
+//! module executes directly — DSQL's DDL/DML transaction rules and the need
+//! for a checked-in, reviewable history of schema changes rule that out).
+//!
+//! The bridge from this file to those files is `make db-generate`
+//! (`migrate.rs`'s `generate`): it diffs `TABLES` below (as `TableState`s,
+//! see `core::orm`) against `migrations/.snapshot.json` — the shape as of
+//! the last time it ran — and writes whatever `.up.sql`/`.down.sql` the
+//! difference calls for (`core::orm::diff`). So the workflow is: edit a
+//! `Table` below, run `make db-generate`, review what it wrote, `make
+//! db-migrate <stage>`. Nothing else needs a matching hand-edit — there is
+//! exactly one source of truth.
+//!
+//! `0001_users`/`0002_meetings` predate this mechanism and were hand-written
+//! before there was a snapshot to diff against; `USERS`/`MEETINGS` already
+//! describe them correctly (verified by hand when this file was introduced),
+//! and every migration since is generated, so nothing here re-checks that
+//! correspondence — the test below checks the one invariant that matters
+//! going forward: that this file and the snapshot agree.
+
+use crate::core::orm::{Column, Table};
+
+/// People who have asked for an API key. Keyed by the email
+/// `/auth/request-key/{email}` already hands out tokens for, so there is no
+/// separate id to reconcile. See `users/mod.rs` for the code that reads and
+/// writes this table.
+pub const USERS: Table = Table {
+    name: "users",
+    columns: &[
+        Column::new("email", "text").primary_key(),
+        Column::new("last_meeting", "text").references("meetings", "code"),
+        Column::new("created_at", "timestamptz")
+            .not_null()
+            .default("now()"),
+    ],
+};
+
+/// Meetings created through `POST /private/meetings`. `code` is the Chime
+/// `MeetingId`, already a UUID and unique per meeting, so it is the primary
+/// key rather than a separate one. See `meetings/mod.rs`.
+pub const MEETINGS: Table = Table {
+    name: "meetings",
+    columns: &[
+        Column::new("code", "text").primary_key(),
+        Column::new("created_by", "text")
+            .not_null()
+            .references("users", "email"),
+        Column::new("created_at", "timestamptz")
+            .not_null()
+            .default("now()"),
+    ],
+};
+
+pub const TABLES: &[Table] = &[USERS, MEETINGS];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::orm::{diff, TableState};
+
+    /// Fails if `TABLES` has changed since the last `make db-generate` —
+    /// i.e. if there's an edit here with no migration files to match it yet.
+    #[test]
+    fn schema_matches_the_last_generated_migration() {
+        let path = format!("{}/migrations/.snapshot.json", env!("CARGO_MANIFEST_DIR"));
+        let raw = std::fs::read_to_string(&path).unwrap_or_else(|err| {
+            panic!("{path}: {err} (run 'make db-generate' once to create it)")
+        });
+        let snapshot: Vec<TableState> =
+            serde_json::from_str(&raw).unwrap_or_else(|err| panic!("{path}: {err}"));
+
+        let current: Vec<TableState> = TABLES.iter().map(TableState::from).collect();
+        let pending = diff(&snapshot, &current).unwrap_or_else(|err| panic!("{err}"));
+        assert!(
+            pending.is_empty(),
+            "schema.rs has changed since the last 'make db-generate': {:?}",
+            pending.iter().map(|(name, _)| name).collect::<Vec<_>>()
+        );
+    }
+}

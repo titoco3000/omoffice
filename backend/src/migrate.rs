@@ -22,6 +22,12 @@
 //! `0001_users.up.sql` and `0001_users.down.sql`. Each file is split into
 //! statements and run one at a time, because DSQL allows only one DDL statement
 //! per transaction and sending a file as one batch would make it a batch.
+//!
+//! `omoffice-api migrate generate` (`make db-generate`) is the odd one out
+//! here: it diffs `schema::TABLES` against `migrations/.snapshot.json` (see
+//! `core::orm::diff` and `schema.rs`) and writes whatever new file pairs the
+//! difference calls for. It touches no database at all, so it runs before
+//! this module goes anywhere near `Db::from_env` — see [`generate`].
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -31,6 +37,13 @@ use sqlx::postgres::PgPool;
 use sqlx::Row;
 
 use crate::core::db::Db;
+use crate::core::orm::{OperationDirection, TableState};
+
+/// Where `generate` keeps its record of the schema as of the last time it
+/// ran, so it has something to diff `schema::TABLES` against. Lives beside
+/// the migrations it produced, and is checked in for the same reason they
+/// are: everyone diffing from the same baseline.
+const SNAPSHOT_FILE: &str = ".snapshot.json";
 
 /// Where the ordered `.up.sql` / `.down.sql` pairs live.
 const DEFAULT_MIGRATIONS_DIR: &str = "migrations";
@@ -54,6 +67,13 @@ const REVERTING: &str = "reverting";
 /// caller prints them and exits non-zero.
 pub async fn run(args: &[String]) -> Result<(), String> {
     let command = args.first().map(String::as_str).unwrap_or("status");
+
+    // Pure local codegen -- no DATABASE_ENDPOINT, no AWS credentials, no
+    // ledger. Handled before anything below touches the database.
+    if command == "generate" {
+        return generate();
+    }
+
     let migrations = load(&migrations_dir())?;
 
     let db = Db::from_env().await;
@@ -77,7 +97,7 @@ pub async fn run(args: &[String]) -> Result<(), String> {
         "up" => up(pool, &migrations, &ledger).await,
         "down" => down(pool, &migrations, &ledger).await,
         other => Err(format!(
-            "unknown migrate command '{other}'; expected status, up or down"
+            "unknown migrate command '{other}'; expected status, up, down or generate"
         )),
     }
 }
@@ -85,6 +105,107 @@ pub async fn run(args: &[String]) -> Result<(), String> {
 // ---------------------------------------------------------------------------
 // Commands
 // ---------------------------------------------------------------------------
+
+/// Diff `schema::TABLES` against the last snapshot and write whatever new
+/// `migrations/<version>_<name>.{up,down}.sql` the difference calls for.
+///
+/// The very first run has no snapshot to diff against: `schema.rs`'s own doc
+/// comment already establishes that `USERS`/`MEETINGS` correctly describe
+/// `0001`/`0002` as they stand today, so that first run takes the current
+/// `schema::TABLES` as the baseline, writes the snapshot, and generates
+/// nothing — there is nothing pending yet, only a baseline to diff future
+/// edits against.
+fn generate() -> Result<(), String> {
+    let dir = migrations_dir();
+    std::fs::create_dir_all(&dir)
+        .map_err(|err| format!("cannot create {}: {err}", dir.display()))?;
+    let snapshot_path = dir.join(SNAPSHOT_FILE);
+
+    let new: Vec<TableState> = crate::schema::TABLES.iter().map(TableState::from).collect();
+
+    let old: Vec<TableState> = match std::fs::read_to_string(&snapshot_path) {
+        Ok(raw) => serde_json::from_str(&raw)
+            .map_err(|err| format!("cannot parse {}: {err}", snapshot_path.display()))?,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            write_snapshot(&snapshot_path, &new)?;
+            println!(
+                "no {} yet -- wrote it from schema.rs's current shape as the baseline. \
+                 Nothing generated this run; edit schema.rs and run again to generate a migration.",
+                snapshot_path.display()
+            );
+            return Ok(());
+        }
+        Err(err) => return Err(format!("cannot read {}: {err}", snapshot_path.display())),
+    };
+
+    let pending = crate::core::orm::diff(&old, &new)?;
+    if pending.is_empty() {
+        println!("nothing to generate: schema.rs matches the last generated migration.");
+        return Ok(());
+    }
+
+    let first_version = next_version(&dir)?;
+    for (version, (name, op)) in (first_version..).zip(pending) {
+        let up_path = dir.join(format!("{version:04}_{name}.up.sql"));
+        let down_path = dir.join(format!("{version:04}_{name}.down.sql"));
+        if up_path.exists() || down_path.exists() {
+            return Err(format!(
+                "{} already exists -- delete it (and its pair) or re-run 'make db-generate'",
+                up_path.display()
+            ));
+        }
+        std::fs::write(&up_path, generated_sql(&op))
+            .map_err(|err| format!("cannot write {}: {err}", up_path.display()))?;
+        std::fs::write(&down_path, generated_sql(&op.reversed()))
+            .map_err(|err| format!("cannot write {}: {err}", down_path.display()))?;
+        println!("wrote {} and {}", up_path.display(), down_path.display());
+    }
+
+    write_snapshot(&snapshot_path, &new)?;
+    println!("done. Review the new file(s), then 'make db-migrate <stage>' to apply.");
+    Ok(())
+}
+
+fn write_snapshot(path: &Path, tables: &[TableState]) -> Result<(), String> {
+    let json = serde_json::to_string_pretty(tables)
+        .map_err(|err| format!("cannot serialize schema::TABLES: {err}"))?;
+    std::fs::write(path, json).map_err(|err| format!("cannot write {}: {err}", path.display()))
+}
+
+/// The next version number after whatever's already on disk, so a generated
+/// migration continues `0001`, `0002`, ... rather than starting over.
+fn next_version(dir: &Path) -> Result<u32, String> {
+    let mut max = 0u32;
+    for entry in
+        std::fs::read_dir(dir).map_err(|err| format!("cannot read {}: {err}", dir.display()))?
+    {
+        let path = entry
+            .map_err(|err| format!("cannot read {}: {err}", dir.display()))?
+            .path();
+        let Some(file) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let Some(stem) = file.strip_suffix(".up.sql") else {
+            continue;
+        };
+        if let Some((version, _)) = stem.split_once('_') {
+            if let Ok(n) = version.parse::<u32>() {
+                max = max.max(n);
+            }
+        }
+    }
+    Ok(max + 1)
+}
+
+/// The file content for one direction of one operation: a header saying
+/// where it came from, then the rendered SQL.
+fn generated_sql(op: &OperationDirection) -> String {
+    format!(
+        "-- generated by `omoffice-api migrate generate` from a schema.rs diff.\n\
+         -- edit schema.rs and re-run 'make db-generate', not this file.\n{}\n",
+        op.render()
+    )
+}
 
 fn status(migrations: &[Migration], ledger: &BTreeMap<String, LedgerRow>) {
     println!("{:<8}  {:<24}  STATE", "VERSION", "NAME");

@@ -54,6 +54,7 @@ help:
 	@echo "make run [stage]     run locally on http://localhost:8000 (reloads on src edits; WATCH=0 disables)"
 	@echo "make build [stage]   cross-compile lambda zip ($(ARCH))"
 	@echo "make deploy [stage]  build + push code to the lambda from infra"
+	@echo "make db-generate         diff schema.rs against the last snapshot, write any new migration files (local only, no stage)"
 	@echo "make db-status [stage]   which migrations are applied, and which are not"
 	@echo "make db-migrate [stage]  apply every pending migration"
 	@echo "make db-revert [stage]   revert the most recent one (destructive, asks first)"
@@ -130,7 +131,19 @@ lint:
 # `pending`, runs the DDL, then marks it `applied` -- DSQL cannot put the DDL
 # and the ledger write in one transaction, so a crash has to be visible rather
 # than silently half-done.
+#
+# `db-generate` is the odd one out: it diffs schema.rs against
+# migrations/.snapshot.json (the shape as of the last time it ran) and writes
+# whatever .up.sql/.down.sql the difference calls for, instead of you typing
+# matching SQL into two files by hand. It touches no database and needs no
+# stage or .env.<stage> -- it is local codegen, checked in the same way the
+# files (and the snapshot) it writes are.
 # ---------------------------------------------------------------------------
+
+.PHONY: db-generate
+db-generate:
+	$(REQUIRE_ENV)
+	cargo run --quiet -- migrate generate
 
 .PHONY: db-status
 db-status:

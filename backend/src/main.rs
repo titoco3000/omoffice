@@ -12,6 +12,7 @@ mod auth;
 mod core;
 mod meetings;
 mod migrate;
+mod schema;
 mod users;
 
 use auth::{AuthConfig, Claims, KeySource};
