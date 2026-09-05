@@ -25,12 +25,6 @@ use rbac::{RbacError, RolesConfig};
 /// route below, exactly the example the RBAC was built to support.
 const ROLE_POST: &str = "post";
 
-/// The RBAC's hidden default role (`RolesConfig::default_role`): every
-/// member gets it silently, and neither this route nor the frontend's role
-/// pickers ever mention it — it exists only so `org_roles` always has a row
-/// for a plain participant with no special permission.
-const ROLE_MEMBER: &str = "member";
-
 /// Health/root endpoint. Same handler serves local HTTP and Lambda.
 async fn root() -> Json<Value> {
     Json(json!({ "message": "hello world!" }))
@@ -105,11 +99,10 @@ fn app(keys: KeySource, chime: ChimeState, db: Db) -> Router {
         .build();
 
     // The native RBAC roles plus this project's own -- "post" for the
-    // sample-post demo below, and "member" as the hidden default every
-    // member gets, never offered as a choice.
+    // sample-post demo below. `rbac::roles::DEFAULT` (the empty string) is
+    // folded in by the RBAC itself, never offered here as a choice.
     let roles = RolesConfig::new()
         .project_roles([ROLE_POST])
-        .default_role(ROLE_MEMBER)
         .build();
 
     Router::new()

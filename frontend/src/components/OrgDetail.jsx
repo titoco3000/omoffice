@@ -206,10 +206,10 @@ function MemberRow({ member, you, canManage, org, token, onChanged }) {
             onClick={save}
             disabled={saving}
             className={`rounded-lg px-3 py-1 text-xs font-medium text-white disabled:opacity-50 ${
-              roles.length === 0 ? "bg-rose-700 hover:bg-rose-600" : "bg-sky-600 hover:bg-sky-500"
+              roles.length === 0 ? "bg-amber-700 hover:bg-amber-600" : "bg-sky-600 hover:bg-sky-500"
             }`}
           >
-            {saving ? "..." : roles.length === 0 ? "remove" : "save"}
+            {saving ? "..." : roles.length === 0 ? "clear roles" : "save"}
           </button>
           <button
             type="button"

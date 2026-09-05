@@ -5,11 +5,12 @@
 // It never extends to a project-specific role (e.g. "post").
 const IMPLIED_BY_ADMIN = ["team-management", "billing"];
 
-// The backend's hidden default role (`RolesConfig::default_role` in
-// main.rs): every member has it, but it's bookkeeping, not a permission --
-// nobody picks it or needs to see it. Stripped out wherever roles reach a
-// person, not just the picker (`Organizations.jsx`'s `ROLE_OPTIONS`).
-const HIDDEN_ROLE = "member";
+// The backend's hidden default role (`rbac::roles::DEFAULT` in
+// rbac/mod.rs -- the empty string): every member has it, but it's
+// bookkeeping, not a permission -- nobody picks it or needs to see it.
+// Stripped out wherever roles reach a person, not just the picker
+// (`Organizations.jsx`'s `ROLE_OPTIONS`).
+const HIDDEN_ROLE = "";
 
 /// Does any org in `orgs` (the shape `GET /private/orgs` returns:
 /// `[{id, name, roles}]`) grant `role` for `orgId`? The frontend counterpart

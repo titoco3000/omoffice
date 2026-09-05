@@ -8,9 +8,9 @@ import OrgDetail from "./OrgDetail";
 /// this project's own pickable list (`main.rs`'s `RolesConfig::project_roles`).
 /// Kept here rather than fetched, same as the backend keeps them as constants
 /// — there's no `GET /private/roles` because the list is static. Deliberately
-/// excludes `"member"`: that's the backend's hidden default role
-/// (`RolesConfig::default_role`), never a choice a person makes — see
-/// `rbac.js`'s `visibleRoles`.
+/// excludes the backend's hidden default role (`rbac::roles::DEFAULT`, the
+/// empty string), never a choice a person makes — see `rbac.js`'s
+/// `visibleRoles`.
 export const ROLE_OPTIONS = ["admin", "billing", "team-management", "post"];
 
 /// A member can hold several roles at once (`org_roles` is a user-org-role

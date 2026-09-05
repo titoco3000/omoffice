@@ -11,9 +11,10 @@
 //!
 //! Mechanisms: [`create_org`] (creator becomes `admin`), [`add_member`]
 //! (invite and "add a user" are the same thing — it provisions the `users`
-//! row if the email is new), [`replace_roles`] ("change user role", and
-//! "remove a member" is just replacing with an empty set), [`leave_org`]
-//! (self-service, blocked for the last admin), [`delete_org`].
+//! row if the email is new), [`replace_roles`] ("change user role"; revoking
+//! down to no explicit role demotes to [`roles::DEFAULT`] rather than
+//! dropping the member — [`leave_org`] is the actual "remove a member",
+//! self-service and blocked for the last admin), [`delete_org`].
 
 use axum::{
     extract::{Extension, Path},
@@ -30,13 +31,18 @@ use crate::auth::Claims;
 use crate::core::db::{retry_on_conflict, Db, DbError};
 use crate::users;
 
-/// The three roles native to the RBAC. Everything else is a plain string a
-/// project defines for itself (see [`RolesConfig::project_roles`]) — there is
-/// no enum of "all roles" here on purpose, since that list is per-project.
+/// The roles native to the RBAC. Everything else is a plain string a project
+/// defines for itself (see [`RolesConfig::project_roles`]) — there is no enum
+/// of "all roles" here on purpose, since that list is per-project.
 pub mod roles {
     pub const ADMIN: &str = "admin";
     pub const BILLING: &str = "billing";
     pub const TEAM_MANAGEMENT: &str = "team-management";
+    /// The empty string: a row `org_roles` can hold for a member with no
+    /// explicit role, so "is this email a member" is still just "does a row
+    /// exist" — see [`AllowedRoles::with_default_role`]. Never a project
+    /// role, never surfaced by a role picker.
+    pub const DEFAULT: &str = "";
 }
 
 /// Builder for the full set of role names a `POST`/`PUT` to `/private/orgs/...`
@@ -44,18 +50,16 @@ pub mod roles {
 /// the project's own roles in one place, this module only enforces them.
 ///
 /// ```ignore
-/// RolesConfig::new().project_roles(["post"]).default_role("member").build()
+/// RolesConfig::new().project_roles(["post"]).build()
 /// ```
 pub struct RolesConfig {
     project_roles: Vec<String>,
-    default_role: Option<String>,
 }
 
 impl RolesConfig {
     pub fn new() -> Self {
         Self {
             project_roles: Vec::new(),
-            default_role: None,
         }
     }
 
@@ -68,34 +72,15 @@ impl RolesConfig {
         self
     }
 
-    /// A role every member is silently given whenever they're given any role
-    /// at all — a "this person belongs to the org" tag the RBAC needs
-    /// (`org_roles` is the only table that says someone is a member, so a
-    /// member with zero rows in it isn't one) but that a project's own UI
-    /// has no reason to offer as a pickable permission. Optional: with none
-    /// set, adding someone with an empty role list is a `RbacError::NoRoles`
-    /// same as always.
-    pub fn default_role(mut self, role: impl Into<String>) -> Self {
-        self.default_role = Some(role.into());
-        self
-    }
-
     pub fn build(self) -> AllowedRoles {
         let mut known = vec![
             roles::ADMIN.to_string(),
             roles::BILLING.to_string(),
             roles::TEAM_MANAGEMENT.to_string(),
+            roles::DEFAULT.to_string(),
         ];
         known.extend(self.project_roles);
-        if let Some(default) = &self.default_role {
-            if !known.contains(default) {
-                known.push(default.clone());
-            }
-        }
-        AllowedRoles {
-            known,
-            default_role: self.default_role,
-        }
+        AllowedRoles { known }
     }
 }
 
@@ -111,7 +96,6 @@ impl Default for RolesConfig {
 #[derive(Clone)]
 pub struct AllowedRoles {
     known: Vec<String>,
-    default_role: Option<String>,
 }
 
 impl AllowedRoles {
@@ -119,19 +103,18 @@ impl AllowedRoles {
         self.known.iter().any(|allowed| allowed == role)
     }
 
-    /// `roles` plus the configured default role, if any and not already
-    /// present. Does *not* special-case an empty `roles` on its own — a
-    /// caller wanting "empty stays empty" (removing a member entirely is
-    /// exactly that) checks for that itself before calling this; see
-    /// [`replace_roles`].
+    /// `roles::DEFAULT` when `roles` is empty (so a bare invite or a full
+    /// revoke still leaves a row in `org_roles`), otherwise `roles`
+    /// unchanged — an explicit role already marks membership, so the default
+    /// is never stacked alongside a real one. Callers granting real roles to
+    /// an existing member are responsible for dropping that member's stale
+    /// default row themselves; see [`add_member`].
     fn with_default_role(&self, roles: &[String]) -> Vec<String> {
-        let mut wanted = roles.to_vec();
-        if let Some(default) = &self.default_role {
-            if !wanted.contains(default) {
-                wanted.push(default.clone());
-            }
+        if roles.is_empty() {
+            vec![roles::DEFAULT.to_string()]
+        } else {
+            roles.to_vec()
         }
-        wanted
     }
 }
 
@@ -184,9 +167,6 @@ pub enum RbacError {
     LastAdmin,
     /// A role name outside the native three plus the project's own list.
     UnknownRole,
-    /// Adding a member with an empty role set -- a member with no role isn't
-    /// a member, since `org_roles` is the only table that says so.
-    NoRoles,
     Database(DbError),
 }
 
@@ -233,11 +213,6 @@ impl IntoResponse for RbacError {
                 "unknown_role",
                 "that role is not native to the RBAC and not in this project's role list"
                     .to_string(),
-            ),
-            Self::NoRoles => (
-                StatusCode::BAD_REQUEST,
-                "no_roles",
-                "a member needs at least one role".to_string(),
             ),
             Self::Database(err) => return err.into_response(),
         };
@@ -446,15 +421,37 @@ async fn add_member_unchecked(
     Ok(())
 }
 
+/// Drop `email`'s bare [`roles::DEFAULT`] row in `org_id`, if it has one --
+/// the "replace the empty cell" half of granting a real role to someone who
+/// so far only had the hidden default. A no-op for a brand new member (no
+/// row to drop) and for [`replace_roles`] (which deletes every row for the
+/// member up front anyway).
+async fn drop_default_role(db: &Db, org_id: &str, email: &str) -> Result<(), RbacError> {
+    let pool = db.pool().await?;
+    retry_on_conflict(|| async move {
+        sqlx::query("DELETE FROM org_roles WHERE org_id = $1 AND user_email = $2 AND role = $3")
+            .bind(org_id)
+            .bind(email)
+            .bind(roles::DEFAULT)
+            .execute(pool)
+            .await
+            .map(|_| ())
+    })
+    .await?;
+    Ok(())
+}
+
 /// [`add_member_unchecked`], but for the `POST /private/orgs/{id}/members`
 /// route: checks the org exists and that every explicit role is one this
-/// project allows, folds in the configured default role (if any — see
-/// [`RolesConfig::default_role`]), and refuses only if that still leaves
-/// nothing to grant. `roles` itself may be empty: "add this email with no
-/// special permission" is a normal request, not an error, as long as a
-/// default role fills the row. One user can hold several roles in the same
-/// org, so this grants all of them at once rather than forcing one call per
-/// role.
+/// project allows, then folds in [`roles::DEFAULT`] (see
+/// [`AllowedRoles::with_default_role`]). `roles` itself may be empty: "add
+/// this email with no special permission" is a normal request, not an
+/// error, and the default role fills the row. If `roles` is *not* empty and
+/// `email` already belongs to the org on nothing but the default row (e.g.
+/// they were added bare and are now being granted a real role), that row is
+/// replaced rather than left sitting alongside the new one. One user can
+/// hold several roles in the same org, so this grants all of them at once
+/// rather than forcing one call per role.
 pub async fn add_member(
     db: &Db,
     allowed: &AllowedRoles,
@@ -467,27 +464,27 @@ pub async fn add_member(
             return Err(RbacError::UnknownRole);
         }
     }
-    let wanted = allowed.with_default_role(roles);
-    if wanted.is_empty() {
-        return Err(RbacError::NoRoles);
-    }
     if !org_exists(db, org_id).await? {
         return Err(RbacError::OrgNotFound);
     }
+    let email = normalize_email(email);
+    if !roles.is_empty() {
+        drop_default_role(db, org_id, &email).await?;
+    }
+    let wanted = allowed.with_default_role(roles);
     for role in &wanted {
-        add_member_unchecked(db, org_id, email, role).await?;
+        add_member_unchecked(db, org_id, &email, role).await?;
     }
     Ok(())
 }
 
 /// Replace `email`'s *visible* role set in `org_id` with exactly `new_roles`
-/// — "change user role", and "remove a member" is just calling this with an
-/// empty slice, which is why an empty `new_roles` is handled first and never
-/// gets the default role folded back in: it means take this person out
-/// entirely, not demote them to bare membership. A non-empty `new_roles`
-/// does get the default role folded in (see [`RolesConfig::default_role`]),
-/// the same as [`add_member`] — a project's UI need never mention it either
-/// way. Refuses if the change would leave the org with no admin at all.
+/// — "change user role". `new_roles` may be empty: that revokes every
+/// explicit role but still leaves the member with [`roles::DEFAULT`] (see
+/// [`AllowedRoles::with_default_role`]), same as an empty `roles` on
+/// [`add_member`] — a project's UI need never mention the default either
+/// way. It does *not* remove the member; [`leave_org`] is what does that.
+/// Refuses if the change would leave the org with no admin at all.
 pub async fn replace_roles(
     db: &Db,
     allowed: &AllowedRoles,
@@ -507,11 +504,7 @@ pub async fn replace_roles(
             return Err(RbacError::UnknownRole);
         }
     }
-    let wanted = if new_roles.is_empty() {
-        Vec::new()
-    } else {
-        allowed.with_default_role(new_roles)
-    };
+    let wanted = allowed.with_default_role(new_roles);
     if !wanted.iter().any(|r| r.as_str() == roles::ADMIN)
         && is_last_admin(db, org_id, &email).await?
     {
