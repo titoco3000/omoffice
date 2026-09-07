@@ -7,10 +7,13 @@ use uuid::Uuid;
 
 use super::orgs::add_member;
 use super::{get_org, normalize_email, org_exists, AllowedRoles, Org, RbacError};
-use crate::core::apigw_management::ApiGatewayManagement;
 use crate::core::db::{retry_on_conflict, Db};
-use crate::core::messenger::Messenger;
+use crate::core::messenger::{Messenger, Via};
 use crate::users;
+
+/// The channel invite notifications ride on, org and meeting alike;
+/// `frontend/src/hooks/useNotifications.js` subscribes to it.
+pub const CHANNEL: &str = "invites";
 
 fn split_roles(raw: &str) -> Vec<String> {
     if raw.is_empty() {
@@ -316,11 +319,13 @@ pub async fn decline_invite(db: &Db, invite_id: &str, email: &str) -> Result<(),
 }
 
 /// Email the invite and, if that address has a live session open, push a
-/// toast to it now. Best effort on both — the invite row is already committed.
+/// toast to it now. Best effort on both — the invite row is already
+/// committed. Two calls rather than one `via: [Websocket, Email]`, because
+/// the two bodies are worded differently: an email template, and a toast the
+/// browser can turn into an accept button.
 pub(super) async fn notify_invite(
     db: &Db,
     messenger: &Messenger,
-    management: &ApiGatewayManagement,
     org_name: &str,
     invite: &OrgInvite,
 ) {
@@ -330,12 +335,16 @@ pub(super) async fn notify_invite(
         crate::core::frontend_base_url(),
         invite.id
     );
+    let to = [invite.email.clone()];
+
     let email_body = json!({
         "template": if existing_user { "org_invite_existing_user" } else { "org_invite_new_user" },
         "org": org_name,
         "accept_url": accept_url,
     });
-    messenger.email().send(&invite.email, &email_body).await;
+    messenger
+        .send(&email_body, CHANNEL, &[Via::Email], &to)
+        .await;
 
     let toast = json!({
         "type": "invite",
@@ -346,6 +355,6 @@ pub(super) async fn notify_invite(
         "message": format!("You've been invited to {org_name}"),
     });
     messenger
-        .push_toast(db, management, &invite.email, &toast)
+        .send(&toast, CHANNEL, &[Via::Websocket], &to)
         .await;
 }

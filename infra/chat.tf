@@ -5,12 +5,13 @@
 # handshake at all -- there is no upgrade path through it, ever. A WebSocket
 # API is a genuinely different API Gateway resource, with its own event shape
 # and its own routing: `$connect` once per socket opened, `$disconnect` once
-# per socket closed, `$default` for everything else (a chat message, here --
-# nothing sends a custom "action", so every message lands on `$default`).
+# per socket closed, `$default` for everything else (a frame on some channel
+# -- nothing sends a custom "action", so every message lands on `$default`).
 #
 # It points at the *same* lambda as the HTTP API. One binary, one function;
-# `backend/src/chat/mod.rs`'s `lambda_entry` is what tells a WebSocket-API
-# event apart from an HTTP-API request and dispatches accordingly -- see
+# `backend/src/core/messenger/mod.rs`'s `lambda_entry` is what tells a
+# WebSocket-API event apart from an HTTP-API request and dispatches
+# accordingly (chat is one channel on it, not the whole thing) -- see
 # that module for why (API Gateway holds the actual connection open, not the
 # lambda, so this is not a second copy of the HTTP server).
 #
@@ -82,7 +83,8 @@ locals {
   # messages back through. Only the lambda ever calls this one.
   chat_management_endpoint = "https://${aws_apigatewayv2_api.chat.id}.execute-api.${var.region}.amazonaws.com/${aws_apigatewayv2_stage.chat.name}"
   # wss:// -- what a browser actually opens a socket against
-  # (`?token=...&org_id=...`, see `chat/mod.rs`'s `lambda_entry` doc).
+  # (`?token=...`; the org and meeting a socket is in are reported on the
+  # `presence` channel afterwards, see `backend/src/presence/mod.rs`).
   chat_ws_url = "wss://${aws_apigatewayv2_api.chat.id}.execute-api.${var.region}.amazonaws.com/${aws_apigatewayv2_stage.chat.name}"
 }
 

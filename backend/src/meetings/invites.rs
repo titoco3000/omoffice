@@ -12,9 +12,9 @@ use uuid::Uuid;
 
 use super::{Meeting, MeetingError};
 use crate::auth::{AuthState, Claims};
-use crate::core::apigw_management::ApiGatewayManagement;
 use crate::core::db::{retry_on_conflict, Db};
-use crate::core::messenger::Messenger;
+use crate::core::messenger::{Messenger, Via};
+use crate::rbac::invites::CHANNEL;
 use crate::users;
 
 /// One row of `meeting_invites`.
@@ -202,25 +202,25 @@ pub async fn decline_invite(db: &Db, invite_id: &str, email: &str) -> Result<(),
 }
 
 /// Email the invite and, if that address has a live session open, push a
-/// toast to it now. Best effort on both.
-async fn notify_invite(
-    db: &Db,
-    messenger: &Messenger,
-    management: &ApiGatewayManagement,
-    invite: &MeetingInvite,
-) {
+/// toast to it now. Best effort on both — same two-call shape, and the same
+/// channel, as `rbac::invites::notify_invite`.
+async fn notify_invite(db: &Db, messenger: &Messenger, invite: &MeetingInvite) {
     let existing_user = users::exists(db, &invite.email).await.unwrap_or(false);
     let accept_url = format!(
         "{}/?invite=meeting:{}",
         crate::core::frontend_base_url(),
         invite.id
     );
+    let to = [invite.email.clone()];
+
     let email_body = json!({
         "template": if existing_user { "meeting_invite_existing_user" } else { "meeting_invite_new_user" },
         "code": invite.code,
         "accept_url": accept_url,
     });
-    messenger.email().send(&invite.email, &email_body).await;
+    messenger
+        .send(&email_body, CHANNEL, &[Via::Email], &to)
+        .await;
 
     let toast = json!({
         "type": "invite",
@@ -230,7 +230,7 @@ async fn notify_invite(
         "message": "You've been invited to a meeting",
     });
     messenger
-        .push_toast(db, management, &invite.email, &toast)
+        .send(&toast, CHANNEL, &[Via::Websocket], &to)
         .await;
 }
 
@@ -245,7 +245,6 @@ pub async fn create_invite_route(
     Extension(db): Extension<Db>,
     Extension(claims): Extension<Claims>,
     Extension(messenger): Extension<Messenger>,
-    Extension(management): Extension<ApiGatewayManagement>,
     Path(code): Path<String>,
     Json(body): Json<CreateMeetingInviteBody>,
 ) -> Result<Json<Value>, MeetingError> {
@@ -256,7 +255,7 @@ pub async fn create_invite_route(
         return Err(MeetingError::Forbidden);
     }
     let invite = create_invite(&db, &code, &body.email, &claims.sub).await?;
-    notify_invite(&db, &messenger, &management, &invite).await;
+    notify_invite(&db, &messenger, &invite).await;
     Ok(Json(json!({ "invite": invite })))
 }
 

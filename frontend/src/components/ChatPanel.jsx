@@ -1,14 +1,17 @@
 import { useEffect, useRef, useState } from "react";
-import { chatWsUrl } from "../api";
+import { CHANNELS, useChannel, useMessenger } from "../messenger/MessengerContext";
 import { useOrgContext } from "../org/OrgContext";
 
 /// Caps one tab's kept messages — there is no server history to bound instead.
 const MAX_MESSAGES = 200;
 
 /**
- * A room *is* an org: whichever one `OrgSwitcher` (`OrgContext`) has selected.
+ * A room *is* an org: whichever one `OrgSwitcher` (`OrgContext`) has
+ * selected. The room the backend fans a message out to is the org this tab
+ * reports through `presence` (see `Shell`), so switching orgs needs no
+ * socket of its own — this panel only names the `chat` channel.
  */
-export default function ChatPanel({ token, email }) {
+export default function ChatPanel({ email }) {
   const { orgs, loading, error, selectedOrg } = useOrgContext();
 
   if (selectedOrg) {
@@ -24,8 +27,8 @@ export default function ChatPanel({ token, email }) {
           </span>
         </div>
         <div className="mt-3">
-          {/* Keyed by org id so switching rooms opens a fresh socket. */}
-          <ChatRoom key={selectedOrg.id} orgId={selectedOrg.id} token={token} email={email} />
+          {/* Keyed by org id so switching rooms clears the messages of the last one. */}
+          <ChatRoom key={selectedOrg.id} email={email} />
         </div>
       </section>
     );
@@ -49,41 +52,22 @@ export default function ChatPanel({ token, email }) {
   );
 }
 
-/** One org's room. `email` is only for styling a caller's own messages. */
-function ChatRoom({ orgId, token, email }) {
-  const [status, setStatus] = useState("connecting"); // connecting | open | closed | error
+/** The selected org's room. `email` is only for styling a caller's own messages. */
+function ChatRoom({ email }) {
+  const { messenger, status } = useMessenger();
   const [messages, setMessages] = useState([]);
   const [draft, setDraft] = useState("");
-  const [attempt, setAttempt] = useState(0); // bump to force a fresh socket
-  const socketRef = useRef(null);
   const nextIdRef = useRef(0);
   const listRef = useRef(null);
 
-  useEffect(() => {
-    const socket = new WebSocket(chatWsUrl(orgId, token));
-    socketRef.current = socket;
-
-    socket.onopen = () => setStatus("open");
-    socket.onerror = () => setStatus("error");
-    socket.onclose = () => setStatus("closed");
-    socket.onmessage = (event) => {
-      let parsed;
-      try {
-        parsed = JSON.parse(event.data);
-      } catch {
-        return; // not JSON -- ignore rather than crash the room over one frame
-      }
-      if (typeof parsed?.text !== "string") return;
-
-      nextIdRef.current += 1;
-      setMessages((current) => [
-        ...current.slice(-(MAX_MESSAGES - 1)),
-        { id: nextIdRef.current, from: parsed.from ?? "?", text: parsed.text },
-      ]);
-    };
-
-    return () => socket.close();
-  }, [orgId, token, attempt]);
+  useChannel(CHANNELS.chat, (message) => {
+    if (typeof message?.text !== "string") return;
+    nextIdRef.current += 1;
+    setMessages((current) => [
+      ...current.slice(-(MAX_MESSAGES - 1)),
+      { id: nextIdRef.current, from: message.from ?? "?", text: message.text },
+    ]);
+  });
 
   useEffect(() => {
     const list = listRef.current;
@@ -94,15 +78,9 @@ function ChatRoom({ orgId, token, email }) {
     event.preventDefault();
     const text = draft.trim();
     if (!text || status !== "open") return;
-    socketRef.current?.send(JSON.stringify({ text }));
-
-    // The backend never echoes a message back to its sender, so the
-    // sender's own copy is added here, not read back off the socket.
-    nextIdRef.current += 1;
-    setMessages((current) => [
-      ...current.slice(-(MAX_MESSAGES - 1)),
-      { id: nextIdRef.current, from: email, text },
-    ]);
+    // The backend fans a message out to the sender's own sockets too, so
+    // the sender's copy arrives back through `useChannel` like anyone else's.
+    messenger.send({ channel: CHANNELS.chat, message: { text } });
     setDraft("");
   }
 
@@ -152,11 +130,7 @@ function ChatRoom({ orgId, token, email }) {
         {(status === "closed" || status === "error") && (
           <button
             type="button"
-            onClick={() => {
-              // Immediate feedback; the new socket's `onopen` confirms it later.
-              setStatus("connecting");
-              setAttempt((count) => count + 1);
-            }}
+            onClick={() => messenger?.reconnect()}
             className="shrink-0 rounded-lg bg-slate-700 px-4 py-1.5 text-sm font-medium text-white hover:bg-slate-600"
           >
             reconnect

@@ -7,10 +7,7 @@ use serde_json::Value;
 pub struct EmailChannel;
 
 impl EmailChannel {
-    // Only called from `Messenger::notify`, itself currently unused -- see
-    // that method's doc comment.
-    #[allow(dead_code)]
-    pub async fn send(&self, to: &str, body: &Value) {
-        println!("[email stub] to={to}: {body}");
+    pub async fn send(&self, to: &str, channel: &str, message: &Value) {
+        println!("[email stub] to={to} channel={channel}: {message}");
     }
 }

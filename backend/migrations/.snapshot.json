@@ -214,7 +214,7 @@
     ]
   },
   {
-    "name": "connections",
+    "name": "active_users",
     "columns": [
       {
         "name": "connection_id",
@@ -238,6 +238,15 @@
         "renamed_from": null
       },
       {
+        "name": "transport",
+        "sql_type": "text",
+        "not_null": true,
+        "primary_key": false,
+        "default": null,
+        "foreign_key": null,
+        "renamed_from": null
+      },
+      {
         "name": "org_id",
         "sql_type": "text",
         "not_null": false,
@@ -246,6 +255,18 @@
         "foreign_key": [
           "organizations",
           "id"
+        ],
+        "renamed_from": null
+      },
+      {
+        "name": "meeting",
+        "sql_type": "text",
+        "not_null": false,
+        "primary_key": false,
+        "default": null,
+        "foreign_key": [
+          "meetings",
+          "code"
         ],
         "renamed_from": null
       },

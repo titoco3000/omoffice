@@ -16,7 +16,6 @@ use super::orgs::{
 };
 use super::{get_org, require_role, roles, AllowedRoles, RbacError};
 use crate::auth::{AuthState, Claims};
-use crate::core::apigw_management::ApiGatewayManagement;
 use crate::core::db::Db;
 use crate::core::messenger::Messenger;
 
@@ -51,7 +50,6 @@ pub async fn create_org_route(
     Extension(claims): Extension<Claims>,
     Extension(allowed): Extension<AllowedRoles>,
     Extension(messenger): Extension<Messenger>,
-    Extension(management): Extension<ApiGatewayManagement>,
     Json(body): Json<CreateOrgBody>,
 ) -> Result<Json<Value>, RbacError> {
     // Validated up front so a bad role in one invite never leaves the org
@@ -68,7 +66,7 @@ pub async fn create_org_route(
     for invite in &body.invites {
         let created =
             create_invite(&db, &org.id, &invite.email, &invite.roles, &claims.sub).await?;
-        notify_invite(&db, &messenger, &management, &org.name, &created).await;
+        notify_invite(&db, &messenger, &org.name, &created).await;
     }
 
     Ok(Json(json!({ "org": org })))
@@ -162,7 +160,6 @@ pub async fn create_invite_route(
     Extension(claims): Extension<Claims>,
     Extension(allowed): Extension<AllowedRoles>,
     Extension(messenger): Extension<Messenger>,
-    Extension(management): Extension<ApiGatewayManagement>,
     Path(org_id): Path<String>,
     Json(body): Json<CreateInviteBody>,
 ) -> Result<Json<Value>, RbacError> {
@@ -174,7 +171,7 @@ pub async fn create_invite_route(
     }
     let org = get_org(&db, &org_id).await?.ok_or(RbacError::OrgNotFound)?;
     let invite = create_invite(&db, &org_id, &body.email, &body.roles, &claims.sub).await?;
-    notify_invite(&db, &messenger, &management, &org.name, &invite).await;
+    notify_invite(&db, &messenger, &org.name, &invite).await;
     Ok(Json(json!({ "invite": invite })))
 }
 

@@ -44,7 +44,7 @@ output "database_endpoint" {
 }
 
 output "chat_ws_url" {
-  description = "Browser-facing wss:// URL for the chat WebSocket API (?token=...&org_id=...)."
+  description = "Browser-facing wss:// URL for the messenger's WebSocket API (?token=...)."
   value       = local.chat_ws_url
 }
 

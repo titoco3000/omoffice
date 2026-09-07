@@ -1,5 +1,6 @@
 import { useState } from "react";
 import useMeetingSession from "../hooks/useMeetingSession";
+import { usePresence } from "../messenger/MessengerContext";
 import ControlPanel from "./ControlPanel";
 import MeetingGrid from "./MeetingGrid";
 
@@ -31,6 +32,10 @@ export default function Meeting({ code, token, onLeave }) {
     toggleCamera,
     toggleShare,
   } = useMeetingSession({ code, token, onLeave });
+
+  // Being in this meeting is part of what this tab reports about itself,
+  // and what `Messenger::send_to_users_on_meeting` addresses.
+  usePresence({ meeting: code });
 
   return (
     <div className="relative h-[70vh] min-h-[380px] w-full overflow-hidden rounded-xl border border-slate-800 bg-slate-950">

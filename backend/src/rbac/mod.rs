@@ -13,7 +13,6 @@ pub mod orgs;
 pub mod routes;
 
 pub use invites::*;
-pub use orgs::*;
 pub use routes::*;
 
 /// The roles native to the RBAC. A project's own roles (see

@@ -13,8 +13,7 @@ fn test_app() -> Router {
         KeySource::fixed(KEY),
         ChimeState::disabled(),
         Db::disabled(),
-        Messenger::new(),
-        ApiGatewayManagement::disabled(),
+        Messenger::new(Db::disabled(), ApiGatewayManagement::disabled()),
     )
 }
 
@@ -455,10 +454,7 @@ fn ws_event(uri: &str, ctx: ApiGatewayWebsocketProxyRequestContext) -> Request<B
 
 #[tokio::test]
 async fn a_connect_event_with_a_bad_token_is_rejected() {
-    let request = ws_event(
-        "/dev?token=not-a-jwt&org_id=some-org",
-        ws_context("CONNECT", "conn-1"),
-    );
+    let request = ws_event("/dev?token=not-a-jwt", ws_context("CONNECT", "conn-1"));
     let (status, body) = call(request).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
     assert_eq!(body["error"], "invalid_token");
@@ -468,7 +464,7 @@ async fn a_connect_event_with_a_bad_token_is_rejected() {
 async fn a_connect_event_with_a_valid_token_reports_a_missing_database() {
     let token = token_for("dev@omoffice.example").await;
     let request = ws_event(
-        &format!("/dev?token={token}&org_id=some-org"),
+        &format!("/dev?token={token}"),
         ws_context("CONNECT", "conn-1"),
     );
     let (status, body) = call(request).await;

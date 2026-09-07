@@ -10,7 +10,8 @@ import RouteTester from "./components/RouteTester";
 import Toast from "./components/Toast";
 import { useInviteActions } from "./hooks/useInviteActions";
 import { useNotifications } from "./hooks/useNotifications";
-import { OrgProvider } from "./org/OrgContext";
+import { MessengerProvider, usePresence } from "./messenger/MessengerContext";
+import { OrgProvider, useOrgContext } from "./org/OrgContext";
 import { API_URL, callApi, describeFailure, STAGE } from "./api";
 
 const TABS = [
@@ -25,9 +26,11 @@ export default function App() {
   return (
     <AuthProvider>
       <InviteLink>
-        <OrgProvider>
-          <Shell />
-        </OrgProvider>
+        <MessengerProvider>
+          <OrgProvider>
+            <Shell />
+          </OrgProvider>
+        </MessengerProvider>
       </InviteLink>
     </AuthProvider>
   );
@@ -102,9 +105,14 @@ function parseInviteParam() {
 
 function Shell() {
   const { token, email, isAuthenticated, logout } = useAuth();
+  const { selectedOrgId } = useOrgContext();
   const [tab, setTab] = useState("meetings");
   const [meetingCodeToJoin, setMeetingCodeToJoin] = useState("");
-  const { toasts, dismiss } = useNotifications(isAuthenticated ? token : null);
+  const { toasts, dismiss } = useNotifications();
+
+  // The org this tab is looking at. Chat's room is whatever this reports,
+  // which is why no component below opens a socket of its own.
+  usePresence({ org: selectedOrgId });
 
   function joinMeeting(code) {
     setMeetingCodeToJoin(code);
@@ -178,7 +186,7 @@ function Shell() {
               onJoinCodeConsumed={() => setMeetingCodeToJoin("")}
             />
           )}
-          {tab === "chat" && <ChatPanel token={token} email={email} />}
+          {tab === "chat" && <ChatPanel email={email} />}
           {tab === "orgs" && <Organizations token={token} />}
         </div>
 

@@ -1,9 +1,10 @@
-//! Live browser sessions: who has a socket open, and how to push a JSON
-//! value to them. Knows nothing about chat or any other feature.
+//! Live browser sockets held by *this* process — the local-dev half of
+//! delivery. Keyed by connection id, the same id `active_users` stores, so
+//! [`super::Messenger`] resolves a roster once and delivers to either half
+//! without a second lookup. Knows nothing about chat, invites or channels.
 
 use std::collections::HashMap;
 use std::future::Future;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use axum::extract::ws::{Message, WebSocket};
@@ -14,73 +15,45 @@ use tokio::sync::{mpsc, RwLock};
 /// The outbound half of one registered socket; [`Hub::bind`] owns the receiving half.
 type Outbox = mpsc::UnboundedSender<Value>;
 
-/// One registration within a single email's connections, so closing one tab
-/// doesn't disturb another open at the same time.
-type ConnId = u64;
-
-#[derive(Default)]
-struct State {
-    by_email: HashMap<String, HashMap<ConnId, Outbox>>,
-}
-
-/// Registry of open sockets, keyed by email. Cheap to clone (an `Arc`
-/// inside), same as `Db`.
+/// Registry of open sockets, keyed by connection id. Cheap to clone (an
+/// `Arc` inside), same as `Db`.
 #[derive(Clone, Default)]
 pub struct Hub {
-    state: Arc<RwLock<State>>,
-    next_id: Arc<AtomicU64>,
+    sockets: Arc<RwLock<HashMap<String, Outbox>>>,
 }
 
 impl Hub {
-    async fn register(&self, email: &str) -> (ConnId, mpsc::UnboundedReceiver<Value>) {
-        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+    async fn register(&self, connection_id: &str) -> mpsc::UnboundedReceiver<Value> {
         let (tx, rx) = mpsc::unbounded_channel();
-        self.state
+        self.sockets
             .write()
             .await
-            .by_email
-            .entry(email.to_string())
-            .or_default()
-            .insert(id, tx);
-        (id, rx)
+            .insert(connection_id.to_string(), tx);
+        rx
     }
 
-    async fn unregister(&self, email: &str, id: ConnId) {
-        let mut state = self.state.write().await;
-        if let Some(conns) = state.by_email.get_mut(email) {
-            conns.remove(&id);
-            if conns.is_empty() {
-                state.by_email.remove(email);
-            }
-        }
+    async fn unregister(&self, connection_id: &str) {
+        self.sockets.write().await.remove(connection_id);
     }
 
-    /// Push `body` to every socket `to` has open. A dead send is dropped
-    /// silently — nobody is listening, so nobody can be told.
-    pub async fn send(&self, to: &str, body: &Value) {
-        if let Some(conns) = self.state.read().await.by_email.get(to) {
-            for tx in conns.values() {
-                let _ = tx.send(body.clone());
-            }
-        }
-    }
-
-    /// [`send`](Self::send) to several recipients at once — chat's fan-out
-    /// to a roster.
-    pub async fn send_to(&self, recipients: &[String], body: &Value) {
-        for email in recipients {
-            self.send(email, body).await;
+    /// Push `body` down one socket. Nothing registered under that id, or a
+    /// dead channel, is dropped silently — nobody is listening, so nobody
+    /// can be told.
+    pub async fn send(&self, connection_id: &str, body: &Value) {
+        if let Some(tx) = self.sockets.read().await.get(connection_id) {
+            let _ = tx.send(body.clone());
         }
     }
 
     /// Drive one accepted socket end to end until it closes, then
     /// unregisters itself — callers never call [`unregister`](Self::unregister).
-    pub async fn bind<F, Fut>(&self, socket: WebSocket, email: String, on_message: F)
+    /// `on_message` runs once per JSON frame the client sends.
+    pub async fn bind<F, Fut>(&self, socket: WebSocket, connection_id: String, on_message: F)
     where
         F: Fn(Value) -> Fut + Send + 'static,
         Fut: Future<Output = ()> + Send,
     {
-        let (id, mut rx) = self.register(&email).await;
+        let mut rx = self.register(&connection_id).await;
         let (mut sink, mut stream) = socket.split();
 
         let outbound = tokio::spawn(async move {
@@ -103,7 +76,7 @@ impl Hub {
         }
 
         outbound.abort();
-        self.unregister(&email, id).await;
+        self.unregister(&connection_id).await;
     }
 }
 
@@ -114,68 +87,47 @@ mod tests {
 
     /// `bind` needs a real `WebSocket`, so these exercise the registry directly.
     #[tokio::test]
-    async fn a_registered_connection_receives_what_is_sent_to_its_email() {
+    async fn a_registered_socket_receives_what_is_sent_to_its_connection_id() {
         let hub = Hub::default();
-        let (_id, mut rx) = hub.register("dev@omoffice.example").await;
+        let mut rx = hub.register("conn-1").await;
 
-        hub.send("dev@omoffice.example", &json!({ "text": "hi" }))
-            .await;
+        hub.send("conn-1", &json!({ "text": "hi" })).await;
 
         assert_eq!(rx.recv().await, Some(json!({ "text": "hi" })));
     }
 
     #[tokio::test]
-    async fn sending_to_an_email_with_nothing_registered_is_a_no_op() {
+    async fn sending_to_an_unregistered_connection_is_a_no_op() {
         let hub = Hub::default();
         // Would panic on a missing key if this indexed instead of `get`-ing.
-        hub.send("nobody@example.com", &json!({ "text": "hi" }))
-            .await;
+        hub.send("conn-nobody", &json!({ "text": "hi" })).await;
     }
 
     #[tokio::test]
-    async fn a_second_tab_for_the_same_email_gets_its_own_registration() {
+    async fn a_second_tab_is_its_own_connection() {
         let hub = Hub::default();
-        let (_id_a, mut rx_a) = hub.register("dev@omoffice.example").await;
-        let (_id_b, mut rx_b) = hub.register("dev@omoffice.example").await;
+        let mut rx_a = hub.register("conn-a").await;
+        let mut rx_b = hub.register("conn-b").await;
 
-        hub.send("dev@omoffice.example", &json!({ "text": "hi" }))
-            .await;
+        hub.send("conn-a", &json!({ "text": "hi" })).await;
 
         assert_eq!(rx_a.recv().await, Some(json!({ "text": "hi" })));
-        assert_eq!(rx_b.recv().await, Some(json!({ "text": "hi" })));
+        assert!(rx_b.try_recv().is_err());
     }
 
     #[tokio::test]
     async fn unregistering_stops_delivery_without_disturbing_another_tab() {
         let hub = Hub::default();
-        let (id_a, mut rx_a) = hub.register("dev@omoffice.example").await;
-        let (_id_b, mut rx_b) = hub.register("dev@omoffice.example").await;
+        let mut rx_a = hub.register("conn-a").await;
+        let mut rx_b = hub.register("conn-b").await;
 
-        hub.unregister("dev@omoffice.example", id_a).await;
-        hub.send("dev@omoffice.example", &json!({ "text": "hi" }))
-            .await;
+        hub.unregister("conn-a").await;
+        hub.send("conn-a", &json!({ "text": "hi" })).await;
+        hub.send("conn-b", &json!({ "text": "hi" })).await;
 
         // The channel is dropped along with the registration, so the sender
         // half is gone too and `recv` reports the channel closed.
         assert_eq!(rx_a.recv().await, None);
         assert_eq!(rx_b.recv().await, Some(json!({ "text": "hi" })));
-    }
-
-    #[tokio::test]
-    async fn send_to_reaches_every_listed_recipient_and_skips_the_rest() {
-        let hub = Hub::default();
-        let (_id_a, mut rx_a) = hub.register("a@example.com").await;
-        let (_id_b, mut rx_b) = hub.register("b@example.com").await;
-        let (_id_c, mut rx_c) = hub.register("c@example.com").await;
-
-        hub.send_to(
-            &["a@example.com".to_string(), "b@example.com".to_string()],
-            &json!({ "text": "hi" }),
-        )
-        .await;
-
-        assert_eq!(rx_a.recv().await, Some(json!({ "text": "hi" })));
-        assert_eq!(rx_b.recv().await, Some(json!({ "text": "hi" })));
-        assert!(rx_c.try_recv().is_err());
     }
 }

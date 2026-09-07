@@ -82,16 +82,21 @@ pub const ORG_ROLES: Table = Table::new(
 )
 .primary_key(&["org_id", "user_email", "role"]);
 
-/// One row per open browser socket, room or presence (`org_id` NULL). See
-/// `core/connections.rs`; `org_id` was `NOT NULL` until hand-written migration `0008`.
-pub const CONNECTIONS: Table = Table::new(
-    "connections",
+/// One row per open browser socket — who is connected, over which
+/// transport, and the context they last reported (`org_id`, `meeting`, both
+/// nullable). Read only by `core/messenger/`; see `core/messenger/active_users.rs`.
+pub const ACTIVE_USERS: Table = Table::new(
+    "active_users",
     &[
         Column::new("connection_id", "text").primary_key(),
         Column::new("user_email", "text")
             .not_null()
             .references("users", "email"),
+        // "local" (an in-process socket) or "apigw" (a WebSocket API
+        // connection) -- which half of `Messenger`'s delivery owns it.
+        Column::new("transport", "text").not_null(),
         Column::new("org_id", "text").references("organizations", "id"),
+        Column::new("meeting", "text").references("meetings", "code"),
         Column::new("connected_at", "timestamptz")
             .not_null()
             .default("now()"),
@@ -153,7 +158,7 @@ pub const TABLES: &[Table] = &[
     MEETING_ATTENDEES,
     ORGANIZATIONS,
     ORG_ROLES,
-    CONNECTIONS,
+    ACTIVE_USERS,
     ORG_INVITES,
     MEETING_INVITES,
 ];
