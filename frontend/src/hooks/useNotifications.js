@@ -5,12 +5,8 @@ import { notifyWsUrl } from "../api";
 const TOAST_LIFETIME_MS = 8000;
 
 /**
- * The live half of an invite's delivery: opens the room-less presence
- * socket (`notifyWsUrl`) once while `token` is set, and turns every
- * `{"type": "invite", ...}` frame it receives into a toast. Same bare-bones
- * lifecycle as `ChatPanel`'s socket -- opened on mount, closed on unmount,
- * no reconnect loop -- since a missed toast while briefly disconnected just
- * means the invite still shows up in `PendingInvites` on next load.
+ * The live half of an invite's delivery: the presence socket, turning every
+ * `{"type": "invite", ...}` frame into a toast. No reconnect loop.
  */
 export function useNotifications(token) {
   const [toasts, setToasts] = useState([]);
@@ -29,9 +25,8 @@ export function useNotifications(token) {
       }
       if (typeof parsed?.message !== "string") return;
 
-      // `kind`/`invite_id` (`rbac`/`meetings`' `notify_invite`) are what let
-      // clicking the toast actually accept the invite instead of just
-      // showing a message -- see `Toast`'s `onAccept`.
+      // `kind`/`invite_id` are what let clicking the toast accept the
+      // invite instead of just showing a message — see `Toast`'s `onAccept`.
       nextIdRef.current += 1;
       const id = nextIdRef.current;
       setToasts((current) => [

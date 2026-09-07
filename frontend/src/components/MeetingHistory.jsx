@@ -2,19 +2,8 @@ import { useEffect, useState } from "react";
 import { callApi, describeFailure } from "../api";
 
 /**
- * Every meeting in `orgId`, from `GET /private/meetings?org_id=...` -- not
- * just ones the caller made or joined: a meeting is a shared org resource,
- * so any member can rejoin any of them (see `backend/src/meetings/mod.rs`).
- *
- * This is the one thing on the page that comes out of the database rather than
- * out of Chime: Chime forgets a meeting the moment it empties, so without the
- * `meetings` table there is nothing to list. A code whose meeting has ended is
- * still shown — rejoining it answers `404 meeting_not_found`, which is the
- * honest result.
- *
- * `stamp` is which fetch the held result belongs to, so "loading" is derived
- * from the state rather than set alongside it, and a token or org change
- * counts as a new fetch just like pressing refresh.
+ * Every meeting in `orgId`, not just ones the caller made or joined. A code
+ * whose meeting has ended still shows; rejoining just 404s.
  */
 export default function MeetingHistory({ token, orgId, onPick }) {
   const [reloads, setReloads] = useState(0);

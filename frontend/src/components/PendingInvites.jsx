@@ -4,15 +4,8 @@ import { useAuth } from "../auth/AuthContext";
 import { useInviteActions } from "../hooks/useInviteActions";
 
 /**
- * `GET /private/invites` -- every org and meeting invite still pending for
- * the logged-in email, for whoever logged in on their own instead of
- * following a magic link. Same "stamp" pattern as `useOrgs`/`MeetingHistory`.
- *
- * Accepting reaches the same public accept routes the magic link uses
- * (`/invites/org/{id}/accept`, `/invites/meetings/{id}/accept}`) and adopts
- * the token they hand back via `loginWithToken` -- for an org invite that's
- * the whole job; for a meeting invite `onJoinMeeting(code)` also hands the
- * code up to `Shell` so it can switch to the meetings tab with it prefilled.
+ * `GET /private/invites`, for whoever logged in directly instead of a magic
+ * link. Accepting reuses `useInviteActions`'s token adoption.
  */
 export default function PendingInvites({ onJoinMeeting }) {
   const { token } = useAuth();
@@ -87,9 +80,8 @@ export default function PendingInvites({ onJoinMeeting }) {
     refresh();
   }
 
-  // Silent when there's nothing to show -- a fetch error here shouldn't
-  // block the rest of the app the way `Organizations`/`MeetingPanel`'s own
-  // errors surface inline in their own sections.
+  // Silent when there's nothing to show — a fetch error here shouldn't
+  // block the rest of the app.
   if (error || (orgInvites.length === 0 && meetingInvites.length === 0)) return null;
 
   return (

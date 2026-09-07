@@ -19,12 +19,8 @@ const TABS = [
   { id: "orgs", label: "organizations" },
 ];
 
-/// Top-level shell: `AuthProvider` owns the token, everything else is a
-/// child of it. `InviteLink` sits just inside it so it can call
-/// `loginWithToken` for a magic link before `Shell` ever decides whether to
-/// show `Login`. Logged out shows `Login`; logged in shows the two-tab app
-/// shell — a plain `useState` switch rather than a router, since there are
-/// only ever two pages.
+/// Top-level shell: `AuthProvider` owns the token. Logged out shows `Login`;
+/// logged in shows the two-tab shell, a plain `useState` switch (no router).
 export default function App() {
   return (
     <AuthProvider>
@@ -37,12 +33,8 @@ export default function App() {
   );
 }
 
-/// `?invite=org:{id}` / `?invite=meeting:{id}` in the URL is the magic
-/// link: on mount, POST the matching public accept route
-/// (`/invites/org/{id}/accept` / `/invites/meetings/{id}/accept`,
-/// `backend/src/rbac.rs`/`meetings.rs`) and adopt the token it hands back --
-/// "click the link, get logged in and accepted" end to end. The query
-/// string is stripped either way so a refresh doesn't replay it.
+/// `?invite=org:{id}` / `?invite=meeting:{id}`: the magic link. Accepts and
+/// adopts the token on mount, then strips the query string either way.
 function InviteLink({ children }) {
   const { loginWithToken } = useAuth();
   const invite = parseInviteParam();
@@ -119,9 +111,8 @@ function Shell() {
     setTab("meetings");
   }
 
-  // Shared with `PendingInvites` only in behavior, not instance -- both call
-  // through to the same `AuthContext.loginWithToken`, so which component's
-  // `useInviteActions` actually fires doesn't matter.
+  // Shared with `PendingInvites` in behavior, not instance — both call
+  // through to `AuthContext.loginWithToken`.
   const { acceptOrg, acceptMeeting } = useInviteActions({ onJoinMeeting: joinMeeting });
 
   function acceptToast(toast) {

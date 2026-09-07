@@ -1,25 +1,11 @@
-//! API Gateway's Management API — the other half of a WebSocket API's round
-//! trip. A WebSocket API route (`$connect`/`$disconnect`/a message route)
-//! only ever gets a *request* to the lambda; pushing something back down a
-//! *different* open connection than the one that just invoked the lambda
-//! goes through this instead — a plain HTTPS call to
-//! `{api}.execute-api.{region}.amazonaws.com/{stage}/@connections/{id}`,
-//! not a socket write, because the lambda that handles connection A's
-//! message and the lambda that would need to write to connection B's socket
-//! are not, in general, the same running process — nothing here is a socket
-//! at all.
-//!
-//! This is deliberately as dumb as `core::chime`/`core::db`: one call
-//! ([`ApiGatewayManagement::post`]), the identifier API Gateway wants, and
-//! nothing about who's on the other end of a connection or why. `chat/mod.rs`
-//! is what knows that.
+//! API Gateway's Management API: pushing to a WebSocket connection is a
+//! plain HTTPS call here, not a socket write.
 
 use aws_sdk_apigatewaymanagement::primitives::Blob;
 use aws_sdk_apigatewaymanagement::Client;
 
-/// The management client, scoped to one WebSocket API's endpoint. Cheap to
-/// clone; the client is `None` in tests and in a local run, where nothing
-/// ever reaches this (see [`ApiGatewayManagement::from_env`]).
+/// The management client, scoped to one WebSocket API's endpoint. `None`
+/// in tests and local runs.
 #[derive(Clone)]
 pub struct ApiGatewayManagement {
     client: Option<Client>,
@@ -33,11 +19,8 @@ impl ApiGatewayManagement {
         Self { client: None }
     }
 
-    /// Built from `CHAT_MANAGEMENT_ENDPOINT` (terraform sets it on the
-    /// deployed lambda only, to the WebSocket API's own management
-    /// endpoint). Absent locally: `make run dev` is a plain TCP server that
-    /// never receives a WebSocket-API proxy event in the first place (see
-    /// `chat/mod.rs`), so nothing ever calls through this outside AWS.
+    /// Built from `CHAT_MANAGEMENT_ENDPOINT`, set only on the deployed
+    /// lambda. Absent locally: `make run dev` never gets a WebSocket-API event.
     pub async fn from_env() -> Self {
         let Ok(endpoint) = std::env::var("CHAT_MANAGEMENT_ENDPOINT") else {
             tracing::info!(
@@ -61,11 +44,8 @@ impl ApiGatewayManagement {
             .ok_or(ApiGatewayManagementError::Unavailable)
     }
 
-    /// Push `data` down one open connection.
-    /// [`ApiGatewayManagementError::Gone`] means the connection is no longer
-    /// live (the client closed without API Gateway ever running
-    /// `$disconnect` -- a hard crash, a lost network) — the caller's cue to
-    /// forget the connection rather than something to retry.
+    /// Push `data` down one open connection. `Gone` means it's dead — the
+    /// caller's cue to forget it, not retry.
     pub async fn post(
         &self,
         connection_id: &str,

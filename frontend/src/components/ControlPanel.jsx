@@ -11,9 +11,7 @@ import {
   IconSettings,
 } from "./icons";
 
-/// Where the control panel may sit, and the classes that put it there. The
-/// keys are the setting's stored value, so they are also what the radio
-/// buttons render.
+/// Where the control panel may sit. Keys are the setting's stored value.
 export const PANEL_POSITIONS = {
   "top left": "top-3 left-3",
   "top center": "top-3 left-1/2 -translate-x-1/2",
@@ -27,11 +25,8 @@ export const PANEL_POSITIONS = {
 export const PARTICIPANT_POSITIONS = ["top", "bottom", "left", "right"];
 
 /**
- * The overlay panel: settings, mic, camera, screen share, leave.
- *
- * It floats over the video area, so it takes its own position from settings
- * rather than from the flow. The settings popover opens away from whichever
- * edge the panel is pinned to, so it never opens off-screen.
+ * The overlay panel: settings, mic, camera, screen share, leave. The
+ * settings popover opens away from whichever edge it's pinned to.
  */
 export default function ControlPanel({
   settings,

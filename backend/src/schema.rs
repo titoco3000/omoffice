@@ -1,36 +1,10 @@
-//! Every table's *current* shape, in one place: names, types, primary keys,
-//! foreign keys — the equivalent of a SQLAlchemy `Table`/`Column` block. This
-//! is the only file you edit to change the schema; `Column`/`Table`
-//! themselves are generic and live in `core::orm`.
-//!
-//! It is still *not* how a table gets created: DSQL is only ever reached
-//! through `migrations/*.up.sql`, run by `make db-migrate` (see `migrate.rs`
-//! for why migrations are hand-written SQL files rather than something a
-//! module executes directly — DSQL's DDL/DML transaction rules and the need
-//! for a checked-in, reviewable history of schema changes rule that out).
-//!
-//! The bridge from this file to those files is `make db-generate`
-//! (`migrate.rs`'s `generate`): it diffs `TABLES` below (as `TableState`s,
-//! see `core::orm`) against `migrations/.snapshot.json` — the shape as of
-//! the last time it ran — and writes whatever `.up.sql`/`.down.sql` the
-//! difference calls for (`core::orm::diff`). So the workflow is: edit a
-//! `Table` below, run `make db-generate`, review what it wrote, `make
-//! db-migrate <stage>`. Nothing else needs a matching hand-edit — there is
-//! exactly one source of truth.
-//!
-//! `0001_users`/`0002_meetings` predate this mechanism and were hand-written
-//! before there was a snapshot to diff against; `USERS`/`MEETINGS` already
-//! describe them correctly (verified by hand when this file was introduced),
-//! and every migration since is generated, so nothing here re-checks that
-//! correspondence — the test below checks the one invariant that matters
-//! going forward: that this file and the snapshot agree.
+//! Every table's *current* shape, in one place — the only file you edit to
+//! change the schema. See CLAUDE.md for the edit -> `make db-generate` -> `make db-migrate` workflow.
 
 use crate::core::orm::{Column, Table};
 
 /// People who have asked for an API key. Keyed by the email
-/// `/auth/request-key/{email}` already hands out tokens for, so there is no
-/// separate id to reconcile. See `users/mod.rs` for the code that reads and
-/// writes this table.
+/// `/auth/request-key/{email}` issues tokens for. See `users/mod.rs`.
 pub const USERS: Table = Table::new(
     "users",
     &[
@@ -42,17 +16,8 @@ pub const USERS: Table = Table::new(
     ],
 );
 
-/// Meetings created through `POST /private/meetings`. `code` is the Chime
-/// `MeetingId`, already a UUID and unique per meeting, so it is the primary
-/// key rather than a separate one. See `meetings/mod.rs`.
-///
-/// `org_id` is nullable rather than required: it was added after `meetings`
-/// already had rows with nothing to put there (DSQL's `ADD COLUMN` has no
-/// way to backfill a real value per row, only a constant `DEFAULT`, and
-/// there is no single org that's the right answer for an existing meeting).
-/// `POST /private/meetings` always sets it now -- a `NULL` here only ever
-/// means "created before org-scoping existed" and such a meeting won't
-/// appear in any org's `GET /private/meetings?org_id=...` list.
+/// `code` is the Chime `MeetingId`, already unique, so it's the primary key.
+/// `org_id` is nullable only for pre-org-scoping rows — see CLAUDE.md. See `meetings/mod.rs`.
 pub const MEETINGS: Table = Table::new(
     "meetings",
     &[
@@ -67,13 +32,8 @@ pub const MEETINGS: Table = Table::new(
     ],
 );
 
-/// One row per (meeting, person who has actually joined it) --
-/// `POST /private/meetings/{code}/attendees` writes one for the caller,
-/// best effort, alongside minting their Chime attendee. `GET
-/// /private/meetings` reads this to also list meetings the caller was
-/// invited into and joined, not only the ones they created -- a meeting's
-/// only other row, `meetings.created_by`, never changes once it's created.
-/// See `meetings/mod.rs`.
+/// One row per (meeting, person who joined it), best effort. See
+/// `meetings/mod.rs::record_attendee`.
 pub const MEETING_ATTENDEES: Table = Table::new(
     "meeting_attendees",
     &[
@@ -91,8 +51,7 @@ pub const MEETING_ATTENDEES: Table = Table::new(
 .primary_key(&["code", "user_email"]);
 
 /// Organizations, created through `POST /private/orgs`. `id` is a
-/// backend-generated UUID, the same shape as `meetings.code`. See
-/// `rbac/mod.rs`.
+/// backend-generated UUID. See `rbac/mod.rs`.
 pub const ORGANIZATIONS: Table = Table::new(
     "organizations",
     &[
@@ -123,26 +82,8 @@ pub const ORG_ROLES: Table = Table::new(
 )
 .primary_key(&["org_id", "user_email", "role"]);
 
-/// Live websocket connections to the chat WebSocket API, one row per open
-/// browser socket -- a room connection *and* a room-less presence one
-/// (`chat::ws_presence` / `chat::lambda_entry` with no `org_id` on the
-/// connect query string). Written by the `$connect` route, deleted by
-/// `$disconnect` -- both in `chat::connections`. A row surviving its socket
-/// (the lambda never got to run `$disconnect`, e.g. a hard client-side
-/// crash) is not a correctness problem: sending to it just fails with
-/// API Gateway's `GoneException`, and `chat::lambda` deletes the row then,
-/// lazily, the next time something tries. See `chat/mod.rs`.
-///
-/// `org_id` is nullable: NULL means presence-only, no room. This is the one
-/// column in the whole schema that started `NOT NULL` and had it dropped
-/// later (migration `0008`, hand-written -- `make db-generate` refuses to
-/// emit it, since dropping `NOT NULL` from an existing column has no
-/// expressible down-migration and `core::orm::OperationDirection::render`
-/// panics rather than pretend otherwise; see that migration's own comment).
-/// A single connection needs to serve both a chat room *and* an invite's
-/// live toast for the same browser tab, so one table beats two: someone
-/// already in an org's chat room still needs exactly one socket to reach,
-/// not a second one just for presence.
+/// One row per open browser socket, room or presence (`org_id` NULL). See
+/// `core/connections.rs`; `org_id` was `NOT NULL` until hand-written migration `0008`.
 pub const CONNECTIONS: Table = Table::new(
     "connections",
     &[
@@ -168,9 +109,7 @@ pub const ORG_INVITES: Table = Table::new(
         // No foreign key: the whole point of an invite is that this email
         // may not be a `users` row yet.
         Column::new("email", "text").not_null(),
-        // Comma-joined role names, same set `add_member`/`replace_roles`
-        // validate against -- empty means "no explicit role", same meaning
-        // as an empty `roles` there.
+        // Comma-joined role names; empty means "no explicit role".
         Column::new("roles", "text").not_null().default("''"),
         Column::new("invited_by", "text")
             .not_null()

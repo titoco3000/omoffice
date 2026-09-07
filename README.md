@@ -8,17 +8,22 @@ resources managed by Terraform.
 .
 ├── backend/          Rust crate (axum). One binary: local HTTP server + Lambda handler.
 │   ├── src/main.rs   routes, auth policy, local/Lambda entrypoint
-│   ├── src/migrate.rs  the migration runner (`omoffice-api migrate ...`)
+│   ├── src/migrate/  the migration runner (`omoffice-api migrate ...`)
 │   ├── src/auth/     JWT issuing, key lookup, protected-route middleware
+│   ├── src/rbac/     organizations, membership, roles, org invites
+│   ├── src/chat/     per-org chat room (no history)
+│   ├── src/messenger/ outbound delivery to a user: websocket push, email stub
 │   ├── src/users/    the `users` table: who has asked for a key
 │   ├── src/meetings/ the `meetings` table + routes: Chime plus a history row
 │   ├── src/core/     low-level only, no routes: db.rs (DSQL pool, IAM tokens),
-│   │                 chime.rs (Chime client)
+│   │                 chime.rs (Chime client), orm/ (schema-as-data + diffing)
 │   ├── migrations/   ordered <version>_<name>.up.sql / .down.sql pairs
 │   └── Makefile      init | run | build | deploy | test | fmt | lint | db-*
-├── frontend/         React + Vite + Tailwind. A meeting panel over RouteTester cards.
+├── frontend/         React + Vite + Tailwind. Orgs, chat, meetings, invites.
 │   ├── src/components/RouteTester.jsx   a form + a result box for one route
 │   ├── src/components/MeetingPanel.jsx  create/join a meeting, run the media session
+│   ├── src/components/Organizations.jsx / OrgDetail.jsx   orgs, roster, invites
+│   ├── src/components/ChatPanel.jsx     the selected org's chat room
 │   └── Makefile      init | run | build | deploy | preview | lint
 └── infra/            Terraform stack (Lambda, API Gateway, IAM, CloudWatch,
     │                 Secrets Manager, S3, CloudFront)
@@ -181,69 +186,22 @@ The lambda's IAM policy for these calls is `infra/chime.tf`.
 
 ## Auth
 
-Routes under a protected prefix need a bearer token. Both the prefixes and the
-email whitelist are declared next to the routes, in `app()` in `backend/src/main.rs`:
-
-```rust
-let auth = AuthConfig::new(keys)
-    // Every route under these prefixes needs a valid bearer token.
-    .protect(vec!["/private"])
-    // Only these emails may ask for a token.
-    .allow_emails(vec!["admin@omoffice.example", "dev@omoffice.example"])
-    .build();
-```
-
-Adding `"/admin"` to `.protect(...)` protects `/admin` and everything under it.
-Nothing else changes: the middleware is already layered over the whole router.
-
-Get a token — only whitelisted emails are accepted:
+Routes under a protected prefix need a bearer token:
 
 ```sh
 curl "$API_URL/auth/request-key/dev@omoffice.example"
 # {"token":"eyJ...","token_type":"Bearer","email":"dev@omoffice.example",
-#  "expires_at":1756900000,"expires_in":172800}
+#  "expires_at":1757500000,"expires_in":604800}
 
 curl -H "Authorization: Bearer $TOKEN" "$API_URL/private/me"
-# {"email":"dev@omoffice.example","expires_at":1756900000}
-
-curl -X POST "$API_URL/private/sample-post/hello" \
-  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"name":"ada","male":false}'
-# {"received":{"var":"hello","name":"ada","male":false},"by":"dev@omoffice.example"}
+# {"email":"dev@omoffice.example","expires_at":1757500000}
 ```
 
-Tokens are HS256 and last 48h. Failures come back as JSON with a stable slug:
-
-| Case | Status | `error` |
-|---|---|---|
-| no/!Bearer `Authorization` header | 401 | `missing_token` |
-| malformed or wrongly signed token | 401 | `invalid_token` |
-| past its `exp` | 401 | `expired_token` |
-| email not whitelisted | 403 | `email_not_allowed` |
-| signing key unreadable | 500 | `key_unavailable` |
-
-### The signing key
-
-Terraform creates a Secrets Manager secret (`omoffice/jwt-key-<stage>`) and a
-small Python lambda that rotates it every Sunday at 07:00 UTC
-(`jwt_rotation_schedule` in `infra/variables.tf`). The API verifies against both
-`AWSCURRENT` and `AWSPREVIOUS`, so a token issued the day before a rotation is
-still good for its full 48h. Keys are cached in the lambda for 5 minutes.
-
-The API picks its key in this order:
-
-1. `JWT_KEY` — a fixed key, for tests and offline work.
-2. `JWT_SECRET_ID` — the rotated secret. Terraform sets this on the deployed
-   lambda; `make run` picks it up from `backend/.env.<stage>` and reads it with
-   your AWS profile.
-3. Neither: local runs fall back to a built-in **insecure** key and log a
-   warning. In Lambda this is a startup error instead.
-
-To force a rotation out of schedule:
-
-```sh
-aws secretsmanager rotate-secret --secret-id omoffice/jwt-key-dev
-```
+Tokens are HS256 and last 7 days. There is no email whitelist and no proof of
+ownership — fine for a sample, not for real users. Failures come back as JSON
+with a stable slug (`missing_token`, `invalid_token`, `expired_token`,
+`key_unavailable`). See CLAUDE.md for the auth policy/`AuthConfig` shape and
+the signing-key rotation.
 
 ## Database
 
@@ -264,93 +222,13 @@ make db-revert dev            # undo the most recent one (prompts; can lose data
 make db-shell dev             # psql, with a token generated on the spot
 ```
 
-### Migrations
-
-Ordered pairs of files in `backend/migrations/`, both halves required:
-
-```
-0001_users.up.sql      0001_users.down.sql
-0002_meetings.up.sql   0002_meetings.down.sql
-```
-
-The runner is a subcommand of the API binary (`omoffice-api migrate up`), so it
-shares the connection code with the server.
-
-A normal migration tool writes its ledger row in the same transaction as the
-schema change, so a crash can only roll back both. DSQL does not allow DDL and
-DML in one transaction, so that is not available here, and ordering alone does
-not replace it: ledger-first and a crash leaves a row claiming a migration that
-never ran; ledger-last and a crash leaves a change no row admits to. So each
-migration moves through three steps and two states:
-
-1. insert the ledger row as `pending`
-2. run the DDL
-3. update the row to `applied`
-
-Reverting is the mirror (`applied` -> `reverting` -> row deleted). A crash
-anywhere leaves a row mid-state, and the next run refuses to move:
-
-```
-error: migration 0002 (meetings) was interrupted while pending.
-The database may or may not carry its change, so nothing further will run.
-```
-
-### Writing DSQL, not postgres
-
-DSQL supports a subset of postgres and the subset moves — check the current
-compatibility docs before designing a schema. As of September 2026: one database
-(`postgres`) per cluster, no views, triggers, extensions, PL/pgSQL or temporary
-tables; foreign keys work, indexes are `CREATE INDEX ASYNC`, a primary key is
-fixed at `CREATE TABLE`, DDL and DML need separate transactions (one DDL each),
-and concurrency is optimistic — a write can fail at commit with SQLSTATE 40001,
-so writes retry.
-
-There are no indexes yet on purpose: there is no data to speak of, so they would
-buy nothing.
-
-### Why the queries are not compile-time checked
-
-`sqlx::query!` checks SQL against the real schema while the crate compiles,
-which is what this project wanted. It cannot be used against Aurora DSQL.
-
-The macro opens its own connection to describe each query, and the first thing
-`sqlx-macros-core` sends on it is a `DO $$ ... $$` block that sets
-`plan_cache_mode`. DSQL has no PL/pgSQL:
-
-```
-$ psql ... -c 'DO $$ BEGIN END $$;'
-ERROR:  DO with language plpgsql not supported
-```
-
-So every `query!` fails the build, and `cargo sqlx prepare` fails for the same
-reason — which also rules out the `.sqlx` offline cache, since there is no way
-to generate one. Nothing about it is configurable; the block is unconditional.
-
-`backend/src/core/db.rs` therefore uses runtime `sqlx::query` / `query_as` with
-`.bind(...)`. Nothing to prepare, nothing to commit, no offline mode — and no
-compile-time check either: a column that a migration renamed becomes a 500 at
-runtime instead of a build error.
-
-### The schema
-
-```sql
-users     (email PRIMARY KEY, created_at)
-meetings  (code PRIMARY KEY, created_by -> users.email, created_at)
-```
-
-A row lands in `users` when someone asks for a key, and in `meetings` when
-`POST /private/meetings` creates one. `GET /private/meetings` reads back the
-meetings the caller created:
-
-```sh
-curl "$API_URL/private/meetings" -H "Authorization: Bearer $TOKEN"
-# {"meetings":[{"code":"a6ff...","created_by":"dev@omoffice.example",
-#               "created_at":"2026-09-04T10:11:12Z"}]}
-```
-
-The meeting lobby on the page shows the same list, with a **rejoin** button per
-row. Chime forgets a meeting as soon as it empties, so a code from the list may
-answer `404 meeting_not_found` — the row is history, not state.
+Migrations are ordered `<version>_<name>.up.sql`/`.down.sql` pairs in
+`backend/migrations/`, applied by `omoffice-api migrate` (a subcommand of the
+API binary, so it shares the connection code). `backend/src/schema.rs` is the
+single source of truth for the current shape of every table — edit it, run
+`make db-generate` to write the migration files, review, then `make db-migrate
+<stage>`. See CLAUDE.md for the migration ledger's crash-safety states, DSQL's
+postgres-compatibility subset, and why the queries aren't compile-time checked.
 
 ## Teardown
 
@@ -364,10 +242,9 @@ make destroy dev              # prompts for confirmation
 - Lambda architecture is `arm64` on both sides. To switch, change
   `lambda_architecture` in `infra/envs/<stage>.tfvars` and `ARCH` in
   `backend/Makefile` together.
-- `/auth/request-key/{email}` hands out a token to anyone who names a
-  whitelisted address — there is no proof of ownership yet. Fine for a sample,
-  not for real users; mail the token instead of returning it before this is
-  exposed to anything that matters.
+- `/auth/request-key/{email}` hands out a token to any email named, with no
+  proof of ownership. Fine for a sample, not for real users; mail the token
+  instead of returning it before this is exposed to anything that matters.
 - Terraform state is local (`infra/terraform.tfstate.d/`). Move it to an S3
   backend before more than one person deploys.
 - The frontend bucket is named with the account id appended, because bucket

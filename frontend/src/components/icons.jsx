@@ -1,10 +1,6 @@
 /**
- * The handful of icons the meeting UI needs, inline.
- *
- * `amazon-chime-sdk-js` already dominates the bundle, so an icon package would
- * be the second thing worth code-splitting; a dozen paths are cheaper. Every
- * icon is a 24-unit stroke drawing that inherits `currentColor` and takes the
- * usual className, so a button controls its own size and colour.
+ * The handful of icons the meeting UI needs, inline rather than a package —
+ * the Chime SDK already dominates the bundle.
  */
 
 function Svg({ className = "h-5 w-5", children }) {

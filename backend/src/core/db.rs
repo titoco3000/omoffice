@@ -1,34 +1,5 @@
-//! Aurora DSQL access.
-//!
-//! DSQL speaks the postgres wire protocol, so the driver is plain `sqlx`. What
-//! is different is authentication: there is no password. Every connection
-//! presents a short-lived IAM token, generated locally by SigV4-presigning a
-//! `DbConnectAdmin` call — with the lambda's execution role in AWS, with your
-//! `AWS_PROFILE` under `make run`.
-//!
-//! Because the token expires, a pool cannot keep the one it got at cold start.
-//! [`Db::pool`] re-signs a token before the current one ages out and hands the
-//! new one to the pool via `set_connect_options`, so the next physical
-//! connection uses it. That check is pull-based rather than a background task
-//! on purpose: a lambda is frozen between invocations, and a timer that only
-//! ticks while the sandbox is awake would hand out an expired token after a
-//! long idle gap.
-//!
-//! There is no local database — no emulator, no container. Local runs point at
-//! the real `dev` cluster, the same way `make run dev` already reads the real
-//! per-stage JWT secret.
-//!
-//! This module knows nothing about what is stored in it. It hands out a live
-//! pool, retries a conflicting write and words a failure as HTTP; the tables,
-//! the queries and the row types belong to the modules that own them
-//! (`users.rs`, `meetings.rs`). Nothing here should ever name a column.
-//!
-//! The queries are built at runtime rather than with `sqlx::query!`. The macro
-//! opens its own connection to describe each query at compile time, and the
-//! first thing it sends is a `DO $$ ... $$` block to set `plan_cache_mode`.
-//! DSQL has no PL/pgSQL and answers `DO with language plpgsql not supported`,
-//! which fails the build — so the compile-time-checked variants, and the
-//! `.sqlx` offline cache that goes with them, are not available against DSQL.
+//! Aurora DSQL access, authenticated with a SigV4 IAM token. See CLAUDE.md
+//! for the token-refresh and no-`sqlx::query!` rationale.
 
 use std::future::Future;
 use std::sync::Arc;
@@ -68,9 +39,8 @@ const SQLSTATE_SERIALIZATION_FAILURE: &str = "40001";
 /// How many times a conflicting write is retried before giving up.
 const MAX_WRITE_ATTEMPTS: u32 = 4;
 
-/// Handle to the stage's DSQL cluster. Cheap to clone; `None` inside means no
-/// `DATABASE_ENDPOINT` was configured, and every route reports
-/// `database_unavailable` instead of pretending to work.
+/// Handle to the stage's DSQL cluster. `None` means no `DATABASE_ENDPOINT`
+/// was configured, so every route reports `database_unavailable`.
 #[derive(Clone)]
 pub struct Db(Option<Arc<Inner>>);
 
@@ -94,12 +64,8 @@ impl Db {
         Self(None)
     }
 
-    /// Build the pool from `DATABASE_ENDPOINT` — terraform sets it on the
-    /// lambda, `make run` reads it from `.env.<stage>`. `DATABASE_USER` and
-    /// `DATABASE_NAME` override the DSQL defaults if they ever need to.
-    ///
-    /// Nothing here talks to AWS or to the cluster: the pool is lazy and the
-    /// first token is signed on first use, so a cold start pays neither cost.
+    /// Build the pool from `DATABASE_ENDPOINT`. Lazy: nothing talks to AWS
+    /// or the cluster here, so a cold start pays neither cost.
     pub async fn from_env() -> Self {
         let Some(host) = std::env::var("DATABASE_ENDPOINT")
             .ok()
@@ -209,11 +175,8 @@ fn env_or(name: &str, fallback: &str) -> String {
         .unwrap_or_else(|| fallback.to_string())
 }
 
-/// Run a write, retrying while DSQL reports a commit-time conflict.
-///
-/// DSQL has no locks: concurrent writers both proceed and the later commit is
-/// rejected with SQLSTATE 40001. The closure is re-run from the top, so it must
-/// contain only the database work and be safe to repeat.
+/// Run a write, retrying while DSQL reports a commit-time conflict (no
+/// locks: the closure re-runs from the top, so it must be safe to repeat).
 pub async fn retry_on_conflict<F, Fut, T>(mut operation: F) -> Result<T, DbError>
 where
     F: FnMut() -> Fut,

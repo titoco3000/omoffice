@@ -5,17 +5,8 @@ import Meeting from "./Meeting";
 import MeetingHistory from "./MeetingHistory";
 
 /**
- * The lobby in front of `Meeting`: create a meeting, or type a code.
- *
- * `POST /private/meetings` needs the org it belongs to -- a meeting is a
- * shared org resource, same as the org's chat room -- so this creates (and
- * lists, via `MeetingHistory`) under whichever org `OrgSwitcher` currently
- * has selected (`OrgContext`). Joining by code stays org-independent: the
- * code alone is still all `Meeting` needs.
- *
- * `joinCode`/`onJoinCodeConsumed` are `Shell` handing this a code from
- * `PendingInvites` accepting a meeting invite -- there is no router to carry
- * that as a URL, so it rides down as a prop instead.
+ * The lobby in front of `Meeting`: create or type a code, under whichever
+ * org `OrgSwitcher` has selected. `joinCode` comes from `PendingInvites`.
  */
 export default function MeetingPanel({ token, joinCode, onJoinCodeConsumed }) {
   const { selectedOrgId, selectedOrg } = useOrgContext();
@@ -23,9 +14,8 @@ export default function MeetingPanel({ token, joinCode, onJoinCodeConsumed }) {
   const [codeInput, setCodeInput] = useState("");
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState("");
-  // The last `joinCode` already applied -- "adjusting state when a prop
-  // changes" during render (react.dev's own pattern for this), rather than
-  // an effect that would set `code`/`codeInput` a render late.
+  // Adjusts state during render (react.dev's pattern), not an effect that
+  // would set `code`/`codeInput` a render late.
   const [appliedJoinCode, setAppliedJoinCode] = useState(null);
 
   if (joinCode && joinCode !== appliedJoinCode) {
@@ -34,10 +24,8 @@ export default function MeetingPanel({ token, joinCode, onJoinCodeConsumed }) {
     setCode(joinCode);
   }
 
-  // Telling `Shell` the code's been applied is a real effect (it reaches
-  // outside this component), so it stays one -- keyed on `appliedJoinCode`
-  // rather than `joinCode` so it fires exactly once per code, after the
-  // render above already applied it.
+  // A real effect (reaches outside this component), keyed on
+  // `appliedJoinCode` so it fires exactly once per code.
   useEffect(() => {
     if (appliedJoinCode) onJoinCodeConsumed?.();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -160,12 +148,8 @@ export default function MeetingPanel({ token, joinCode, onJoinCodeConsumed }) {
 }
 
 /**
- * Invite someone to the live meeting by email --
- * `POST /private/meetings/{code}/invites`. The backend gates this on being
- * the meeting's creator; this form doesn't know one way or the other for a
- * meeting joined by typing someone else's code, so it just surfaces the
- * 403 inline the same way `OrgDetail`'s last-admin check does, rather than
- * trying to guess and hide the form.
+ * Invite someone by email. The backend gates this on being the meeting's
+ * creator; this form just surfaces the 403 inline rather than guessing.
  */
 function MeetingInviteForm({ code, token }) {
   const [email, setEmail] = useState("");

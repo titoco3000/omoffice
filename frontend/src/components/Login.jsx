@@ -2,11 +2,7 @@ import { useState } from "react";
 import { useAuth } from "../auth/AuthContext";
 import { describeFailure } from "../api";
 
-/**
- * The entire login flow: `GET /auth/request-key/{email}` hands back a token
- * with no further proof of ownership (see `auth/mod.rs`'s module doc), so
- * typing an email and submitting *is* logging in.
- */
+/** The entire login flow: `GET /auth/request-key/{email}` hands back a token. */
 export default function Login() {
   const { login } = useAuth();
   const [email, setEmail] = useState("");

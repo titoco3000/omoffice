@@ -2,21 +2,8 @@ import { useMemo, useState } from "react";
 import { buildPath, callApi, pathParams } from "../api";
 
 /**
- * One API route, with a form for whatever it needs and a box for what came back.
- *
- *   <RouteTester route="/health" />
- *   <RouteTester route="/auth/request-key/{email}" onResult={r => setToken(r.token)} />
- *   <RouteTester route="/private/me" token={token} />
- *   <RouteTester
- *     method="POST"
- *     route="/private/sample-post/{var}"
- *     fields={{ name: "string", male: "boolean" }}
- *     token={token}
- *   />
- *
- * Inputs come from two places: `{placeholders}` in the route become path
- * fields, and `fields` becomes the JSON body. `onResult` gets the parsed body
- * of a successful response — that is how the token reaches the routes below it.
+ * One API route, with a form for whatever it needs. `{placeholders}` become
+ * path fields, `fields` becomes the JSON body, `onResult` gets the response.
  */
 export default function RouteTester({
   route,

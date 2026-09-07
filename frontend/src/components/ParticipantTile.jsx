@@ -8,15 +8,8 @@ import {
 } from "./icons";
 
 /**
- * One participant's area.
- *
- * The area exists for every attendee in the roster, camera or not: a tile that
- * only appeared once video arrived would reshuffle the whole layout every time
- * somebody toggled their camera. `cell.tileId` is null until the SDK reports a
- * video tile for that attendee, and until then the placeholder holds the space.
- *
- * `onBindVideo` goes back to `Meeting`, which owns the SDK binding; this
- * component only reports the element it mounted for the tile.
+ * One participant's area, present for every attendee whether or not they
+ * have video, so toggling a camera never reshuffles the layout.
  */
 export default function ParticipantTile({
   cell,
@@ -68,9 +61,7 @@ export default function ParticipantTile({
       </div>
 
       <div className="absolute top-1.5 right-1.5 flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
-        {/* Moderation only ever takes something away: the request reaches that
-            attendee's own client, which mutes itself at the source, so it is
-            silent for everyone. Giving it back is theirs alone. */}
+        {/* Moderation only ever takes away; giving it back is theirs alone. */}
         {!cell.local && !cell.content && (
           <>
             <TileButton

@@ -1,7 +1,5 @@
-//! Live browser sessions: who has a socket open right now, and how to push a
-//! JSON value to them. This module knows nothing about chat or any other
-//! feature — it only knows a socket belongs to an email, the same key every
-//! other table uses. `crate::chat` is what puts it to use.
+//! Live browser sessions: who has a socket open, and how to push a JSON
+//! value to them. Knows nothing about chat or any other feature.
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -13,14 +11,11 @@ use futures_util::{SinkExt, StreamExt};
 use serde_json::Value;
 use tokio::sync::{mpsc, RwLock};
 
-/// The outbound half of one registered socket. The registry hands the
-/// receiving half to [`Hub::bind`], which is the loop that actually owns the
-/// socket and forwards everything it gets here onto the wire.
+/// The outbound half of one registered socket; [`Hub::bind`] owns the receiving half.
 type Outbox = mpsc::UnboundedSender<Value>;
 
-/// Identifies one registration within a single email's connections, so
-/// unregistering the one that just closed doesn't disturb a second tab open
-/// at the same time.
+/// One registration within a single email's connections, so closing one tab
+/// doesn't disturb another open at the same time.
 type ConnId = u64;
 
 #[derive(Default)]
@@ -28,9 +23,8 @@ struct State {
     by_email: HashMap<String, HashMap<ConnId, Outbox>>,
 }
 
-/// Registry of open sockets, keyed by email. Cheap to clone — an `Arc`
-/// around the registry — so it reaches handlers as an `Extension`/field the
-/// same way `Db` does.
+/// Registry of open sockets, keyed by email. Cheap to clone (an `Arc`
+/// inside), same as `Db`.
 #[derive(Clone, Default)]
 pub struct Hub {
     state: Arc<RwLock<State>>,
@@ -61,9 +55,8 @@ impl Hub {
         }
     }
 
-    /// Push `body` to every socket `to` currently has open. A dead send (the
-    /// tab closed a moment ago, before its socket's read loop unregistered
-    /// it) is dropped silently — nobody is listening, so nobody can be told.
+    /// Push `body` to every socket `to` has open. A dead send is dropped
+    /// silently — nobody is listening, so nobody can be told.
     pub async fn send(&self, to: &str, body: &Value) {
         if let Some(conns) = self.state.read().await.by_email.get(to) {
             for tx in conns.values() {
@@ -80,11 +73,8 @@ impl Hub {
         }
     }
 
-    /// Drive one accepted socket end to end: register it under `email`, wire
-    /// up hub -> socket delivery, and hand every incoming text frame that
-    /// parses as JSON to `on_message`, until the socket closes. Then
-    /// unregisters itself — callers never need to call
-    /// [`unregister`](Self::unregister) themselves.
+    /// Drive one accepted socket end to end until it closes, then
+    /// unregisters itself — callers never call [`unregister`](Self::unregister).
     pub async fn bind<F, Fut>(&self, socket: WebSocket, email: String, on_message: F)
     where
         F: Fn(Value) -> Fut + Send + 'static,
@@ -122,9 +112,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    /// `bind` is the only caller of `register`/`unregister` outside tests --
-    /// it needs an actual `WebSocket`, which needs an actual connection, so
-    /// these exercise the registry directly instead.
+    /// `bind` needs a real `WebSocket`, so these exercise the registry directly.
     #[tokio::test]
     async fn a_registered_connection_receives_what_is_sent_to_its_email() {
         let hub = Hub::default();

@@ -1,14 +1,5 @@
-//! Amazon Chime SDK meetings — the client, and nothing else.
-//!
-//! Three calls ([`ChimeState::create_meeting`], [`ChimeState::get_meeting`],
-//! [`ChimeState::create_attendee`]), the identifiers Chime demands, and the
-//! JSON shapes the browser SDK reads. No routes, no database, no idea who the
-//! caller is: `meetings.rs` is what puts those together. Anything added here
-//! should make sense to a feature that has nothing to do with our meetings.
-//!
-//! [`meeting_json`] and [`attendee_json`] spell out what the browser SDK's
-//! `MeetingSessionConfiguration` expects, because the AWS Rust SDK types are
-//! not `Serialize`.
+//! Amazon Chime SDK meetings — the client, and nothing else. No routes, no
+//! database, no idea who the caller is; that is done by other modules.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -44,12 +35,8 @@ impl ChimeState {
         }
     }
 
-    /// Build the client from the ambient AWS config — the lambda's execution
-    /// role in AWS, your `AWS_PROFILE` under `make run`.
-    ///
-    /// The media region is `CHIME_MEDIA_REGION`, else the region the SDK
-    /// resolved, else `us-east-1`. It is where the audio/video is mixed, and
-    /// does not have to be the region the API runs in.
+    /// Build the client from the ambient AWS config. Media region is
+    /// `CHIME_MEDIA_REGION`, else the SDK's region, else `us-east-1`.
     pub async fn from_env() -> Self {
         let config = aws_config::load_defaults(aws_config::BehaviorVersion::latest()).await;
         let media_region = std::env::var("CHIME_MEDIA_REGION")
@@ -186,9 +173,8 @@ fn unique_id(prefix: &str) -> String {
     format!("{prefix}-{nanos}-{seq}")
 }
 
-/// An attendee identity the other participants see, unique per join — the same
-/// person may be in a meeting from two tabs. Chime caps it at 64 chars, so a
-/// long label loses its tail rather than the call failing.
+/// An attendee identity the other participants see, unique per join. Chime
+/// caps it at 64 chars, so a long label loses its tail, not the call.
 pub fn external_user_id(label: &str) -> String {
     let suffix = unique_id("j");
     let room = 64usize.saturating_sub(suffix.len() + 1);

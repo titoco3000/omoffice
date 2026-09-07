@@ -1,12 +1,5 @@
-//! The people who have asked for a key.
-//!
-//! `users` is keyed by the email `/auth/request-key/{email}` issues tokens for.
-//! `auth.rs` writes the row when it signs a token, `meetings.created_by`
-//! references it. There is no read path yet, so there is no row type here —
-//! add one when something needs to list users.
-//!
-//! The SQL lives here rather than in `db.rs` on purpose: `db.rs` owns the
-//! connection, this module owns the table.
+//! The people who have asked for a key. Keyed by the email
+//! `/auth/request-key/{email}` issues tokens for; no read path yet, so no row type here.
 
 use crate::core::db::{retry_on_conflict, Db, DbError};
 
@@ -24,10 +17,8 @@ pub async fn record(db: &Db, email: &str) -> Result<(), DbError> {
     .await
 }
 
-/// Is `email` already a row here? The invite flow (`rbac.rs`/`meetings.rs`)
-/// uses this to pick which of the two email templates to send -- someone
-/// who has never asked for a key gets "create your account and join", an
-/// existing user gets "sign in and accept".
+/// Is `email` already a row here? The invite flow uses this to pick which
+/// of the two email templates to send.
 pub async fn exists(db: &Db, email: &str) -> Result<bool, DbError> {
     let pool = db.pool().await?;
     let row: Option<i32> = sqlx::query_scalar("SELECT 1 FROM users WHERE email = $1")

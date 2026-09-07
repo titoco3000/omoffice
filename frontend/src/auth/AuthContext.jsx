@@ -18,12 +18,8 @@ function loadStoredToken() {
 }
 
 /**
- * The one place a token lives: seeded from `localStorage` (validated against
- * its own `exp` so a stale one doesn't outlive the session it belonged to),
- * kept in sync there on every change. `login(email)` is `GET
- * /auth/request-key/{email}` — the API hands back a token with no further
- * proof of ownership, so this is the entire login flow. `logout()` just
- * forgets it; nothing to tell the server.
+ * The one place a token lives, seeded from and kept in sync with
+ * `localStorage`. `login(email)` is `GET /auth/request-key/{email}`.
  */
 export function AuthProvider({ children }) {
   const [token, setToken] = useState(loadStoredToken);
@@ -46,11 +42,8 @@ export function AuthProvider({ children }) {
     return response;
   }
 
-  // An invite's accept route (`/invites/org/{id}/accept`,
-  // `/invites/meetings/{id}/accept`) already hands back a token exactly like
-  // `/auth/request-key/{email}` does -- this just adopts it, without
-  // re-deriving it through `login`. Used by the magic-link handler and by
-  // accepting a pending invite from inside an already-logged-in session.
+  // An invite's accept route hands back a token exactly like
+  // `/auth/request-key/{email}` does; this just adopts it without `login`.
   function loginWithToken(token) {
     setToken(token ?? "");
   }

@@ -2,11 +2,8 @@ import { useEffect, useState } from "react";
 import { callApi, describeFailure } from "../api";
 
 /**
- * The orgs the current token's email belongs to, from `GET /private/orgs` --
- * each with the caller's own roles already folded in, which is what
- * `rbac.hasRole` reads. Same "stamp" pattern as `MeetingHistory`: `loading`
- * is derived from whether the held result matches the current
- * `token:reloads` pair, rather than tracked alongside it.
+ * The orgs the current token's email belongs to, roles folded in. Same
+ * "stamp" pattern as `MeetingHistory` for deriving `loading`.
  */
 export function useOrgs(token) {
   const [reloads, setReloads] = useState(0);

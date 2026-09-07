@@ -1,19 +1,7 @@
-//! JWT bearer auth.
-//!
-//! The policy — which prefixes are protected, which emails may ask for a token —
-//! is not decided here; `app()` states it and passes it in via [`AuthConfig`].
-//! This module only implements it:
-//!
-//! * [`KeySource`] — where the HMAC key comes from. In AWS it lives in Secrets
-//!   Manager and rotates every Sunday, so tokens are verified against both the
-//!   current and the previous version: a token issued on Saturday still works on
-//!   Monday.
-//! * [`request_key`] — hands a 48h token to a whitelisted email.
-//! * [`require_bearer`] — one middleware over the whole router that only demands
-//!   a token for protected prefixes.
+//! JWT bearer auth. Policy (protected prefixes, allowed emails) is decided
+//! by `app()` via [`AuthConfig`]; [`keys`] holds the signing key.
 
-use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use axum::{
     extract::{Extension, Path, Request, State},
@@ -22,28 +10,22 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
-use jsonwebtoken::{
-    decode, encode, errors::ErrorKind, Algorithm, DecodingKey, EncodingKey, Header, Validation,
-};
+use jsonwebtoken::Algorithm;
+#[cfg(test)]
+use jsonwebtoken::{encode, EncodingKey, Header};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::core::db::Db;
 use crate::users;
 
+mod keys;
+pub use keys::{AuthState, KeySource};
+
 /// How long an issued token is valid.
 const TOKEN_TTL: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 
-/// How long a key fetched from Secrets Manager is reused before refetching.
-/// Rotation is weekly, so a few minutes of staleness is harmless — and a token
-/// signed with a just-rotated-out key still verifies against `AWSPREVIOUS`.
-const KEY_CACHE_TTL: Duration = Duration::from_secs(300);
-
 const ALGORITHM: Algorithm = Algorithm::HS256;
-
-/// Key used when nothing is configured. Local development only — [`KeySource::from_env`]
-/// refuses to hand it back inside Lambda.
-const DEV_FALLBACK_KEY: &str = "insecure-local-development-key";
 
 /// JWT payload.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -63,7 +45,6 @@ pub enum AuthError {
     MissingToken,
     InvalidToken,
     ExpiredToken,
-    EmailNotAllowed,
     KeyUnavailable(String),
 }
 
@@ -84,11 +65,6 @@ impl AuthError {
                 StatusCode::UNAUTHORIZED,
                 "expired_token",
                 "the bearer token has expired, request a new one".to_string(),
-            ),
-            Self::EmailNotAllowed => (
-                StatusCode::FORBIDDEN,
-                "email_not_allowed",
-                "this email is not on the whitelist".to_string(),
             ),
             Self::KeyUnavailable(why) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -116,83 +92,9 @@ impl IntoResponse for AuthError {
     }
 }
 
-/// Where the HMAC signing key comes from.
-pub enum KeySource {
-    /// A key held in memory: `JWT_KEY`, the local dev fallback, and tests.
-    Fixed(String),
-    /// Secrets Manager, rotated weekly by the infra rotation lambda.
-    Secret {
-        client: aws_sdk_secretsmanager::Client,
-        secret_id: String,
-    },
-}
-
-impl KeySource {
-    pub fn fixed(key: impl Into<String>) -> Self {
-        Self::Fixed(key.into())
-    }
-
-    pub fn secrets_manager(
-        client: aws_sdk_secretsmanager::Client,
-        secret_id: impl Into<String>,
-    ) -> Self {
-        Self::Secret {
-            client,
-            secret_id: secret_id.into(),
-        }
-    }
-
-    /// Pick the key source from the environment, once at startup.
-    ///
-    /// 1. `JWT_KEY` — a literal key. Tests and offline work; wins if set.
-    /// 2. `JWT_SECRET_ID` — the weekly-rotated Secrets Manager secret. Terraform
-    ///    puts this on the deployed lambda, and `make run` reads it from
-    ///    `.env.<stage>`. Building the AWS client is why this is `async`.
-    /// 3. Neither — locally, fall back to a hardcoded key so `cargo run` works
-    ///    with no AWS at all. In Lambda that would be a signing key published in
-    ///    the repo, so it panics instead: a cold-start failure beats an API
-    ///    anyone can mint tokens for.
-    pub async fn from_env(in_lambda: bool) -> Self {
-        if let Ok(key) = std::env::var("JWT_KEY") {
-            if !key.is_empty() {
-                tracing::info!("jwt key: JWT_KEY env var");
-                return Self::fixed(key);
-            }
-        }
-
-        if let Ok(secret_id) = std::env::var("JWT_SECRET_ID") {
-            if !secret_id.is_empty() {
-                tracing::info!("jwt key: secrets manager secret {secret_id}");
-                let config = aws_config::load_defaults(aws_config::BehaviorVersion::latest()).await;
-                return Self::secrets_manager(
-                    aws_sdk_secretsmanager::Client::new(&config),
-                    secret_id,
-                );
-            }
-        }
-
-        assert!(
-            !in_lambda,
-            "neither JWT_KEY nor JWT_SECRET_ID is set; terraform sets JWT_SECRET_ID on the lambda"
-        );
-        tracing::warn!("jwt key: INSECURE built-in development key (set JWT_KEY or JWT_SECRET_ID)");
-        Self::fixed(DEV_FALLBACK_KEY)
-    }
-}
-
-/// Builder for [`AuthState`]. Lets `app()` state the whole auth policy in one
-/// place:
-///
-/// ```ignore
-/// AuthConfig::new(keys)
-///     .protect(vec!["/private"])
-///     .allow_emails(vec!["dev@omoffice.example"])
-///     .build()
-/// ```
 pub struct AuthConfig {
     source: KeySource,
     protected: Vec<String>,
-    allowed_emails: Vec<String>,
 }
 
 impl AuthConfig {
@@ -200,7 +102,6 @@ impl AuthConfig {
         Self {
             source,
             protected: Vec::new(),
-            allowed_emails: Vec::new(),
         }
     }
 
@@ -215,213 +116,19 @@ impl AuthConfig {
         self
     }
 
-    /// Emails allowed to request a token. Matched case-insensitively. An
-    /// empty (the default) or never-called list means no whitelist at all —
-    /// see `is_allowed`. `app()` no longer calls this (org invites need to
-    /// provision arbitrary emails), so only this module's own tests exercise
-    /// it now; kept as public API for a deployment that wants the whitelist
-    /// back.
-    #[allow(dead_code)]
-    pub fn allow_emails<I, S>(mut self, emails: I) -> Self
-    where
-        I: IntoIterator<Item = S>,
-        S: Into<String>,
-    {
-        self.allowed_emails = emails
-            .into_iter()
-            .map(|email| email.into().trim().to_lowercase())
-            .collect();
-        self
-    }
-
     pub fn build(self) -> AuthState {
-        AuthState(Arc::new(Inner {
-            source: self.source,
-            protected: self.protected,
-            allowed_emails: self.allowed_emails,
-            cache: tokio::sync::RwLock::new(None),
-        }))
+        keys::build(self.source, self.protected)
     }
 }
 
-/// The signing key plus the one it replaced, if any.
-#[derive(Clone)]
-struct Keys {
-    current: String,
-    previous: Option<String>,
-}
-
-struct Cached {
-    keys: Keys,
-    fetched_at: Instant,
-}
-
-struct Inner {
-    source: KeySource,
-    protected: Vec<String>,
-    allowed_emails: Vec<String>,
-    cache: tokio::sync::RwLock<Option<Cached>>,
-}
-
-/// Shared auth state: the policy from [`AuthConfig`] plus the key cache. Cheap
-/// to clone.
-#[derive(Clone)]
-pub struct AuthState(Arc<Inner>);
-
-impl AuthState {
-    /// True if `path` sits under one of the protected prefixes.
-    fn is_protected(&self, path: &str) -> bool {
-        self.0.protected.iter().any(|prefix| {
-            path == prefix
-                || (path.starts_with(prefix) && path.as_bytes().get(prefix.len()) == Some(&b'/'))
-        })
-    }
-
-    /// An empty configured list means no whitelist at all -- everyone is
-    /// allowed. `app()` relies on this: org invites need to provision
-    /// arbitrary emails, so nothing calls `.allow_emails(...)` there any
-    /// more, and this is what makes that mean "open" rather than "nobody".
-    fn is_allowed(&self, email: &str) -> bool {
-        self.0.allowed_emails.is_empty()
-            || self.0.allowed_emails.iter().any(|allowed| allowed == email)
-    }
-
-    async fn keys(&self) -> Result<Keys, AuthError> {
-        let (client, secret_id) = match &self.0.source {
-            KeySource::Fixed(key) => {
-                return Ok(Keys {
-                    current: key.clone(),
-                    previous: None,
-                })
-            }
-            KeySource::Secret { client, secret_id } => (client, secret_id),
-        };
-
-        if let Some(cached) = self.0.cache.read().await.as_ref() {
-            if cached.fetched_at.elapsed() < KEY_CACHE_TTL {
-                return Ok(cached.keys.clone());
-            }
-        }
-
-        let current = fetch_stage(client, secret_id, "AWSCURRENT")
-            .await?
-            .ok_or_else(|| AuthError::KeyUnavailable(format!("{secret_id} has no AWSCURRENT")))?;
-        // AWSPREVIOUS only exists after the first rotation.
-        let previous = fetch_stage(client, secret_id, "AWSPREVIOUS").await?;
-
-        let keys = Keys { current, previous };
-        *self.0.cache.write().await = Some(Cached {
-            keys: keys.clone(),
-            fetched_at: Instant::now(),
-        });
-        Ok(keys)
-    }
-
-    /// Sign a 48h token for `email`. Returns the token and its expiry.
-    pub async fn issue(&self, email: &str) -> Result<(String, u64), AuthError> {
-        let now = unix_now();
-        let claims = Claims {
-            sub: email.to_string(),
-            iat: now,
-            exp: now + TOKEN_TTL.as_secs(),
-        };
-        let key = self.keys().await?.current;
-        let token = encode(
-            &Header::new(ALGORITHM),
-            &claims,
-            &EncodingKey::from_secret(key.as_bytes()),
-        )
-        .map_err(|e| AuthError::KeyUnavailable(e.to_string()))?;
-        Ok((token, claims.exp))
-    }
-
-    /// Verify a token against the current key, then the previous one.
-    pub async fn verify(&self, token: &str) -> Result<Claims, AuthError> {
-        let keys = self.keys().await?;
-        let validation = validation();
-
-        match decode_with(token, &keys.current, &validation) {
-            Ok(claims) => return Ok(claims),
-            // An expired token is expired under either key; report it as such.
-            Err(AuthError::ExpiredToken) => return Err(AuthError::ExpiredToken),
-            Err(_) => {}
-        }
-
-        match keys.previous {
-            Some(previous) => decode_with(token, &previous, &validation),
-            None => Err(AuthError::InvalidToken),
-        }
-    }
-}
-
-async fn fetch_stage(
-    client: &aws_sdk_secretsmanager::Client,
-    secret_id: &str,
-    stage: &str,
-) -> Result<Option<String>, AuthError> {
-    let result = client
-        .get_secret_value()
-        .secret_id(secret_id)
-        .version_stage(stage)
-        .send()
-        .await;
-
-    match result {
-        Ok(value) => Ok(value.secret_string().map(str::to_string)),
-        // A missing stage is not an error: AWSPREVIOUS is absent until the first rotation.
-        Err(err) if is_not_found(&err) => Ok(None),
-        Err(err) => Err(AuthError::KeyUnavailable(format!(
-            "{secret_id} ({stage}): {}",
-            aws_sdk_secretsmanager::error::DisplayErrorContext(&err)
-        ))),
-    }
-}
-
-fn is_not_found(
-    err: &aws_sdk_secretsmanager::error::SdkError<
-        aws_sdk_secretsmanager::operation::get_secret_value::GetSecretValueError,
-    >,
-) -> bool {
-    matches!(err, aws_sdk_secretsmanager::error::SdkError::ServiceError(e) if e.err().is_resource_not_found_exception())
-}
-
-fn validation() -> Validation {
-    let mut validation = Validation::new(ALGORITHM);
-    validation.set_required_spec_claims(&["exp", "sub"]);
-    validation
-}
-
-fn decode_with(token: &str, key: &str, validation: &Validation) -> Result<Claims, AuthError> {
-    decode::<Claims>(token, &DecodingKey::from_secret(key.as_bytes()), validation)
-        .map(|data| data.claims)
-        .map_err(|err| match err.kind() {
-            ErrorKind::ExpiredSignature => AuthError::ExpiredToken,
-            _ => AuthError::InvalidToken,
-        })
-}
-
-fn unix_now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system clock is before the unix epoch")
-        .as_secs()
-}
-
-/// `GET /auth/request-key/{email}` — issue a token to a whitelisted email.
-///
-/// This is also where a person first becomes a row in `users`: the email on the
-/// token is the key every other table hangs off.
+/// `GET /auth/request-key/{email}` — also where a person first becomes a
+/// row in `users`, the key every other table hangs off.
 pub async fn request_key(
     State(state): State<AuthState>,
     Extension(db): Extension<Db>,
     Path(email): Path<String>,
 ) -> Result<Json<Value>, AuthError> {
     let email = email.trim().to_lowercase();
-    if !state.is_allowed(&email) {
-        tracing::warn!("key requested for non-whitelisted email");
-        return Err(AuthError::EmailNotAllowed);
-    }
-
     let (token, expires_at) = state.issue(&email).await?;
 
     // Best effort on purpose: the token is already signed and valid, so a
@@ -439,9 +146,8 @@ pub async fn request_key(
     })))
 }
 
-/// Router-wide middleware. Requests outside the protected prefixes pass straight
-/// through; protected ones need a valid bearer token, whose [`Claims`] are then
-/// available to the handler as an extension.
+/// Router-wide middleware: protected prefixes need a valid token, whose
+/// [`Claims`] then reach the handler as an extension.
 pub async fn require_bearer(
     State(state): State<AuthState>,
     mut request: Request,
@@ -484,7 +190,7 @@ fn bearer_token(request: &Request) -> Option<String> {
 pub(crate) fn sign_for_test(key: &str, email: &str, exp: u64) -> String {
     let claims = Claims {
         sub: email.to_string(),
-        iat: unix_now(),
+        iat: keys::unix_now(),
         exp,
     };
     encode(
@@ -502,7 +208,6 @@ mod tests {
     fn state() -> AuthState {
         AuthConfig::new(KeySource::fixed("test-key"))
             .protect(vec!["/private"])
-            .allow_emails(vec!["Dev@Omoffice.Example"])
             .build()
     }
 
@@ -520,21 +225,6 @@ mod tests {
         assert!(!state.is_protected("/"));
         assert!(!state.is_protected("/privateer"));
         assert!(!state.is_protected("/public/private"));
-    }
-
-    #[test]
-    fn the_whitelist_ignores_case() {
-        let state = state();
-        assert!(state.is_allowed("dev@omoffice.example"));
-        assert!(!state.is_allowed("stranger@example.com"));
-    }
-
-    #[test]
-    fn no_whitelist_configured_allows_any_email() {
-        let open = AuthConfig::new(KeySource::fixed("test-key"))
-            .protect(vec!["/private"])
-            .build();
-        assert!(open.is_allowed("anyone@example.com"));
     }
 
     #[tokio::test]

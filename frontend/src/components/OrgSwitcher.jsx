@@ -1,11 +1,6 @@
 import { useOrgContext } from "../org/OrgContext";
 
-/**
- * The one place a person picks which org they're currently acting in.
- * `ChatPanel` (which room) and `MeetingPanel`/`MeetingHistory` (which org's
- * meetings, and which org a new one belongs to) all read `selectedOrgId`
- * off `OrgContext` rather than picking their own org independently.
- */
+/** The one place a person picks which org they're currently acting in. */
 export default function OrgSwitcher() {
   const { orgs, selectedOrgId, selectOrg } = useOrgContext();
 

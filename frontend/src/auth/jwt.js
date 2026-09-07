@@ -1,7 +1,5 @@
-// Decoding a JWT payload client-side needs no library: it's a base64url JSON
-// blob between two dots. This never verifies a signature — the backend
-// already did that — it only reads `sub`/`exp` so the UI knows who's logged
-// in and when to stop treating a stored token as valid.
+// A base64url JSON blob between two dots — no library needed, and this
+// never verifies the signature; the backend already did.
 
 /// The `{sub, iat, exp}` claims from a token, or `null` if it isn't shaped
 /// like one. Never throws.

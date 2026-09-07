@@ -3,39 +3,9 @@ import { callApi, describeFailure } from "../api";
 import { useOrgs } from "../hooks/useOrgs";
 import { visibleRoles } from "../rbac";
 import OrgDetail from "./OrgDetail";
+import RoleCheckboxes from "./RoleCheckboxes";
 
-/// The three roles native to the RBAC (`backend/src/rbac/mod.rs::roles`) plus
-/// this project's own pickable list (`main.rs`'s `RolesConfig::project_roles`).
-/// Kept here rather than fetched, same as the backend keeps them as constants
-/// — there's no `GET /private/roles` because the list is static. Deliberately
-/// excludes the backend's hidden default role (`rbac::roles::DEFAULT`, the
-/// empty string), never a choice a person makes — see `rbac.js`'s
-/// `visibleRoles`.
-export const ROLE_OPTIONS = ["admin", "billing", "team-management", "post"];
-
-/// A member can hold several roles at once (`org_roles` is a user-org-role
-/// table, not one role column), so picking roles is always a set of
-/// checkboxes, never a single `<select>`. Shared by the invite forms here and
-/// in `OrgDetail`, and by `OrgDetail`'s per-member role editor.
-export function RoleCheckboxes({ roles, onChange }) {
-  function toggle(role) {
-    onChange(roles.includes(role) ? roles.filter((r) => r !== role) : [...roles, role]);
-  }
-
-  return (
-    <div className="flex flex-wrap gap-3">
-      {ROLE_OPTIONS.map((role) => (
-        <label key={role} className="flex items-center gap-1 text-xs text-slate-300">
-          <input type="checkbox" checked={roles.includes(role)} onChange={() => toggle(role)} />
-          {role}
-        </label>
-      ))}
-    </div>
-  );
-}
-
-/// The lobby for orgs: the list `App` shows next to meetings, a create-org
-/// form (with an optional batch of invites up front), and — once one is
+/// The lobby for orgs: the list, a create-org form, and — once one is
 /// picked — `OrgDetail` for its roster.
 export default function Organizations({ token }) {
   const { orgs, loading, error, reload } = useOrgs(token);
@@ -147,9 +117,8 @@ function CreateOrgForm({ token, onCreated }) {
       token,
       body: {
         name: wanted,
-        // A row with no roles checked is still a real invite: the backend
-        // folds in its own hidden default role, so this just means "add
-        // them with no special permission."
+        // A row with no roles checked is still a real invite — the backend
+        // folds in its own hidden default role.
         invites: invites.filter((row) => row.email.trim()),
       },
     });

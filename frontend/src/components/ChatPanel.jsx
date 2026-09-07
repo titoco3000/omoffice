@@ -2,18 +2,11 @@ import { useEffect, useRef, useState } from "react";
 import { chatWsUrl } from "../api";
 import { useOrgContext } from "../org/OrgContext";
 
-/// A room holds at most this many messages in one tab -- there is no
-/// history (`backend/src/chat/mod.rs`: nothing is written to a table), so
-/// this only bounds how much one already-open tab keeps around, not what a
-/// new join can see.
+/// Caps one tab's kept messages — there is no server history to bound instead.
 const MAX_MESSAGES = 200;
 
 /**
- * A room *is* an org, every member shares the one the backend keeps for it
- * -- so which room to join is just whichever org `OrgSwitcher` currently has
- * selected (`OrgContext`), not a picker of its own the way this used to
- * have. Switching orgs from the header closes this room and opens the new
- * one, same as picking a different org here used to.
+ * A room *is* an org: whichever one `OrgSwitcher` (`OrgContext`) has selected.
  */
 export default function ChatPanel({ token, email }) {
   const { orgs, loading, error, selectedOrg } = useOrgContext();
@@ -56,15 +49,7 @@ export default function ChatPanel({ token, email }) {
   );
 }
 
-/**
- * One org's room: opens the socket on mount, closes it on unmount, and
- * fans every `{"text": ...}` frame it sends into what every other member
- * currently connected receives -- see `chat/mod.rs` for both halves of that
- * (a real held-open socket locally, API Gateway's WebSocket API deployed).
- * `email` is only for styling a caller's own messages differently; the
- * server never needs to be told who's talking, it already knows from the
- * connection.
- */
+/** One org's room. `email` is only for styling a caller's own messages. */
 function ChatRoom({ orgId, token, email }) {
   const [status, setStatus] = useState("connecting"); // connecting | open | closed | error
   const [messages, setMessages] = useState([]);
@@ -111,10 +96,8 @@ function ChatRoom({ orgId, token, email }) {
     if (!text || status !== "open") return;
     socketRef.current?.send(JSON.stringify({ text }));
 
-    // The backend never echoes a message back to whoever sent it (both
-    // `chat::ws` and `chat::lambda_entry` fan out to every *other* member
-    // on purpose) -- so the sender's own copy is added here, not read back
-    // off the socket.
+    // The backend never echoes a message back to its sender, so the
+    // sender's own copy is added here, not read back off the socket.
     nextIdRef.current += 1;
     setMessages((current) => [
       ...current.slice(-(MAX_MESSAGES - 1)),
@@ -170,9 +153,7 @@ function ChatRoom({ orgId, token, email }) {
           <button
             type="button"
             onClick={() => {
-              // Immediate feedback -- the new socket's own `onopen` will
-              // confirm it a moment later; messages are left as they are,
-              // a reconnect resumes the same room rather than clearing it.
+              // Immediate feedback; the new socket's `onopen` confirms it later.
               setStatus("connecting");
               setAttempt((count) => count + 1);
             }}

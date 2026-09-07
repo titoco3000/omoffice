@@ -1,12 +1,6 @@
 /**
- * A fixed-position stack of dismissible toasts, fed by `useNotifications`.
- * Mounted once in `Shell` so a toast survives whichever tab is open.
- *
- * An invite toast (`kind`/`inviteId` set) is clickable: `onAccept` is
- * `Shell`'s wiring into `useInviteActions`, the same accept path
- * `PendingInvites` uses -- clicking the toast accepts the invite (and, for
- * a meeting, jumps straight into it) rather than just having shown a
- * message.
+ * A fixed-position stack of dismissible toasts. An invite toast is
+ * clickable: `onAccept` wires into `useInviteActions` to accept it.
  */
 export default function Toast({ toasts, onDismiss, onAccept }) {
   if (toasts.length === 0) return null;

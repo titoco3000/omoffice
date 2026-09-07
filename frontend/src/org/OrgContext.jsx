@@ -25,26 +25,16 @@ function storeOrgId(id) {
 }
 
 /**
- * The one org a person is "currently in" -- what `OrgSwitcher`'s dropdown
- * picks, and what `ChatPanel` (which room) and `MeetingPanel`/`MeetingHistory`
- * (which org's meetings, and which org a new one is created under) read
- * instead of each keeping their own org list and picker the way `ChatPanel`
- * used to.
- *
- * Wraps `useOrgs` (the same fetch `Organizations`/`OrgDetail` use) rather
- * than re-fetching: one source for "which orgs does this token belong to",
- * this context just adds "and which one is selected" on top.
+ * The one org a person is "currently in". Wraps `useOrgs` rather than
+ * re-fetching, adding just "and which one is selected".
  */
 export function OrgProvider({ children }) {
   const { token } = useAuth();
   const { orgs, loading, error, reload } = useOrgs(token);
   const [selectedOrgId, setSelectedOrgId] = useState(loadStoredOrgId);
 
-  // If there's no valid selection (nothing stored, it named an org this
-  // token isn't in, or an org was just left) but the list has something,
-  // fall back to the first one -- adjusted during render, react.dev's own
-  // pattern for this, rather than an effect that would leave `ChatPanel`
-  // etc. rendering "no org selected" for one extra frame after every load.
+  // Falls back to the first org when there's no valid selection, adjusted
+  // during render (react.dev's pattern) so nothing flashes "no org" first.
   const validSelection = orgs.some((org) => org.id === selectedOrgId);
   if (!validSelection && orgs.length > 0) {
     setSelectedOrgId(orgs[0].id);
