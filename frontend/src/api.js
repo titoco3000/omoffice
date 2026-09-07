@@ -29,6 +29,18 @@ export function chatWsUrl(orgId, token) {
   return `${base}/chat/ws/${encodeURIComponent(orgId)}?token=${encodeURIComponent(token)}`;
 }
 
+/// The room-less presence socket (`backend/src/chat/mod.rs`'s
+/// `ws_presence`/deployed `$connect` with no `org_id`) -- same
+/// deployed-vs-local split as `chatWsUrl`, minus the org. This is what
+/// delivers an invite's live toast to someone who isn't a member of the org
+/// they're being invited into yet, so it can't be a room-scoped socket.
+export function notifyWsUrl(token) {
+  const query = `token=${encodeURIComponent(token)}`;
+  if (CHAT_WS_URL) return `${CHAT_WS_URL}?${query}`;
+  const base = API_URL.replace(/^http/, "ws");
+  return `${base}/chat/ws?${query}`;
+}
+
 /// Placeholders in a route template, e.g. "/private/sample-post/{var}" -> ["var"].
 export function pathParams(route) {
   return [...route.matchAll(/\{(\w+)\}/g)].map((match) => match[1]);

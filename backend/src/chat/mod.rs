@@ -48,6 +48,8 @@ use lambda_http::request::RequestContext;
 use serde::Deserialize;
 use serde_json::json;
 
+use serde_json::Value;
+
 use crate::auth::AuthState;
 use crate::core::apigw_management::{ApiGatewayManagement, ApiGatewayManagementError};
 use crate::core::db::Db;
@@ -99,6 +101,36 @@ pub async fn ws(
         .into_response()
 }
 
+/// `GET /chat/ws` — a room-less socket, open to any valid token, no
+/// membership check. **Local dev only**, same caveat as [`ws`]. This is
+/// presence, not chat: it never fans anything out and never reads an
+/// incoming frame for anything -- it exists purely so
+/// `messenger::Messenger::push_toast`'s local half (the in-process
+/// [`crate::messenger::websocket::Hub`], keyed by email regardless of which
+/// socket registered it) has something to deliver an invite toast to for
+/// someone who isn't a member of any room yet. `Hub::bind` still needs an
+/// `on_message` closure; this one just drops every frame it gets.
+pub async fn ws_presence(
+    State(auth): State<AuthState>,
+    Extension(messenger): Extension<Messenger>,
+    Query(params): Query<WsAuth>,
+    upgrade: WebSocketUpgrade,
+) -> Response {
+    let claims = match auth.verify(&params.token).await {
+        Ok(claims) => claims,
+        Err(err) => return err.into_response(),
+    };
+
+    upgrade
+        .on_upgrade(move |socket| async move {
+            messenger
+                .websocket()
+                .bind(socket, claims.sub, |_frame| async {})
+                .await;
+        })
+        .into_response()
+}
+
 /// Drives one joined socket: registers it on the hub under `from`, then fans
 /// out every `{"text": ...}` frame it sends to the rest of the org's roster.
 async fn handle(socket: WebSocket, messenger: Messenger, db: Db, org_id: String, from: String) {
@@ -140,11 +172,13 @@ async fn handle(socket: WebSocket, messenger: Messenger, db: Db, org_id: String,
 /// Query string on the `$connect` URL
 /// (`wss://.../{stage}?token=...&org_id=...`) — a browser cannot set a
 /// header on a WebSocket handshake, so both ride along as query parameters,
-/// verified the same way [`ws`]'s `token` is.
+/// verified the same way [`ws`]'s `token` is. `org_id` is optional: absent,
+/// this is a room-less presence connection, the deployed twin of
+/// [`ws_presence`] — see [`handle_connect`].
 #[derive(Debug, Deserialize)]
 struct ConnectParams {
     token: String,
-    org_id: String,
+    org_id: Option<String>,
 }
 
 /// Registered as the router's fallback (see `main.rs`), so it only ever runs
@@ -182,10 +216,12 @@ pub async fn lambda_entry(
     }
 }
 
-/// `$connect`: verify the token and org membership carried in the query
-/// string, then record the connection. A non-2xx response here is how a
-/// WebSocket-API `$connect` route rejects the connection outright — API
-/// Gateway never finishes the handshake, and no `$disconnect` follows.
+/// `$connect`: verify the token, then either the org membership carried in
+/// the query string (a room) or nothing at all (`org_id` absent — a
+/// presence connection, see [`ConnectParams`]), and record the connection.
+/// A non-2xx response here is how a WebSocket-API `$connect` route rejects
+/// the connection outright — API Gateway never finishes the handshake, and
+/// no `$disconnect` follows.
 async fn handle_connect(
     db: &Db,
     auth: &AuthState,
@@ -204,18 +240,21 @@ async fn handle_connect(
         Ok(claims) => claims,
         Err(err) => return err.into_response(),
     };
-    if let Err(err) = rbac::require_member(db, &claims.sub, &params.org_id).await {
-        return err.into_response();
+
+    if let Some(org_id) = &params.org_id {
+        if let Err(err) = rbac::require_member(db, &claims.sub, org_id).await {
+            return err.into_response();
+        }
     }
 
-    match connections::record(db, &connection_id, &claims.sub, &params.org_id).await {
+    match connections::record(db, &connection_id, &claims.sub, params.org_id.as_deref()).await {
         Ok(()) => StatusCode::OK.into_response(),
         Err(err) => err.into_response(),
     }
 }
 
-/// `$disconnect`: forget the connection. Always answered 200 -- there is
-/// nothing left to reject once the client is already gone.
+/// `$disconnect`: forget the connection, room or presence. Always answered
+/// 200 -- there is nothing left to reject once the client is already gone.
 async fn handle_disconnect(db: &Db, ctx: &ApiGatewayWebsocketProxyRequestContext) -> Response {
     if let Some(connection_id) = &ctx.connection_id {
         if let Err(err) = connections::remove(db, connection_id).await {
@@ -223,6 +262,37 @@ async fn handle_disconnect(db: &Db, ctx: &ApiGatewayWebsocketProxyRequestContext
         }
     }
     StatusCode::OK.into_response()
+}
+
+/// Push `body` down every open connection `email` has right now -- the
+/// deployed half of an invite's live-toast delivery
+/// (`messenger::Messenger::push_toast`'s other half is the local
+/// in-process `Hub`, see there). A no-op wherever nothing is open: locally,
+/// nothing ever populates `connections` outside a real WebSocket-API event,
+/// and `management` itself reports every call `Unavailable` in a local run
+/// (`core::apigw_management::ApiGatewayManagement::from_env`).
+pub async fn push_to_user(db: &Db, management: &ApiGatewayManagement, email: &str, body: &Value) {
+    let Ok(connection_ids) = connections::in_user(db, email).await else {
+        return;
+    };
+    let Ok(bytes) = serde_json::to_vec(body) else {
+        return;
+    };
+
+    for connection_id in connection_ids {
+        match management.post(&connection_id, &bytes).await {
+            Ok(()) => {}
+            // Same lazy cleanup `handle_message` does for a room connection:
+            // the socket outlived its row, so forget it rather than fail
+            // every future push to this email on it.
+            Err(ApiGatewayManagementError::Gone) => {
+                if let Err(err) = connections::remove(db, &connection_id).await {
+                    tracing::warn!("chat: could not remove a stale connection: {err:?}");
+                }
+            }
+            Err(err) => tracing::warn!("chat: could not push a toast to {email}: {err}"),
+        }
+    }
 }
 
 /// A chat message: look the sender up by the connection id API Gateway just
@@ -258,7 +328,12 @@ async fn handle_message(
     let Ok(Some(sender)) = connections::by_connection_id(db, &connection_id).await else {
         return ok;
     };
-    let Ok(peers) = connections::in_org(db, &sender.org_id).await else {
+    // A presence connection (`org_id: None`) is nowhere -- nothing to fan a
+    // message out to, and nothing should be sending one over it anyway.
+    let Some(org_id) = &sender.org_id else {
+        return ok;
+    };
+    let Ok(peers) = connections::in_org(db, org_id).await else {
         return ok;
     };
 

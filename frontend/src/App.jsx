@@ -1,11 +1,17 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { AuthProvider, useAuth } from "./auth/AuthContext";
 import ChatPanel from "./components/ChatPanel";
 import Login from "./components/Login";
 import MeetingPanel from "./components/MeetingPanel";
 import Organizations from "./components/Organizations";
+import OrgSwitcher from "./components/OrgSwitcher";
+import PendingInvites from "./components/PendingInvites";
 import RouteTester from "./components/RouteTester";
-import { API_URL, STAGE } from "./api";
+import Toast from "./components/Toast";
+import { useInviteActions } from "./hooks/useInviteActions";
+import { useNotifications } from "./hooks/useNotifications";
+import { OrgProvider } from "./org/OrgContext";
+import { API_URL, callApi, describeFailure, STAGE } from "./api";
 
 const TABS = [
   { id: "meetings", label: "meetings" },
@@ -14,25 +20,122 @@ const TABS = [
 ];
 
 /// Top-level shell: `AuthProvider` owns the token, everything else is a
-/// child of it. Logged out shows `Login`; logged in shows the two-tab app
+/// child of it. `InviteLink` sits just inside it so it can call
+/// `loginWithToken` for a magic link before `Shell` ever decides whether to
+/// show `Login`. Logged out shows `Login`; logged in shows the two-tab app
 /// shell — a plain `useState` switch rather than a router, since there are
 /// only ever two pages.
 export default function App() {
   return (
     <AuthProvider>
-      <Shell />
+      <InviteLink>
+        <OrgProvider>
+          <Shell />
+        </OrgProvider>
+      </InviteLink>
     </AuthProvider>
   );
+}
+
+/// `?invite=org:{id}` / `?invite=meeting:{id}` in the URL is the magic
+/// link: on mount, POST the matching public accept route
+/// (`/invites/org/{id}/accept` / `/invites/meetings/{id}/accept`,
+/// `backend/src/rbac.rs`/`meetings.rs`) and adopt the token it hands back --
+/// "click the link, get logged in and accepted" end to end. The query
+/// string is stripped either way so a refresh doesn't replay it.
+function InviteLink({ children }) {
+  const { loginWithToken } = useAuth();
+  const invite = parseInviteParam();
+  const [status, setStatus] = useState(invite ? "joining" : "idle");
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!invite) return undefined;
+    let cancelled = false;
+
+    (async () => {
+      const path =
+        invite.kind === "org"
+          ? `/invites/org/${encodeURIComponent(invite.id)}/accept`
+          : `/invites/meetings/${encodeURIComponent(invite.id)}/accept`;
+      const response = await callApi({ method: "POST", path });
+
+      const url = new URL(window.location.href);
+      url.searchParams.delete("invite");
+      window.history.replaceState({}, "", url);
+
+      if (cancelled) return;
+      if (response.ok) {
+        loginWithToken(response.data.token);
+        setStatus("done");
+      } else {
+        setError(describeFailure(response));
+        setStatus("error");
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+    // Only ever run once, against the link that was in the URL on mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  if (status === "joining") {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-slate-950 text-slate-100">
+        <p className="text-sm text-slate-400">joining…</p>
+      </div>
+    );
+  }
+  if (status === "error") {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-slate-950 px-4 text-slate-100">
+        <p className="max-w-sm rounded-lg border border-rose-800 bg-slate-900/60 p-4 text-center font-mono text-xs break-all text-rose-300">
+          {error}
+        </p>
+      </div>
+    );
+  }
+  return children;
+}
+
+function parseInviteParam() {
+  const raw = new URLSearchParams(window.location.search).get("invite");
+  if (!raw) return null;
+  const [kind, id] = raw.split(":");
+  if ((kind !== "org" && kind !== "meeting") || !id) return null;
+  return { kind, id };
 }
 
 function Shell() {
   const { token, email, isAuthenticated, logout } = useAuth();
   const [tab, setTab] = useState("meetings");
+  const [meetingCodeToJoin, setMeetingCodeToJoin] = useState("");
+  const { toasts, dismiss } = useNotifications(isAuthenticated ? token : null);
+
+  function joinMeeting(code) {
+    setMeetingCodeToJoin(code);
+    setTab("meetings");
+  }
+
+  // Shared with `PendingInvites` only in behavior, not instance -- both call
+  // through to the same `AuthContext.loginWithToken`, so which component's
+  // `useInviteActions` actually fires doesn't matter.
+  const { acceptOrg, acceptMeeting } = useInviteActions({ onJoinMeeting: joinMeeting });
+
+  function acceptToast(toast) {
+    dismiss(toast.id);
+    if (!toast.inviteId) return;
+    if (toast.kind === "meeting") acceptMeeting(toast.inviteId);
+    else if (toast.kind === "org") acceptOrg(toast.inviteId);
+  }
 
   if (!isAuthenticated) return <Login />;
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100">
+      <Toast toasts={toasts} onDismiss={dismiss} onAccept={acceptToast} />
       <div className="mx-auto max-w-5xl px-4 py-10">
         <header className="mb-8 flex items-start justify-between gap-4">
           <div>
@@ -42,17 +145,22 @@ function Shell() {
               {API_URL}
             </p>
           </div>
-          <div className="text-right">
-            <p className="font-mono text-xs text-slate-400">{email}</p>
-            <button
-              type="button"
-              onClick={logout}
-              className="mt-1 text-xs text-slate-500 hover:text-slate-300"
-            >
-              sign out
-            </button>
+          <div className="flex items-start gap-3">
+            <OrgSwitcher />
+            <div className="text-right">
+              <p className="font-mono text-xs text-slate-400">{email}</p>
+              <button
+                type="button"
+                onClick={logout}
+                className="mt-1 text-xs text-slate-500 hover:text-slate-300"
+              >
+                sign out
+              </button>
+            </div>
           </div>
         </header>
+
+        <PendingInvites onJoinMeeting={joinMeeting} />
 
         <nav className="mb-6 flex gap-1 border-b border-slate-800">
           {TABS.map(({ id, label }) => (
@@ -72,7 +180,13 @@ function Shell() {
         </nav>
 
         <div className="mb-8">
-          {tab === "meetings" && <MeetingPanel token={token} />}
+          {tab === "meetings" && (
+            <MeetingPanel
+              token={token}
+              joinCode={meetingCodeToJoin}
+              onJoinCodeConsumed={() => setMeetingCodeToJoin("")}
+            />
+          )}
           {tab === "chat" && <ChatPanel token={token} email={email} />}
           {tab === "orgs" && <Organizations token={token} />}
         </div>
@@ -92,8 +206,13 @@ function Shell() {
               token={token}
               note='requires the "post" role in org_id'
             />
-            <RouteTester method="POST" route="/private/meetings" token={token} />
-            <RouteTester route="/private/meetings" token={token} />
+            <RouteTester
+              method="POST"
+              route="/private/meetings"
+              fields={{ org_id: "string" }}
+              token={token}
+            />
+            <RouteTester route="/private/meetings?org_id={org_id}" token={token} />
             <RouteTester
               method="POST"
               route="/private/meetings/{code}/attendees"

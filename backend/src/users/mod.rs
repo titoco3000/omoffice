@@ -23,3 +23,16 @@ pub async fn record(db: &Db, email: &str) -> Result<(), DbError> {
     })
     .await
 }
+
+/// Is `email` already a row here? The invite flow (`rbac.rs`/`meetings.rs`)
+/// uses this to pick which of the two email templates to send -- someone
+/// who has never asked for a key gets "create your account and join", an
+/// existing user gets "sign in and accept".
+pub async fn exists(db: &Db, email: &str) -> Result<bool, DbError> {
+    let pool = db.pool().await?;
+    let row: Option<i32> = sqlx::query_scalar("SELECT 1 FROM users WHERE email = $1")
+        .bind(email)
+        .fetch_optional(pool)
+        .await?;
+    Ok(row.is_some())
+}

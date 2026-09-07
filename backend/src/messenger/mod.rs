@@ -16,17 +16,15 @@ pub mod websocket;
 
 use serde_json::Value;
 
+use crate::core::apigw_management::ApiGatewayManagement;
+use crate::core::db::Db;
+
 /// Every configured channel. Reaches handlers as an `Extension`, the same
 /// way `Db`/`ChimeState` do. Cheap to clone: `websocket::Hub` is an `Arc`
 /// around its registry, `email::EmailChannel` carries no state at all.
 #[derive(Clone, Default)]
 pub struct Messenger {
     websocket: websocket::Hub,
-    // Only read from `notify`, below. No route calls `notify` yet -- `chat`
-    // talks to `websocket` directly for its room broadcast -- so this is
-    // dead code by the binary's own accounting until a feature needs
-    // one-recipient delivery (a mention, an invite email).
-    #[allow(dead_code)]
     email: email::EmailChannel,
 }
 
@@ -43,6 +41,15 @@ impl Messenger {
         &self.websocket
     }
 
+    /// The email channel directly, for a caller that wants to word its own
+    /// body rather than send the same one `notify` would push to a socket
+    /// too — the invite flow's email is a full templated message
+    /// (`rbac`/`meetings`' `create_invite` routes), not the short toast
+    /// [`push_toast`](Self::push_toast) fans out live.
+    pub fn email(&self) -> &email::EmailChannel {
+        &self.email
+    }
+
     /// Deliver `body` to `to` on every channel. Best-effort on all of them: a
     /// channel with nobody listening (no socket open) or nothing configured
     /// (no real email backend yet) just doesn't deliver, silently — same as
@@ -51,10 +58,34 @@ impl Messenger {
     /// Unused so far: `chat` is the only feature built on `Messenger`, and it
     /// broadcasts to a roster via [`websocket`](Self::websocket) rather than
     /// notifying one recipient at a time. Kept as the intended entry point
-    /// for a feature that does (a mention, an invite email).
+    /// for a feature that does (a mention, an invite email) — the invite
+    /// flow itself uses [`push_toast`](Self::push_toast) and
+    /// [`email`](Self::email) separately instead, since its toast and its
+    /// email are worded differently rather than sharing one `body`.
     #[allow(dead_code)]
     pub async fn notify(&self, to: &str, body: &Value) {
         self.websocket.send(to, body).await;
         self.email.send(to, body).await;
+    }
+
+    /// Push a live toast to every socket `to` has open right now, on
+    /// whichever channel is actually populated for this running process:
+    /// the in-process [`websocket::Hub`] (`make run`, a real held-open
+    /// socket) or the deployed WebSocket API's `connections` table
+    /// (Lambda, via [`crate::chat::push_to_user`]). Exactly one of the two
+    /// is ever non-empty for a given invocation, so calling both
+    /// unconditionally is correct and cheap — nobody registered is a silent
+    /// no-op either way. This is the invite delivery [`notify`](Self::notify)'s
+    /// doc comment anticipated, split from the email so the two can carry
+    /// different bodies.
+    pub async fn push_toast(
+        &self,
+        db: &Db,
+        management: &ApiGatewayManagement,
+        to: &str,
+        body: &Value,
+    ) {
+        self.websocket.send(to, body).await;
+        crate::chat::push_to_user(db, management, to, body).await;
     }
 }

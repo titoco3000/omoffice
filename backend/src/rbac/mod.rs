@@ -17,7 +17,7 @@
 //! self-service and blocked for the last admin), [`delete_org`].
 
 use axum::{
-    extract::{Extension, Path},
+    extract::{Extension, Path, State},
     http::StatusCode,
     response::{IntoResponse, Response},
     Json,
@@ -27,8 +27,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use crate::auth::Claims;
+use crate::auth::{AuthError, AuthState, Claims};
+use crate::core::apigw_management::ApiGatewayManagement;
 use crate::core::db::{retry_on_conflict, Db, DbError};
+use crate::messenger::Messenger;
 use crate::users;
 
 /// The roles native to the RBAC. Everything else is a plain string a project
@@ -167,12 +169,24 @@ pub enum RbacError {
     LastAdmin,
     /// A role name outside the native three plus the project's own list.
     UnknownRole,
+    InviteNotFound,
+    /// The invite exists but isn't `pending` any more (already accepted,
+    /// revoked, or declined) -- accept/revoke/decline all refuse to run
+    /// twice.
+    InviteNotPending,
     Database(DbError),
+    Auth(AuthError),
 }
 
 impl From<DbError> for RbacError {
     fn from(err: DbError) -> Self {
         Self::Database(err)
+    }
+}
+
+impl From<AuthError> for RbacError {
+    fn from(err: AuthError) -> Self {
+        Self::Auth(err)
     }
 }
 
@@ -214,7 +228,18 @@ impl IntoResponse for RbacError {
                 "that role is not native to the RBAC and not in this project's role list"
                     .to_string(),
             ),
+            Self::InviteNotFound => (
+                StatusCode::NOT_FOUND,
+                "invite_not_found",
+                "no such invite".to_string(),
+            ),
+            Self::InviteNotPending => (
+                StatusCode::CONFLICT,
+                "invite_not_pending",
+                "this invite has already been accepted, revoked or declined".to_string(),
+            ),
             Self::Database(err) => return err.into_response(),
+            Self::Auth(err) => return err.into_response(),
         };
         (status, Json(json!({ "error": error, "message": message }))).into_response()
     }
@@ -231,6 +256,20 @@ async fn org_exists(db: &Db, org_id: &str) -> Result<bool, RbacError> {
         .fetch_optional(pool)
         .await?;
     Ok(row.is_some())
+}
+
+/// Single-row fetch by id -- `create_invite`/`accept_invite` need the org's
+/// name and creation info, `list_orgs_for_user`/`org_detail_route` never
+/// needed this before because they always fetch a roster, not one org.
+async fn get_org(db: &Db, org_id: &str) -> Result<Option<Org>, RbacError> {
+    let pool = db.pool().await?;
+    let row = sqlx::query_as::<_, Org>(
+        "SELECT id, name, created_by, created_at FROM organizations WHERE id = $1",
+    )
+    .bind(org_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row)
 }
 
 async fn has_exact_role(db: &Db, org_id: &str, email: &str, role: &str) -> Result<bool, RbacError> {
@@ -583,6 +622,358 @@ pub async fn delete_org(db: &Db, org_id: &str) -> Result<(), RbacError> {
     Ok(())
 }
 
+// ---- invites ----
+
+fn split_roles(raw: &str) -> Vec<String> {
+    if raw.is_empty() {
+        Vec::new()
+    } else {
+        raw.split(',').map(str::to_string).collect()
+    }
+}
+
+fn join_roles(roles: &[String]) -> String {
+    roles.join(",")
+}
+
+/// One row of `org_invites`.
+#[derive(sqlx::FromRow)]
+struct OrgInviteRow {
+    id: String,
+    org_id: String,
+    email: String,
+    roles: String,
+    invited_by: String,
+    status: String,
+    created_at: DateTime<Utc>,
+    accepted_at: Option<DateTime<Utc>>,
+}
+
+/// A pending (or already-settled) invitation into an org, as the API sees
+/// it -- `roles` split back into a list, same shape [`add_member`] takes.
+#[derive(Debug, Serialize)]
+pub struct OrgInvite {
+    pub id: String,
+    pub org_id: String,
+    pub email: String,
+    pub roles: Vec<String>,
+    pub invited_by: String,
+    pub status: String,
+    pub created_at: DateTime<Utc>,
+    pub accepted_at: Option<DateTime<Utc>>,
+}
+
+impl From<OrgInviteRow> for OrgInvite {
+    fn from(row: OrgInviteRow) -> Self {
+        Self {
+            id: row.id,
+            org_id: row.org_id,
+            email: row.email,
+            roles: split_roles(&row.roles),
+            invited_by: row.invited_by,
+            status: row.status,
+            created_at: row.created_at,
+            accepted_at: row.accepted_at,
+        }
+    }
+}
+
+/// One entry in `GET /private/invites` -- the org's name folded in, since
+/// that route is keyed by the invited email, not the org, and has nothing
+/// else to join against for it.
+#[derive(sqlx::FromRow)]
+struct PendingOrgInviteRow {
+    id: String,
+    org_id: String,
+    org_name: String,
+    roles: String,
+    invited_by: String,
+    created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PendingOrgInvite {
+    pub id: String,
+    pub org_id: String,
+    pub org_name: String,
+    pub roles: Vec<String>,
+    pub invited_by: String,
+    pub created_at: DateTime<Utc>,
+}
+
+impl From<PendingOrgInviteRow> for PendingOrgInvite {
+    fn from(row: PendingOrgInviteRow) -> Self {
+        Self {
+            id: row.id,
+            org_id: row.org_id,
+            org_name: row.org_name,
+            roles: split_roles(&row.roles),
+            invited_by: row.invited_by,
+            created_at: row.created_at,
+        }
+    }
+}
+
+async fn get_org_invite(db: &Db, invite_id: &str) -> Result<Option<OrgInvite>, RbacError> {
+    let pool = db.pool().await?;
+    let row = sqlx::query_as::<_, OrgInviteRow>(
+        "SELECT id, org_id, email, roles, invited_by, status, created_at, accepted_at
+         FROM org_invites WHERE id = $1",
+    )
+    .bind(invite_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(OrgInvite::from))
+}
+
+/// Create a pending invite for `email` into `org_id`. Reuses the existing
+/// pending row for the same `(org_id, email)` if there is one -- inviting
+/// someone a second time before they've answered the first just refreshes
+/// its roles and timestamp rather than piling up duplicates. Does **not**
+/// touch `org_roles`; that only happens on [`accept_invite`], which is the
+/// entire point of an invite over [`add_member`].
+pub async fn create_invite(
+    db: &Db,
+    org_id: &str,
+    email: &str,
+    roles: &[String],
+    invited_by: &str,
+) -> Result<OrgInvite, RbacError> {
+    if !org_exists(db, org_id).await? {
+        return Err(RbacError::OrgNotFound);
+    }
+    let email = normalize_email(email);
+    let roles_joined = join_roles(roles);
+    let pool = db.pool().await?;
+
+    let existing_id: Option<String> = sqlx::query_scalar(
+        "SELECT id FROM org_invites WHERE org_id = $1 AND email = $2 AND status = 'pending'",
+    )
+    .bind(org_id)
+    .bind(&email)
+    .fetch_optional(pool)
+    .await?;
+
+    let id = match existing_id {
+        Some(id) => {
+            retry_on_conflict(|| {
+                let id = id.clone();
+                let roles_joined = roles_joined.clone();
+                async move {
+                    sqlx::query(
+                        "UPDATE org_invites SET roles = $1, created_at = now() WHERE id = $2",
+                    )
+                    .bind(&roles_joined)
+                    .bind(&id)
+                    .execute(pool)
+                    .await
+                    .map(|_| ())
+                }
+            })
+            .await?;
+            id
+        }
+        None => {
+            let id = Uuid::new_v4().to_string();
+            retry_on_conflict(|| {
+                let id = id.clone();
+                let email = email.clone();
+                let roles_joined = roles_joined.clone();
+                async move {
+                    sqlx::query(
+                        "INSERT INTO org_invites (id, org_id, email, roles, invited_by)
+                         VALUES ($1, $2, $3, $4, $5)",
+                    )
+                    .bind(&id)
+                    .bind(org_id)
+                    .bind(&email)
+                    .bind(&roles_joined)
+                    .bind(invited_by)
+                    .execute(pool)
+                    .await
+                    .map(|_| ())
+                }
+            })
+            .await?;
+            id
+        }
+    };
+
+    get_org_invite(db, &id)
+        .await?
+        .ok_or(RbacError::InviteNotFound)
+}
+
+/// The org's still-pending invites -- `GET /private/orgs/{org_id}/invites`.
+pub async fn list_invites(db: &Db, org_id: &str) -> Result<Vec<OrgInvite>, RbacError> {
+    if !org_exists(db, org_id).await? {
+        return Err(RbacError::OrgNotFound);
+    }
+    let pool = db.pool().await?;
+    let rows: Vec<OrgInviteRow> = sqlx::query_as(
+        "SELECT id, org_id, email, roles, invited_by, status, created_at, accepted_at
+         FROM org_invites WHERE org_id = $1 AND status = 'pending' ORDER BY created_at DESC",
+    )
+    .bind(org_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(OrgInvite::from).collect())
+}
+
+/// Every org invite still pending for `email` -- the org half of
+/// `GET /private/invites`.
+pub async fn pending_invites_for_email(
+    db: &Db,
+    email: &str,
+) -> Result<Vec<PendingOrgInvite>, RbacError> {
+    let pool = db.pool().await?;
+    let rows: Vec<PendingOrgInviteRow> = sqlx::query_as(
+        "SELECT i.id, i.org_id, o.name AS org_name, i.roles, i.invited_by, i.created_at
+         FROM org_invites i
+         JOIN organizations o ON o.id = i.org_id
+         WHERE i.email = $1 AND i.status = 'pending'
+         ORDER BY i.created_at DESC",
+    )
+    .bind(normalize_email(email))
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(PendingOrgInvite::from).collect())
+}
+
+/// Accept a pending invite: mark it `accepted`, then [`add_member`] with
+/// its roles (which is also what provisions the `users` row if `email` is
+/// new). Returns the settled invite plus the org, so the accept route can
+/// hand back both without a second fetch.
+pub async fn accept_invite(
+    db: &Db,
+    allowed: &AllowedRoles,
+    invite_id: &str,
+) -> Result<(OrgInvite, Org), RbacError> {
+    let invite = get_org_invite(db, invite_id)
+        .await?
+        .ok_or(RbacError::InviteNotFound)?;
+    if invite.status != "pending" {
+        return Err(RbacError::InviteNotPending);
+    }
+
+    let pool = db.pool().await?;
+    retry_on_conflict(|| {
+        let id = invite.id.clone();
+        async move {
+            sqlx::query(
+                "UPDATE org_invites SET status = 'accepted', accepted_at = now() WHERE id = $1",
+            )
+            .bind(&id)
+            .execute(pool)
+            .await
+            .map(|_| ())
+        }
+    })
+    .await?;
+
+    add_member(db, allowed, &invite.org_id, &invite.email, &invite.roles).await?;
+    let org = get_org(db, &invite.org_id)
+        .await?
+        .ok_or(RbacError::OrgNotFound)?;
+    Ok((invite, org))
+}
+
+/// Revoke a pending invite -- the inviting side's cancel. `org_id` is
+/// checked so a `team-management` holder in one org can't revoke another
+/// org's invite by id.
+pub async fn revoke_invite(db: &Db, org_id: &str, invite_id: &str) -> Result<(), RbacError> {
+    let invite = get_org_invite(db, invite_id)
+        .await?
+        .ok_or(RbacError::InviteNotFound)?;
+    if invite.org_id != org_id {
+        return Err(RbacError::InviteNotFound);
+    }
+    if invite.status != "pending" {
+        return Err(RbacError::InviteNotPending);
+    }
+    let pool = db.pool().await?;
+    retry_on_conflict(|| {
+        let id = invite.id.clone();
+        async move {
+            sqlx::query("UPDATE org_invites SET status = 'revoked' WHERE id = $1")
+                .bind(&id)
+                .execute(pool)
+                .await
+                .map(|_| ())
+        }
+    })
+    .await?;
+    Ok(())
+}
+
+/// Decline a pending invite -- the invited side's "no thanks", for someone
+/// who's already logged in and sees it in their pending-invites list rather
+/// than following the magic link. `email` must match the invite's, checked
+/// here rather than left to the route: nothing else about this call proves
+/// who's asking.
+pub async fn decline_invite(db: &Db, invite_id: &str, email: &str) -> Result<(), RbacError> {
+    let invite = get_org_invite(db, invite_id)
+        .await?
+        .ok_or(RbacError::InviteNotFound)?;
+    if invite.email != normalize_email(email) {
+        return Err(RbacError::Forbidden);
+    }
+    if invite.status != "pending" {
+        return Err(RbacError::InviteNotPending);
+    }
+    let pool = db.pool().await?;
+    retry_on_conflict(|| {
+        let id = invite.id.clone();
+        async move {
+            sqlx::query("UPDATE org_invites SET status = 'declined' WHERE id = $1")
+                .bind(&id)
+                .execute(pool)
+                .await
+                .map(|_| ())
+        }
+    })
+    .await?;
+    Ok(())
+}
+
+/// Email the invite (worded differently depending on whether `invite.email`
+/// is already a `users` row -- see `users::exists`) and, if that email
+/// already has a live session open, push a toast to it right now. Best
+/// effort on both: the invite row itself is already committed by the time
+/// this runs, same as `auth::request_key`'s best-effort write to `users`.
+async fn notify_invite(
+    db: &Db,
+    messenger: &Messenger,
+    management: &ApiGatewayManagement,
+    org_name: &str,
+    invite: &OrgInvite,
+) {
+    let existing_user = users::exists(db, &invite.email).await.unwrap_or(false);
+    let accept_url = format!(
+        "{}/?invite=org:{}",
+        crate::core::frontend_base_url(),
+        invite.id
+    );
+    let email_body = json!({
+        "template": if existing_user { "org_invite_existing_user" } else { "org_invite_new_user" },
+        "org": org_name,
+        "accept_url": accept_url,
+    });
+    messenger.email().send(&invite.email, &email_body).await;
+
+    let toast = json!({
+        "type": "invite",
+        "kind": "org",
+        "invite_id": invite.id,
+        "org_id": invite.org_id,
+        "org": org_name,
+        "message": format!("You've been invited to {org_name}"),
+    });
+    messenger
+        .push_toast(db, management, &invite.email, &toast)
+        .await;
+}
+
 // ---- routes ----
 
 #[derive(Debug, Deserialize)]
@@ -610,11 +1001,15 @@ pub struct ReplaceRolesBody {
 }
 
 /// `POST /private/orgs` — create an org, optionally inviting a batch of
-/// emails at once. No role check: the caller becomes its admin by creating it.
+/// emails at once (pending invites, same as
+/// `POST /private/orgs/{org_id}/invites` -- see [`create_invite`]). No role
+/// check: the caller becomes its admin by creating it.
 pub async fn create_org_route(
     Extension(db): Extension<Db>,
     Extension(claims): Extension<Claims>,
     Extension(allowed): Extension<AllowedRoles>,
+    Extension(messenger): Extension<Messenger>,
+    Extension(management): Extension<ApiGatewayManagement>,
     Json(body): Json<CreateOrgBody>,
 ) -> Result<Json<Value>, RbacError> {
     // Validated up front, so a bad role in one invite never leaves the org
@@ -629,7 +1024,9 @@ pub async fn create_org_route(
 
     let org = create_org(&db, &body.name, &claims.sub).await?;
     for invite in &body.invites {
-        add_member(&db, &allowed, &org.id, &invite.email, &invite.roles).await?;
+        let created =
+            create_invite(&db, &org.id, &invite.email, &invite.roles, &claims.sub).await?;
+        notify_invite(&db, &messenger, &management, &org.name, &created).await;
     }
 
     Ok(Json(json!({ "org": org })))
@@ -707,4 +1104,93 @@ pub async fn delete_org_route(
     require_role(&db, &claims.sub, &org_id, roles::ADMIN).await?;
     delete_org(&db, &org_id).await?;
     Ok(Json(json!({ "deleted": org_id })))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateInviteBody {
+    email: String,
+    #[serde(default)]
+    roles: Vec<String>,
+}
+
+/// `POST /private/orgs/{org_id}/invites` — invite a member: a pending row,
+/// not instant membership (see [`create_invite`]). Requires
+/// `team-management`.
+pub async fn create_invite_route(
+    Extension(db): Extension<Db>,
+    Extension(claims): Extension<Claims>,
+    Extension(allowed): Extension<AllowedRoles>,
+    Extension(messenger): Extension<Messenger>,
+    Extension(management): Extension<ApiGatewayManagement>,
+    Path(org_id): Path<String>,
+    Json(body): Json<CreateInviteBody>,
+) -> Result<Json<Value>, RbacError> {
+    require_role(&db, &claims.sub, &org_id, roles::TEAM_MANAGEMENT).await?;
+    for role in &body.roles {
+        if !allowed.contains(role) {
+            return Err(RbacError::UnknownRole);
+        }
+    }
+    let org = get_org(&db, &org_id).await?.ok_or(RbacError::OrgNotFound)?;
+    let invite = create_invite(&db, &org_id, &body.email, &body.roles, &claims.sub).await?;
+    notify_invite(&db, &messenger, &management, &org.name, &invite).await;
+    Ok(Json(json!({ "invite": invite })))
+}
+
+/// `GET /private/orgs/{org_id}/invites` — the org's still-pending invites.
+/// Requires `team-management`.
+pub async fn list_invites_route(
+    Extension(db): Extension<Db>,
+    Extension(claims): Extension<Claims>,
+    Path(org_id): Path<String>,
+) -> Result<Json<Value>, RbacError> {
+    require_role(&db, &claims.sub, &org_id, roles::TEAM_MANAGEMENT).await?;
+    let invites = list_invites(&db, &org_id).await?;
+    Ok(Json(json!({ "invites": invites })))
+}
+
+/// `DELETE /private/orgs/{org_id}/invites/{invite_id}` — revoke a pending
+/// invite. Requires `team-management`.
+pub async fn revoke_invite_route(
+    Extension(db): Extension<Db>,
+    Extension(claims): Extension<Claims>,
+    Path((org_id, invite_id)): Path<(String, String)>,
+) -> Result<Json<Value>, RbacError> {
+    require_role(&db, &claims.sub, &org_id, roles::TEAM_MANAGEMENT).await?;
+    revoke_invite(&db, &org_id, &invite_id).await?;
+    Ok(Json(json!({ "revoked": invite_id })))
+}
+
+/// `POST /invites/org/{invite_id}/accept` — the magic link: **public**, no
+/// bearer token (same trust model as `/auth/request-key/{email}` -- this
+/// module already has no proof of email ownership). Accepts the invite and
+/// signs the invited email a token in the same call, shaped enough like
+/// `request_key`'s response that the frontend can adopt it the same way.
+pub async fn accept_invite_route(
+    State(auth): State<AuthState>,
+    Extension(db): Extension<Db>,
+    Extension(allowed): Extension<AllowedRoles>,
+    Path(invite_id): Path<String>,
+) -> Result<Json<Value>, RbacError> {
+    let (invite, org) = accept_invite(&db, &allowed, &invite_id).await?;
+    let (token, expires_at) = auth.issue(&invite.email).await?;
+    Ok(Json(json!({
+        "token": token,
+        "token_type": "Bearer",
+        "email": invite.email,
+        "expires_at": expires_at,
+        "org": org,
+    })))
+}
+
+/// `POST /private/invites/org/{invite_id}/decline` — the invited side's "no
+/// thanks", for someone who's already logged in. Bearer required; the
+/// email-match check is [`decline_invite`]'s.
+pub async fn decline_invite_route(
+    Extension(db): Extension<Db>,
+    Extension(claims): Extension<Claims>,
+    Path(invite_id): Path<String>,
+) -> Result<Json<Value>, RbacError> {
+    decline_invite(&db, &invite_id, &claims.sub).await?;
+    Ok(Json(json!({ "declined": invite_id })))
 }

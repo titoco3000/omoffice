@@ -46,6 +46,15 @@ export function AuthProvider({ children }) {
     return response;
   }
 
+  // An invite's accept route (`/invites/org/{id}/accept`,
+  // `/invites/meetings/{id}/accept`) already hands back a token exactly like
+  // `/auth/request-key/{email}` does -- this just adopts it, without
+  // re-deriving it through `login`. Used by the magic-link handler and by
+  // accepting a pending invite from inside an already-logged-in session.
+  function loginWithToken(token) {
+    setToken(token ?? "");
+  }
+
   function logout() {
     setToken("");
   }
@@ -55,7 +64,14 @@ export function AuthProvider({ children }) {
 
   return (
     <AuthContext.Provider
-      value={{ token, email: claims?.sub ?? null, isAuthenticated, login, logout }}
+      value={{
+        token,
+        email: claims?.sub ?? null,
+        isAuthenticated,
+        login,
+        loginWithToken,
+        logout,
+      }}
     >
       {children}
     </AuthContext.Provider>

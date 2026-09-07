@@ -81,6 +81,54 @@ async fn private_org_billing(
     Ok(Json(json!({ "org_id": org_id, "plan": "demo" })))
 }
 
+/// `GET /private/invites` — every invite still pending for the caller's own
+/// email, org and meeting together. This is what a "pending invite" session
+/// is for someone who logged in on their own instead of following a magic
+/// link: `rbac.rs` and `meetings.rs` each own one table and one half of the
+/// answer, so this is the small aggregate that combines them -- the same
+/// role this file already plays for `private_org_billing` above.
+async fn private_pending_invites(
+    Extension(db): Extension<Db>,
+    Extension(claims): Extension<Claims>,
+) -> Result<Json<Value>, PendingInvitesError> {
+    let org_invites = rbac::pending_invites_for_email(&db, &claims.sub).await?;
+    let meeting_invites = meetings::pending_invites_for_email(&db, &claims.sub).await?;
+    Ok(Json(json!({
+        "org_invites": org_invites,
+        "meeting_invites": meeting_invites,
+    })))
+}
+
+/// Wraps whichever of the two domain errors `private_pending_invites` hits
+/// first, so it can still use `?` against both `rbac::pending_invites_for_email`
+/// and `meetings::pending_invites_for_email` despite them returning
+/// different error types.
+enum PendingInvitesError {
+    Rbac(RbacError),
+    Meetings(meetings::MeetingError),
+}
+
+impl From<RbacError> for PendingInvitesError {
+    fn from(err: RbacError) -> Self {
+        Self::Rbac(err)
+    }
+}
+
+impl From<meetings::MeetingError> for PendingInvitesError {
+    fn from(err: meetings::MeetingError) -> Self {
+        Self::Meetings(err)
+    }
+}
+
+impl axum::response::IntoResponse for PendingInvitesError {
+    fn into_response(self) -> axum::response::Response {
+        match self {
+            Self::Rbac(err) => err.into_response(),
+            Self::Meetings(err) => err.into_response(),
+        }
+    }
+}
+
 /// Wide-open CORS. The API is a public, token-authenticated JSON endpoint with
 /// no cookies or other ambient credentials, so any origin may call it; the
 /// bearer token is what grants access. Narrow this to the frontend origins if
@@ -121,7 +169,12 @@ fn app(
         // handshake can't carry a bearer header, and how this authenticates
         // itself instead.
         .route("/chat/ws/{org_id}", get(chat::ws))
+        // The room-less twin: presence only, for an invite's live toast to
+        // someone who isn't a member of the org they're being invited into
+        // yet. See `chat::ws_presence`.
+        .route("/chat/ws", get(chat::ws_presence))
         .route("/private/me", get(private_me))
+        .route("/private/invites", get(private_pending_invites))
         .route("/private/sample-post/{var}", post(private_sample_post))
         .route(
             "/private/meetings",
@@ -149,6 +202,38 @@ fn app(
             delete(rbac::leave_org_route),
         )
         .route("/private/orgs/{org_id}/billing", get(private_org_billing))
+        .route(
+            "/private/orgs/{org_id}/invites",
+            post(rbac::create_invite_route).get(rbac::list_invites_route),
+        )
+        .route(
+            "/private/orgs/{org_id}/invites/{invite_id}",
+            delete(rbac::revoke_invite_route),
+        )
+        .route(
+            "/invites/org/{invite_id}/accept",
+            post(rbac::accept_invite_route),
+        )
+        .route(
+            "/private/invites/org/{invite_id}/decline",
+            post(rbac::decline_invite_route),
+        )
+        .route(
+            "/private/meetings/{code}/invites",
+            post(meetings::create_invite_route),
+        )
+        .route(
+            "/private/meetings/{code}/invites/{invite_id}",
+            delete(meetings::revoke_invite_route),
+        )
+        .route(
+            "/invites/meetings/{invite_id}/accept",
+            post(meetings::accept_invite_route),
+        )
+        .route(
+            "/private/invites/meetings/{invite_id}/decline",
+            post(meetings::decline_invite_route),
+        )
         // Nothing routes here on purpose: it only exists to catch a
         // WebSocket-API event from `infra/chat.tf`, which never carries a
         // path any real route would claim. A genuinely unmatched HTTP path
@@ -421,7 +506,7 @@ mod tests {
     async fn listing_meetings_reports_a_missing_database() {
         let token = token_for("dev@omoffice.example").await;
         let (status, body) = call(get_with_auth(
-            "/private/meetings",
+            "/private/meetings?org_id=some-org",
             &format!("Bearer {token}"),
         ))
         .await;
@@ -429,14 +514,22 @@ mod tests {
         assert_eq!(body["error"], "database_unavailable");
     }
 
-    /// `test_app` has no Chime client, so an authenticated call gets a 503
-    /// rather than reaching AWS.
+    /// `create`/`list` both check org membership before touching Chime at
+    /// all (`rbac::require_member`), and `test_app` has no database either
+    /// -- so an authenticated call reports the same `database_unavailable`
+    /// every other DB-backed route does, never reaching the Chime client
+    /// (also absent here) to say so instead.
     #[tokio::test]
-    async fn meeting_routes_report_a_missing_chime_client() {
+    async fn creating_a_meeting_reports_a_missing_database() {
         let token = token_for("dev@omoffice.example").await;
-        let (status, body) = call(post_json("/private/meetings", Some(&token), json!({}))).await;
-        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
-        assert_eq!(body["error"], "chime_unavailable");
+        let (status, body) = call(post_json(
+            "/private/meetings",
+            Some(&token),
+            json!({ "org_id": "some-org" }),
+        ))
+        .await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+        assert_eq!(body["error"], "database_unavailable");
     }
 
     #[tokio::test]
@@ -500,6 +593,135 @@ mod tests {
         assert_eq!(body["error"], "database_unavailable");
 
         let (status, body) = call(get_with_auth("/private/orgs", &format!("Bearer {token}"))).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+        assert_eq!(body["error"], "database_unavailable");
+    }
+
+    #[tokio::test]
+    async fn creating_an_org_invite_is_protected() {
+        let (status, body) = call(post_json(
+            "/private/orgs/some-org/invites",
+            None,
+            json!({ "email": "invited@example.com" }),
+        ))
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(body["error"], "missing_token");
+    }
+
+    #[tokio::test]
+    async fn listing_org_invites_is_protected() {
+        let (status, body) = call(get("/private/orgs/some-org/invites")).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(body["error"], "missing_token");
+    }
+
+    #[tokio::test]
+    async fn revoking_an_org_invite_is_protected() {
+        let request = Request::builder()
+            .method("DELETE")
+            .uri("/private/orgs/some-org/invites/some-invite")
+            .body(Body::empty())
+            .unwrap();
+        let (status, body) = call(request).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(body["error"], "missing_token");
+    }
+
+    #[tokio::test]
+    async fn declining_an_org_invite_is_protected() {
+        let (status, body) = call(post_json(
+            "/private/invites/org/some-invite/decline",
+            None,
+            json!({}),
+        ))
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(body["error"], "missing_token");
+    }
+
+    /// Not under `/private` on purpose -- the magic link has to work with no
+    /// bearer token at all (see `rbac::accept_invite_route`'s doc). `test_app`
+    /// has no database, so it reaches that far and then reports the same 503
+    /// every other DB-backed route does, rather than a 401.
+    #[tokio::test]
+    async fn accepting_an_org_invite_needs_no_token_and_reports_a_missing_database() {
+        let (status, body) = call(post_json(
+            "/invites/org/some-invite/accept",
+            None,
+            json!({}),
+        ))
+        .await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+        assert_eq!(body["error"], "database_unavailable");
+    }
+
+    #[tokio::test]
+    async fn creating_a_meeting_invite_is_protected() {
+        let (status, body) = call(post_json(
+            "/private/meetings/some-code/invites",
+            None,
+            json!({ "email": "invited@example.com" }),
+        ))
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(body["error"], "missing_token");
+    }
+
+    #[tokio::test]
+    async fn revoking_a_meeting_invite_is_protected() {
+        let request = Request::builder()
+            .method("DELETE")
+            .uri("/private/meetings/some-code/invites/some-invite")
+            .body(Body::empty())
+            .unwrap();
+        let (status, body) = call(request).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(body["error"], "missing_token");
+    }
+
+    #[tokio::test]
+    async fn declining_a_meeting_invite_is_protected() {
+        let (status, body) = call(post_json(
+            "/private/invites/meetings/some-invite/decline",
+            None,
+            json!({}),
+        ))
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(body["error"], "missing_token");
+    }
+
+    /// Same shape as the org accept route's test above.
+    #[tokio::test]
+    async fn accepting_a_meeting_invite_needs_no_token_and_reports_a_missing_database() {
+        let (status, body) = call(post_json(
+            "/invites/meetings/some-invite/accept",
+            None,
+            json!({}),
+        ))
+        .await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+        assert_eq!(body["error"], "database_unavailable");
+    }
+
+    #[tokio::test]
+    async fn pending_invites_is_protected() {
+        let (status, body) = call(get("/private/invites")).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(body["error"], "missing_token");
+    }
+
+    /// `test_app` has no database, so the org half of the aggregate is what
+    /// reports it -- `private_pending_invites` tries `rbac`'s query first.
+    #[tokio::test]
+    async fn pending_invites_reports_a_missing_database() {
+        let token = token_for("dev@omoffice.example").await;
+        let (status, body) = call(get_with_auth(
+            "/private/invites",
+            &format!("Bearer {token}"),
+        ))
+        .await;
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
         assert_eq!(body["error"], "database_unavailable");
     }

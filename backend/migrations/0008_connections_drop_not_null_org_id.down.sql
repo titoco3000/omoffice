@@ -1,0 +1,6 @@
+-- Irreversible: DSQL has no ALTER COLUMN ... SET NOT NULL, so there is no
+-- statement that undoes 0008's up.sql. `make db-revert` still runs this
+-- file (zero statements -- a no-op) and deletes the ledger row; org_id
+-- stays nullable in the database after that. If a future schema genuinely
+-- needs it required again, add a new NOT NULL column instead, the same
+-- workaround `core::orm::Condition::NotNull` documents.

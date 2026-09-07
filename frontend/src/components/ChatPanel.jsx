@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { chatWsUrl } from "../api";
-import { useOrgs } from "../hooks/useOrgs";
+import { useOrgContext } from "../org/OrgContext";
 
 /// A room holds at most this many messages in one tab -- there is no
 /// history (`backend/src/chat/mod.rs`: nothing is written to a table), so
@@ -9,17 +9,16 @@ import { useOrgs } from "../hooks/useOrgs";
 const MAX_MESSAGES = 200;
 
 /**
- * The lobby in front of `ChatRoom`: pick which org's room to join. Unlike
- * `MeetingPanel` there is nothing to create -- a room *is* an org, every
- * member shares the one the backend keeps for it, so `useOrgs`' list is the
- * entire lobby.
+ * A room *is* an org, every member shares the one the backend keeps for it
+ * -- so which room to join is just whichever org `OrgSwitcher` currently has
+ * selected (`OrgContext`), not a picker of its own the way this used to
+ * have. Switching orgs from the header closes this room and opens the new
+ * one, same as picking a different org here used to.
  */
 export default function ChatPanel({ token, email }) {
-  const { orgs, loading, error } = useOrgs(token);
-  const [orgId, setOrgId] = useState(null);
+  const { orgs, loading, error, selectedOrg } = useOrgContext();
 
-  const open = orgs.find((org) => org.id === orgId);
-  if (open) {
+  if (selectedOrg) {
     return (
       <section className="rounded-xl border border-slate-800 bg-slate-900/60 p-4">
         <div className="flex flex-wrap items-center gap-2">
@@ -28,19 +27,12 @@ export default function ChatPanel({ token, email }) {
             live
           </span>
           <span className="ml-auto min-w-0 truncate text-xs text-slate-500">
-            {open.name}
+            {selectedOrg.name}
           </span>
-          <button
-            type="button"
-            onClick={() => setOrgId(null)}
-            className="shrink-0 rounded-lg bg-slate-700 px-3 py-1 text-xs font-medium text-white hover:bg-slate-600"
-          >
-            leave
-          </button>
         </div>
         <div className="mt-3">
           {/* Keyed by org id so switching rooms opens a fresh socket. */}
-          <ChatRoom key={open.id} orgId={open.id} token={token} email={email} />
+          <ChatRoom key={selectedOrg.id} orgId={selectedOrg.id} token={token} email={email} />
         </div>
       </section>
     );
@@ -60,22 +52,6 @@ export default function ChatPanel({ token, email }) {
             : 'not a member of any org yet -- join or create one under "organizations"'}
         </p>
       )}
-
-      <ul className="mt-3 grid gap-1">
-        {orgs.map((org) => (
-          <li key={org.id}>
-            <button
-              type="button"
-              onClick={() => setOrgId(org.id)}
-              className="flex w-full items-center gap-3 rounded-lg bg-slate-950 px-3 py-2 text-left hover:bg-slate-900"
-            >
-              <span className="min-w-0 flex-1 truncate text-sm text-slate-200">
-                {org.name}
-              </span>
-            </button>
-          </li>
-        ))}
-      </ul>
     </section>
   );
 }
