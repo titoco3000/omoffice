@@ -278,6 +278,15 @@
         "default": "now()",
         "foreign_key": null,
         "renamed_from": null
+      },
+      {
+        "name": "last_seen_at",
+        "sql_type": "timestamptz",
+        "not_null": false,
+        "primary_key": false,
+        "default": null,
+        "foreign_key": null,
+        "renamed_from": null
       }
     ],
     "primary_key": []

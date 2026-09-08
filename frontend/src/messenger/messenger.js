@@ -1,12 +1,15 @@
-import { wsUrl } from "../api";
+import { wsUrl } from '../api';
 
 /// Channel names, shared with the backend: `chat/mod.rs`, `presence/mod.rs`
 /// and `rbac/invites.rs` name the same three.
 export const CHANNELS = {
-  chat: "chat",
-  invites: "invites",
-  presence: "presence",
+  chat: 'chat',
+  invites: 'invites',
+  presence: 'presence',
 };
+
+/// How often an otherwise-idle socket proves it is still open
+const HEARTBEAT_MS = 50_000;
 
 /**
  * One socket for every channel.
@@ -20,12 +23,13 @@ export const CHANNELS = {
 export class Messenger {
   #token;
   #socket = null;
-  #status = "closed"; // closed | connecting | open | error
+  #status = 'closed'; // closed | connecting | open | error
   #handlers = new Map(); // channel -> Set<handler>
   #statusListeners = new Set();
   #queue = []; // frames written before the socket opened
   #context = { org: null, meeting: null };
   #closedByUs = false;
+  #heartbeat = null;
 
   constructor(token) {
     this.#token = token;
@@ -38,7 +42,7 @@ export class Messenger {
   connect() {
     if (this.#socket || !this.#token) return;
     this.#closedByUs = false;
-    this.#setStatus("connecting");
+    this.#setStatus('connecting');
 
     const socket = new WebSocket(wsUrl(this.#token));
     this.#socket = socket;
@@ -48,23 +52,29 @@ export class Messenger {
     // and a stale handler would otherwise drop the new socket on the floor.
     socket.onopen = () => {
       if (this.#socket !== socket) return;
-      this.#setStatus("open");
+      this.#setStatus('open');
       // The backend starts every connection context-less, so whatever the
       // page already knows about itself is reported first.
       this.#sendContext();
       const queued = this.#queue;
       this.#queue = [];
       for (const frame of queued) socket.send(JSON.stringify(frame));
+      this.#heartbeat = setInterval(
+        () => this.send({ channel: 'ping', message: {} }),
+        HEARTBEAT_MS,
+      );
     };
     socket.onerror = () => {
       if (this.#socket !== socket) return;
-      this.#setStatus("error");
+      this.#setStatus('error');
     };
     socket.onclose = () => {
       if (this.#socket !== socket) return;
       this.#socket = null;
+      clearInterval(this.#heartbeat);
+      this.#heartbeat = null;
       // A close we asked for is not a failure worth reporting as one.
-      this.#setStatus(this.#closedByUs ? "closed" : "error");
+      this.#setStatus(this.#closedByUs ? 'closed' : 'error');
     };
     socket.onmessage = (event) => {
       if (this.#socket !== socket) return;
@@ -76,7 +86,7 @@ export class Messenger {
     this.#closedByUs = true;
     this.#socket?.close();
     this.#socket = null;
-    this.#setStatus("closed");
+    this.#setStatus('closed');
   }
 
   /// Drop the current socket and open a fresh one -- the UI's "reconnect".
@@ -118,7 +128,11 @@ export class Messenger {
    */
   setContext(patch) {
     const next = { ...this.#context, ...patch };
-    if (next.org === this.#context.org && next.meeting === this.#context.meeting) return;
+    if (
+      next.org === this.#context.org &&
+      next.meeting === this.#context.meeting
+    )
+      return;
     this.#context = next;
     this.#sendContext();
   }

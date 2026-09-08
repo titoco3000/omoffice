@@ -1,20 +1,22 @@
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { callApi, describeFailure } from "../api";
-
-/// How often the presence half is re-read. Presence is not pushed: the
-/// `presence` channel carries a browser's claim *to* the backend, and
-/// nothing fans a roster change back out, so this polls the read route
-/// (`presence::org_presence_route`) instead.
-const PRESENCE_INTERVAL_MS = 10_000;
+import { useChannel } from "../messenger/MessengerContext";
 
 /**
  * One org's people and its live meetings, as the sidebar shows them.
  *
  * Two sources, merged: the membership roster (`GET /private/orgs/{id}`),
- * which changes rarely, and open sockets (`GET /private/orgs/{id}/presence`),
- * which change constantly. Someone in the second but not the first is still
- * listed — a socket reporting this org has already passed the backend's
- * membership check.
+ * which changes rarely, and open sockets (presence), which change
+ * constantly. Someone in the second but not the first is still listed — a
+ * socket reporting this org has already passed the backend's membership
+ * check.
+ *
+ * Presence itself is pushed, not polled: `presence::register` broadcasts an
+ * org's snapshot on `org_presence` the moment a join, a leave or a
+ * disconnect changes it, to everyone already looking at that org (see the
+ * backend module doc). The one `GET /private/orgs/{id}/presence` call left
+ * here is a tab's own first read -- there is nothing to push to a tab that
+ * has not opened its socket yet.
  */
 export function useOrgRoster(token, orgId) {
   const [reloads, setReloads] = useState(0);
@@ -51,28 +53,25 @@ export function useOrgRoster(token, orgId) {
     if (!token || !orgId) return undefined;
     let cancelled = false;
 
-    async function poll() {
-      // A hidden tab is not looking at the roster; skipping keeps a
-      // background tab from polling all day.
-      if (document.hidden) return;
-      const response = await callApi({
-        path: `/private/orgs/${encodeURIComponent(orgId)}/presence`,
-        token,
-      });
-      if (cancelled || !response.ok) return;
-      setPresence({ stamp: `${token}:${orgId}`, users: response.data.users ?? [] });
-    }
-
-    poll();
-    const timer = setInterval(poll, PRESENCE_INTERVAL_MS);
-    document.addEventListener("visibilitychange", poll);
+    callApi({ path: `/private/orgs/${encodeURIComponent(orgId)}/presence`, token }).then(
+      (response) => {
+        if (cancelled || !response.ok) return;
+        setPresence({ stamp: `${token}:${orgId}`, users: response.data.users ?? [] });
+      },
+    );
 
     return () => {
       cancelled = true;
-      clearInterval(timer);
-      document.removeEventListener("visibilitychange", poll);
     };
   }, [token, orgId, reloads]);
+
+  // The live half, after that first read: one socket for the whole app, so
+  // this filters to the org actually on screen rather than the backend
+  // scoping the channel.
+  useChannel("org_presence", (message) => {
+    if (message?.org_id !== orgId) return;
+    setPresence({ stamp: `${token}:${orgId}`, users: message.users ?? [] });
+  });
 
   const shownRoster = roster.stamp === stamp ? roster : { members: [], error: "" };
   const shownPresence = presence.stamp === stamp ? presence.users : [];
@@ -89,7 +88,7 @@ export function useOrgRoster(token, orgId) {
       meeting: online.get(email) ?? null,
     }))
     // Whoever is here first, then alphabetically — a roster that reorders
-    // on every poll would be unusable.
+    // on every update would be unusable.
     .sort((a, b) =>
       a.online === b.online ? a.email.localeCompare(b.email) : a.online ? -1 : 1,
     );

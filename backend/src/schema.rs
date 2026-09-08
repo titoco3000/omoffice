@@ -100,6 +100,7 @@ pub const ACTIVE_USERS: Table = Table::new(
         Column::new("connected_at", "timestamptz")
             .not_null()
             .default("now()"),
+        Column::new("last_seen_at", "timestamptz"),
     ],
 );
 

@@ -75,6 +75,11 @@ impl From<ActiveUser> for Origin {
 /// reference cycle back into the `Arc` it is stored in.
 type Handler = Arc<dyn Fn(Messenger, Value, Origin) -> BoxFuture<'static, ()> + Send + Sync>;
 
+/// What runs when a socket is forgotten and it had reported an org --
+/// unlike [`Handler`] this is not per-channel (a disconnect names no
+/// channel), so there is one slot rather than a map.
+type DisconnectHandler = Arc<dyn Fn(Messenger, String) -> BoxFuture<'static, ()> + Send + Sync>;
+
 /// The messaging system. Reaches handlers as an `Extension`; cheap to clone
 /// (every field is an `Arc` or carries no state).
 #[derive(Clone)]
@@ -84,6 +89,7 @@ pub struct Messenger {
     hub: websocket::Hub,
     email: email::EmailChannel,
     handlers: Arc<RwLock<HashMap<String, Handler>>>,
+    on_disconnect: Arc<RwLock<Option<DisconnectHandler>>>,
 }
 
 impl Messenger {
@@ -96,6 +102,7 @@ impl Messenger {
             hub: websocket::Hub::default(),
             email: email::EmailChannel,
             handlers: Arc::new(RwLock::new(HashMap::new())),
+            on_disconnect: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -193,6 +200,48 @@ impl Messenger {
             .insert(channel.to_string(), handler);
     }
 
+    /// Register what runs when a socket that had reported an org is
+    /// forgotten. Registering twice replaces the first, same as
+    /// [`on_message`](Self::on_message) -- there is only one thing a
+    /// disconnect ever means. Called once, from `presence::register`.
+    pub fn on_disconnect<F, Fut>(&self, handler: F)
+    where
+        F: Fn(Messenger, String) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = ()> + Send + 'static,
+    {
+        let handler: DisconnectHandler =
+            Arc::new(move |messenger, org_id| Box::pin(handler(messenger, org_id)));
+        *self
+            .on_disconnect
+            .write()
+            .unwrap_or_else(|err| err.into_inner()) = Some(handler);
+    }
+
+    /// Forget a socket -- the one place [`active_users::remove`] is ever
+    /// called, so whichever of the three paths finds a connection gone
+    /// (`$disconnect`, a closed local socket, a `Gone` reply while pushing
+    /// to it) notices exactly once, the same way. If the row had reported
+    /// an org, [`on_disconnect`](Self::on_disconnect)'s handler hears about
+    /// it after the row is actually gone -- `presence` uses that to
+    /// broadcast the org's roster shrinking without `core::messenger`
+    /// itself knowing what an org is.
+    async fn forget(&self, connection_id: &str) {
+        match active_users::remove(&self.db, connection_id).await {
+            Ok(Some(org_id)) => {
+                let handler = self
+                    .on_disconnect
+                    .read()
+                    .unwrap_or_else(|err| err.into_inner())
+                    .clone();
+                if let Some(handler) = handler {
+                    handler(self.clone(), org_id).await;
+                }
+            }
+            Ok(None) => {}
+            Err(err) => tracing::warn!("messenger: could not forget a connection: {err:?}"),
+        }
+    }
+
     /// Replace what one connection reports about itself. Both halves are
     /// always written: a report is the whole context, not a patch, so
     /// leaving a meeting is `meeting: None` rather than a separate call.
@@ -241,11 +290,7 @@ impl Messenger {
             }
             match self.management.post(&row.connection_id, &bytes).await {
                 Ok(()) => {}
-                Err(ApiGatewayManagementError::Gone) => {
-                    if let Err(err) = active_users::remove(&self.db, &row.connection_id).await {
-                        tracing::warn!("messenger: could not remove a stale connection: {err:?}");
-                    }
-                }
+                Err(ApiGatewayManagementError::Gone) => self.forget(&row.connection_id).await,
                 Err(err) => tracing::warn!("messenger: could not push to a connection: {err}"),
             }
         }
@@ -253,7 +298,14 @@ impl Messenger {
 
     /// One incoming frame, from whichever transport carried it: look the
     /// sender up, then hand the message to that channel's handler.
+    ///
+    /// Every frame that makes it here proves the socket is still open, so
+    /// this touches [`active_users`]
     async fn dispatch(&self, connection_id: &str, frame: Value) {
+        if let Err(err) = active_users::touch(&self.db, connection_id).await {
+            tracing::warn!("messenger: could not mark a connection alive: {err:?}");
+        }
+
         let Some(channel) = frame.get("channel").and_then(Value::as_str) else {
             return;
         };
@@ -323,9 +375,7 @@ pub async fn ws(
                 })
                 .await;
 
-            if let Err(err) = active_users::remove(&messenger.db, &connection_id).await {
-                tracing::warn!("messenger: cannot forget a closed local connection: {err:?}");
-            }
+            messenger.forget(&connection_id).await;
         })
         .into_response()
 }
@@ -385,9 +435,7 @@ async fn disconnect(
     ctx: &ApiGatewayWebsocketProxyRequestContext,
 ) -> Response {
     if let Some(connection_id) = &ctx.connection_id {
-        if let Err(err) = active_users::remove(&messenger.db, connection_id).await {
-            tracing::warn!("messenger: could not remove connection on disconnect: {err:?}");
-        }
+        messenger.forget(connection_id).await;
     }
     StatusCode::OK.into_response()
 }
