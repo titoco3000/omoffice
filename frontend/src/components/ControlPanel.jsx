@@ -9,7 +9,7 @@ import {
   IconScreen,
   IconScreenOff,
   IconSettings,
-} from "./icons";
+} from "../ui/icons";
 
 /// Where the control panel may sit. Keys are the setting's stored value.
 export const PANEL_POSITIONS = {
@@ -49,7 +49,7 @@ export default function ControlPanel({
       // A click inside the panel must not reach the tile underneath it.
       onClick={(event) => event.stopPropagation()}
     >
-      <div className="flex items-center gap-1 rounded-xl border border-slate-700 bg-slate-950/80 p-1.5 backdrop-blur">
+      <div className="flex items-center gap-1 rounded-card border border-line bg-surface/85 p-1.5 shadow-lg backdrop-blur">
         <PanelButton
           icon={<IconSettings />}
           label="settings"
@@ -74,7 +74,7 @@ export default function ControlPanel({
           active={sharing}
           onClick={onToggleShare}
         />
-        <span className="mx-0.5 h-6 w-px bg-slate-700" />
+        <span className="mx-0.5 h-6 w-px bg-line" />
         <PanelButton
           icon={<IconLeave />}
           label="leave"
@@ -85,17 +85,17 @@ export default function ControlPanel({
 
       {open && (
         <div
-          className={`absolute w-60 rounded-xl border border-slate-700 bg-slate-950/95 p-3 backdrop-blur ${
+          className={`absolute w-60 rounded-card border border-line bg-surface/95 p-3 shadow-lg backdrop-blur ${
             onTop ? "top-full mt-2" : "bottom-full mb-2"
           } ${onRight ? "right-0" : "left-0"}`}
         >
           <div className="flex items-center justify-between">
-            <h3 className="text-xs font-medium text-slate-300">settings</h3>
+            <h3 className="text-xs font-semibold text-ink">settings</h3>
             <button
               type="button"
               onClick={() => setOpen(false)}
               aria-label="close settings"
-              className="text-slate-400 hover:text-slate-200"
+              className="text-ink-muted hover:text-ink"
             >
               <IconClose className="h-4 w-4" />
             </button>
@@ -117,7 +117,7 @@ export default function ControlPanel({
             }
             columns="grid-cols-4"
           />
-          <p className="mt-2 text-[11px] leading-snug text-slate-500">
+          <p className="mt-2 text-[11px] leading-snug text-ink-faint">
             participants sit there while one of them is expanded.
           </p>
         </div>
@@ -129,17 +129,17 @@ export default function ControlPanel({
 function Choice({ title, options, value, onChange, columns }) {
   return (
     <div className="mt-3">
-      <p className="font-mono text-[11px] text-slate-500">{title}</p>
+      <p className="font-mono text-[11px] text-ink-faint">{title}</p>
       <div className={`mt-1.5 grid gap-1 ${columns}`}>
         {options.map((option) => (
           <button
             key={option}
             type="button"
             onClick={() => onChange(option)}
-            className={`rounded-md px-1.5 py-1 text-[11px] leading-tight ${
+            className={`rounded-md px-1.5 py-1 text-[11px] leading-tight transition-colors ${
               option === value
-                ? "bg-sky-600 text-white"
-                : "bg-slate-800 text-slate-300 hover:bg-slate-700"
+                ? "bg-brand text-on-brand"
+                : "bg-muted text-ink-muted hover:bg-line"
             }`}
           >
             {option}
@@ -152,10 +152,10 @@ function Choice({ title, options, value, onChange, columns }) {
 
 function PanelButton({ icon, label, onClick, active = false, danger = false }) {
   const tone = danger
-    ? "bg-rose-600/90 text-white hover:bg-rose-500"
+    ? "bg-danger text-on-danger hover:opacity-90"
     : active
-      ? "bg-sky-600 text-white hover:bg-sky-500"
-      : "text-slate-200 hover:bg-slate-800";
+      ? "bg-brand text-on-brand hover:bg-brand-strong"
+      : "text-ink hover:bg-muted";
   return (
     <button
       type="button"

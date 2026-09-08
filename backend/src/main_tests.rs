@@ -160,6 +160,13 @@ async fn sample_post_is_protected() {
 }
 
 #[tokio::test]
+async fn reading_org_presence_is_protected() {
+    let (status, body) = call(get("/private/orgs/some-org/presence")).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(body["error"], "missing_token");
+}
+
+#[tokio::test]
 async fn creating_a_meeting_is_protected() {
     let (status, body) = call(post_json("/private/meetings", None, json!({}))).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);

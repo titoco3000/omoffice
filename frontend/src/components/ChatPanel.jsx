@@ -1,59 +1,57 @@
 import { useEffect, useRef, useState } from "react";
+import { useAuth } from "../auth/AuthContext";
 import { CHANNELS, useChannel, useMessenger } from "../messenger/MessengerContext";
 import { useOrgContext } from "../org/OrgContext";
+import Button from "../ui/Button";
+import Input from "../ui/Input";
+import { IconClose } from "../ui/icons";
 
 /// Caps one tab's kept messages — there is no server history to bound instead.
 const MAX_MESSAGES = 200;
 
 /**
- * A room *is* an org: whichever one `OrgSwitcher` (`OrgContext`) has
- * selected. The room the backend fans a message out to is the org this tab
- * reports through `presence` (see `Shell`), so switching orgs needs no
- * socket of its own — this panel only names the `chat` channel.
+ * A room *is* an org: whichever one is selected. The room the backend fans a
+ * message out to is the org this tab reports through `presence`, so
+ * switching orgs needs no socket of its own — this panel only names the
+ * `chat` channel.
+ *
+ * It fills its column, so the caller decides whether that column is the
+ * meeting's second sidebar or a sheet over the video.
  */
-export default function ChatPanel({ email }) {
-  const { orgs, loading, error, selectedOrg } = useOrgContext();
-
-  if (selectedOrg) {
-    return (
-      <section className="rounded-xl border border-slate-800 bg-slate-900/60 p-4">
-        <div className="flex flex-wrap items-center gap-2">
-          <h2 className="text-sm font-medium text-slate-300">chat</h2>
-          <span className="rounded bg-emerald-500/15 px-2 py-0.5 text-xs text-emerald-300">
-            live
-          </span>
-          <span className="ml-auto min-w-0 truncate text-xs text-slate-500">
-            {selectedOrg.name}
-          </span>
-        </div>
-        <div className="mt-3">
-          {/* Keyed by org id so switching rooms clears the messages of the last one. */}
-          <ChatRoom key={selectedOrg.id} email={email} />
-        </div>
-      </section>
-    );
-  }
+export default function ChatPanel({ onClose }) {
+  const { selectedOrg, loading } = useOrgContext();
 
   return (
-    <section className="rounded-xl border border-slate-800 bg-slate-900/60 p-4">
-      <h2 className="text-sm font-medium text-slate-300">chat</h2>
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="flex shrink-0 items-center gap-2 border-b border-line px-3 py-2.5">
+        <h2 className="min-w-0 flex-1 truncate text-sm font-semibold text-ink">
+          chat
+        </h2>
+        <span className="min-w-0 truncate text-xs text-ink-faint">
+          {selectedOrg?.name}
+        </span>
+        {onClose && (
+          <Button variant="ghost" size="icon-sm" aria-label="close chat" onClick={onClose}>
+            <IconClose className="h-4 w-4" />
+          </Button>
+        )}
+      </div>
 
-      {error && (
-        <p className="mt-3 font-mono text-xs break-all text-rose-300">{error}</p>
-      )}
-      {!error && orgs.length === 0 && (
-        <p className="mt-3 text-xs text-slate-600">
-          {loading
-            ? "loading..."
-            : 'not a member of any org yet -- join or create one under "organizations"'}
+      {selectedOrg ? (
+        /* Keyed by org id so switching rooms clears the last one's messages. */
+        <ChatRoom key={selectedOrg.id} />
+      ) : (
+        <p className="p-3 text-xs text-ink-faint">
+          {loading ? "loading..." : "no org selected"}
         </p>
       )}
-    </section>
+    </div>
   );
 }
 
-/** The selected org's room. `email` is only for styling a caller's own messages. */
-function ChatRoom({ email }) {
+/** The selected org's room. Own messages are styled by the caller's email. */
+function ChatRoom() {
+  const { email } = useAuth();
   const { messenger, status } = useMessenger();
   const [messages, setMessages] = useState([]);
   const [draft, setDraft] = useState("");
@@ -85,14 +83,14 @@ function ChatRoom({ email }) {
   }
 
   return (
-    <div className="grid gap-3">
-      <div ref={listRef} className="h-64 overflow-y-auto rounded-lg bg-slate-950 p-3">
+    <>
+      <div ref={listRef} className="min-h-0 flex-1 overflow-y-auto p-3">
         {messages.length === 0 && (
-          <p className="text-xs text-slate-600">
+          <p className="text-xs text-ink-faint">
             {status === "open" ? "no messages yet" : status}
           </p>
         )}
-        <ul className="grid gap-1">
+        <ul className="grid gap-1.5">
           {messages.map((message) => {
             const isSelf = message.from === email;
             return (
@@ -101,14 +99,12 @@ function ChatRoom({ email }) {
                 className={`flex ${isSelf ? "justify-end" : "justify-start"}`}
               >
                 <div
-                  className={`max-w-[80%] rounded-lg px-3 py-1.5 text-sm break-words ${
-                    isSelf
-                      ? "bg-sky-600 text-white"
-                      : "bg-slate-800 text-slate-200"
+                  className={`max-w-[85%] rounded-lg px-3 py-1.5 text-sm break-words ${
+                    isSelf ? "bg-brand text-on-brand" : "bg-muted text-ink"
                   }`}
                 >
                   {!isSelf && (
-                    <div className="font-mono text-xs text-slate-400">{message.from}</div>
+                    <div className="font-mono text-xs opacity-70">{message.from}</div>
                   )}
                   {message.text}
                 </div>
@@ -118,32 +114,23 @@ function ChatRoom({ email }) {
         </ul>
       </div>
 
-      <form onSubmit={send} className="flex gap-2">
-        <input
-          type="text"
+      <form onSubmit={send} className="flex shrink-0 gap-2 border-t border-line p-2">
+        <Input
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
           placeholder={status === "open" ? "message" : status}
           disabled={status !== "open"}
-          className="h-9 min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-950 px-2 text-sm text-slate-100 outline-none focus:border-sky-500 disabled:opacity-50"
+          className="flex-1"
         />
         {(status === "closed" || status === "error") && (
-          <button
-            type="button"
-            onClick={() => messenger?.reconnect()}
-            className="shrink-0 rounded-lg bg-slate-700 px-4 py-1.5 text-sm font-medium text-white hover:bg-slate-600"
-          >
+          <Button variant="secondary" onClick={() => messenger?.reconnect()}>
             reconnect
-          </button>
+          </Button>
         )}
-        <button
-          type="submit"
-          disabled={status !== "open" || !draft.trim()}
-          className="shrink-0 rounded-lg bg-sky-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-sky-500 disabled:opacity-50"
-        >
+        <Button type="submit" disabled={status !== "open" || !draft.trim()}>
           send
-        </button>
+        </Button>
       </form>
-    </div>
+    </>
   );
 }

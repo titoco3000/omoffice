@@ -1,38 +1,43 @@
 import { useEffect, useState } from "react";
+import { callApi, describeFailure } from "./api";
 import { AuthProvider, useAuth } from "./auth/AuthContext";
-import ChatPanel from "./components/ChatPanel";
-import Login from "./components/Login";
-import MeetingPanel from "./components/MeetingPanel";
-import Organizations from "./components/Organizations";
-import OrgSwitcher from "./components/OrgSwitcher";
-import PendingInvites from "./components/PendingInvites";
-import RouteTester from "./components/RouteTester";
 import Toast from "./components/Toast";
-import { useInviteActions } from "./hooks/useInviteActions";
 import { useNotifications } from "./hooks/useNotifications";
+import NavContainer from "./layout/NavContainer";
+import { MeetingProvider } from "./meeting/MeetingContext";
+import MeetingDock from "./meeting/MeetingDock";
 import { MessengerProvider, usePresence } from "./messenger/MessengerContext";
 import { OrgProvider, useOrgContext } from "./org/OrgContext";
-import { API_URL, callApi, describeFailure, STAGE } from "./api";
+import Home from "./pages/Home";
+import LoginPage from "./pages/LoginPage";
+import MeetingPage from "./pages/MeetingPage";
+import MePage from "./pages/MePage";
+import OrgPage from "./pages/OrgPage";
+import UsersPage from "./pages/UsersPage";
+import { matchPath, Redirect, RouterProvider, useNavigate, usePath } from "./router";
+import { ThemeProvider } from "./theme/ThemeContext";
+import Notice from "./ui/Notice";
 
-const TABS = [
-  { id: "meetings", label: "meetings" },
-  { id: "chat", label: "chat" },
-  { id: "orgs", label: "organizations" },
-];
-
-/// Top-level shell: `AuthProvider` owns the token. Logged out shows `Login`;
-/// logged in shows the two-tab shell, a plain `useState` switch (no router).
+/// Top-level shell. The provider order is the dependency order: the theme
+/// paints even a failed invite, the router is read by the invite guards, and
+/// the meeting is held below the org so leaving one does not leave the other.
 export default function App() {
   return (
-    <AuthProvider>
-      <InviteLink>
-        <MessengerProvider>
-          <OrgProvider>
-            <Shell />
-          </OrgProvider>
-        </MessengerProvider>
-      </InviteLink>
-    </AuthProvider>
+    <ThemeProvider>
+      <RouterProvider>
+        <AuthProvider>
+          <InviteLink>
+            <MessengerProvider>
+              <OrgProvider>
+                <MeetingProvider>
+                  <Shell />
+                </MeetingProvider>
+              </OrgProvider>
+            </MessengerProvider>
+          </InviteLink>
+        </AuthProvider>
+      </RouterProvider>
+    </ThemeProvider>
   );
 }
 
@@ -40,6 +45,7 @@ export default function App() {
 /// adopts the token on mount, then strips the query string either way.
 function InviteLink({ children }) {
   const { loginWithToken } = useAuth();
+  const navigate = useNavigate();
   const invite = parseInviteParam();
   const [status, setStatus] = useState(invite ? "joining" : "idle");
   const [error, setError] = useState("");
@@ -55,6 +61,7 @@ function InviteLink({ children }) {
           : `/invites/meetings/${encodeURIComponent(invite.id)}/accept`;
       const response = await callApi({ method: "POST", path });
 
+      // The link is single-use, so it comes out of the URL either way.
       const url = new URL(window.location.href);
       url.searchParams.delete("invite");
       window.history.replaceState({}, "", url);
@@ -62,6 +69,13 @@ function InviteLink({ children }) {
       if (cancelled) return;
       if (response.ok) {
         loginWithToken(response.data.token);
+        // A meeting link lands in the meeting: the accept route hands back
+        // the code, and the path is how the app says "be in it".
+        if (invite.kind === "meeting" && response.data.code) {
+          navigate(`/meeting/${encodeURIComponent(response.data.code)}`, {
+            replace: true,
+          });
+        }
         setStatus("done");
       } else {
         setError(describeFailure(response));
@@ -78,17 +92,15 @@ function InviteLink({ children }) {
 
   if (status === "joining") {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-slate-950 text-slate-100">
-        <p className="text-sm text-slate-400">joining…</p>
+      <div className="flex min-h-dvh items-center justify-center">
+        <p className="text-sm text-ink-muted">joining…</p>
       </div>
     );
   }
   if (status === "error") {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-slate-950 px-4 text-slate-100">
-        <p className="max-w-sm rounded-lg border border-rose-800 bg-slate-900/60 p-4 text-center font-mono text-xs break-all text-rose-300">
-          {error}
-        </p>
+      <div className="flex min-h-dvh items-center justify-center px-4">
+        <Notice className="max-w-sm text-center">{error}</Notice>
       </div>
     );
   }
@@ -103,123 +115,69 @@ function parseInviteParam() {
   return { kind, id };
 }
 
+/**
+ * The routing table, and the two things that outlive a page: the toast
+ * stack and the meeting dock. Both sit outside the routed content on
+ * purpose — a meeting must survive navigation (CLAUDE.md), and a toast
+ * announcing an invite is not any one page's business.
+ */
 function Shell() {
-  const { token, email, isAuthenticated, logout } = useAuth();
+  const { isAuthenticated } = useAuth();
   const { selectedOrgId } = useOrgContext();
-  const [tab, setTab] = useState("meetings");
-  const [meetingCodeToJoin, setMeetingCodeToJoin] = useState("");
+  const path = usePath();
   const { toasts, dismiss } = useNotifications();
 
   // The org this tab is looking at. Chat's room is whatever this reports,
   // which is why no component below opens a socket of its own.
   usePresence({ org: selectedOrgId });
 
-  function joinMeeting(code) {
-    setMeetingCodeToJoin(code);
-    setTab("meetings");
-  }
-
-  // Shared with `PendingInvites` in behavior, not instance — both call
-  // through to `AuthContext.loginWithToken`.
-  const { acceptOrg, acceptMeeting } = useInviteActions({ onJoinMeeting: joinMeeting });
-
-  function acceptToast(toast) {
-    dismiss(toast.id);
-    if (!toast.inviteId) return;
-    if (toast.kind === "meeting") acceptMeeting(toast.inviteId);
-    else if (toast.kind === "org") acceptOrg(toast.inviteId);
-  }
-
-  if (!isAuthenticated) return <Login />;
-
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100">
-      <Toast toasts={toasts} onDismiss={dismiss} onAccept={acceptToast} />
-      <div className="mx-auto max-w-5xl px-4 py-10">
-        <header className="mb-8 flex items-start justify-between gap-4">
-          <div>
-            <h1 className="text-2xl font-semibold">omoffice</h1>
-            <p className="mt-1 font-mono text-sm text-slate-400">
-              <span className="rounded bg-slate-800 px-1.5 py-0.5">{STAGE}</span>{" "}
-              {API_URL}
-            </p>
-          </div>
-          <div className="flex items-start gap-3">
-            <OrgSwitcher />
-            <div className="text-right">
-              <p className="font-mono text-xs text-slate-400">{email}</p>
-              <button
-                type="button"
-                onClick={logout}
-                className="mt-1 text-xs text-slate-500 hover:text-slate-300"
-              >
-                sign out
-              </button>
-            </div>
-          </div>
-        </header>
-
-        <PendingInvites onJoinMeeting={joinMeeting} />
-
-        <nav className="mb-6 flex gap-1 border-b border-slate-800">
-          {TABS.map(({ id, label }) => (
-            <button
-              key={id}
-              type="button"
-              onClick={() => setTab(id)}
-              className={`-mb-px border-b-2 px-3 py-2 text-sm font-medium ${
-                tab === id
-                  ? "border-sky-500 text-slate-100"
-                  : "border-transparent text-slate-500 hover:text-slate-300"
-              }`}
-            >
-              {label}
-            </button>
-          ))}
-        </nav>
-
-        <div className="mb-8">
-          {tab === "meetings" && (
-            <MeetingPanel
-              token={token}
-              joinCode={meetingCodeToJoin}
-              onJoinCodeConsumed={() => setMeetingCodeToJoin("")}
-            />
-          )}
-          {tab === "chat" && <ChatPanel email={email} />}
-          {tab === "orgs" && <Organizations token={token} />}
-        </div>
-
-        <details className="rounded-xl border border-slate-800 bg-slate-900/60 p-4">
-          <summary className="cursor-pointer text-sm font-medium text-slate-300">
-            developer tools
-          </summary>
-          <div className="mt-4 grid gap-4">
-            <RouteTester route="/" />
-            <RouteTester route="/health" />
-            <RouteTester route="/private/me" token={token} />
-            <RouteTester
-              method="POST"
-              route="/private/sample-post/{var}"
-              fields={{ org_id: "string", name: "string", male: "boolean" }}
-              token={token}
-              note='requires the "post" role in org_id'
-            />
-            <RouteTester
-              method="POST"
-              route="/private/meetings"
-              fields={{ org_id: "string" }}
-              token={token}
-            />
-            <RouteTester route="/private/meetings?org_id={org_id}" token={token} />
-            <RouteTester
-              method="POST"
-              route="/private/meetings/{code}/attendees"
-              token={token}
-            />
-          </div>
-        </details>
-      </div>
-    </div>
+    <>
+      <Toast toasts={toasts} onDismiss={dismiss} />
+      {routed(path, isAuthenticated)}
+      {isAuthenticated && <MeetingDock />}
+    </>
   );
+}
+
+/// Five paths. `/` and `/login` stand alone; everything else is the app,
+/// and the app needs a token.
+function routed(path, isAuthenticated) {
+  if (path === "/") return <Home />;
+  if (path === "/login") return <LoginPage />;
+
+  if (!isAuthenticated) return <Redirect to="/login" />;
+
+  if (path === "/users") {
+    return (
+      <NavContainer>
+        <UsersPage />
+      </NavContainer>
+    );
+  }
+  if (path === "/me") {
+    return (
+      <NavContainer>
+        <MePage />
+      </NavContainer>
+    );
+  }
+  if (path === "/org") {
+    return (
+      <NavContainer>
+        <OrgPage />
+      </NavContainer>
+    );
+  }
+
+  const meeting = matchPath("/meeting/:code", path);
+  if (meeting) {
+    return (
+      <NavContainer>
+        <MeetingPage code={meeting.code} />
+      </NavContainer>
+    );
+  }
+
+  return <Redirect to="/users" />;
 }

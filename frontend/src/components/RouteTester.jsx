@@ -45,25 +45,23 @@ export default function RouteTester({
   return (
     <form
       onSubmit={submit}
-      className="rounded-xl border border-slate-800 bg-slate-900/60 p-4 shadow-sm"
+      className="rounded-card border border-line bg-muted p-4"
     >
       <div className="flex flex-wrap items-center gap-2">
         <span
           className={`rounded px-2 py-0.5 font-mono text-xs font-bold ${
             method === "GET"
-              ? "bg-emerald-500/15 text-emerald-300"
-              : "bg-amber-500/15 text-amber-300"
+              ? "bg-success/15 text-success"
+              : "bg-warning/20 text-warning"
           }`}
         >
           {method}
         </span>
-        <code className="font-mono text-sm text-slate-200">{route}</code>
+        <code className="font-mono text-sm text-ink">{route}</code>
         {needsToken && (
           <span
             className={`rounded px-2 py-0.5 text-xs ${
-              token
-                ? "bg-sky-500/15 text-sky-300"
-                : "bg-rose-500/15 text-rose-300"
+              token ? "bg-brand/15 text-brand" : "bg-danger/15 text-danger"
             }`}
             title={
               token ? "sending the current token" : "no token held yet"
@@ -74,7 +72,7 @@ export default function RouteTester({
         )}
       </div>
 
-      {note && <p className="mt-2 text-xs text-slate-500">{note}</p>}
+      {note && <p className="mt-2 text-xs text-ink-faint">{note}</p>}
 
       {(params.length > 0 || bodyFields.length > 0) && (
         <div className="mt-3 grid gap-3 sm:grid-cols-2">
@@ -98,7 +96,7 @@ export default function RouteTester({
           {bodyFields.map(([name, type]) => (
             <Field key={`body-${name}`} label={name} hint={type}>
               {type === "boolean" ? (
-                <label className="flex h-9 items-center gap-2 text-sm text-slate-300">
+                <label className="flex h-9 items-center gap-2 text-sm text-ink-muted">
                   <input
                     type="checkbox"
                     checked={Boolean(bodyValues[name])}
@@ -108,7 +106,7 @@ export default function RouteTester({
                         [name]: event.target.checked,
                       }))
                     }
-                    className="h-4 w-4 accent-sky-500"
+                    className="h-4 w-4 accent-[var(--om-brand)]"
                   />
                   {String(Boolean(bodyValues[name]))}
                 </label>
@@ -135,11 +133,11 @@ export default function RouteTester({
         <button
           type="submit"
           disabled={pending}
-          className="rounded-lg bg-sky-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-sky-500 disabled:opacity-50"
+          className="rounded-lg bg-brand px-4 py-1.5 text-sm font-medium text-on-brand hover:bg-brand-strong disabled:opacity-50"
         >
           {pending ? "sending..." : "send"}
         </button>
-        <code className="min-w-0 flex-1 truncate font-mono text-xs text-slate-500">
+        <code className="min-w-0 flex-1 truncate font-mono text-xs text-ink-faint">
           {method} {path}
         </code>
       </div>
@@ -150,13 +148,13 @@ export default function RouteTester({
 }
 
 const inputClass =
-  "h-9 w-full rounded-lg border border-slate-700 bg-slate-950 px-2 font-mono text-sm text-slate-100 outline-none focus:border-sky-500";
+  "h-9 w-full rounded-lg border border-line bg-surface px-2 font-mono text-sm text-ink outline-none focus:border-brand";
 
 function Field({ label, hint, children }) {
   return (
     <label className="block">
-      <span className="mb-1 block font-mono text-xs text-slate-400">
-        {label} <span className="text-slate-600">({hint})</span>
+      <span className="mb-1 block font-mono text-xs text-ink-muted">
+        {label} <span className="text-ink-faint">({hint})</span>
       </span>
       {children}
     </label>
@@ -165,16 +163,16 @@ function Field({ label, hint, children }) {
 
 function Result({ result }) {
   const tone = result.ok
-    ? "border-emerald-800 text-emerald-300"
-    : "border-rose-800 text-rose-300";
+    ? "border-success/40 text-success"
+    : "border-danger/40 text-danger";
 
   return (
     <div className="mt-3">
       <div className={`flex gap-3 border-b pb-1 font-mono text-xs ${tone}`}>
         <span>{result.status === 0 ? "no response" : result.status}</span>
-        <span className="text-slate-500">{result.ms}ms</span>
+        <span className="text-ink-faint">{result.ms}ms</span>
       </div>
-      <pre className="mt-2 max-h-64 overflow-y-auto rounded-lg bg-slate-950 p-3 font-mono text-xs whitespace-pre-wrap break-all text-slate-300">
+      <pre className="mt-2 max-h-64 overflow-y-auto rounded-lg bg-surface p-3 font-mono text-xs whitespace-pre-wrap break-all text-ink-muted">
         {JSON.stringify(result.data, null, 2)}
       </pre>
     </div>

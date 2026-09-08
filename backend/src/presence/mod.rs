@@ -9,11 +9,17 @@
 //! `core/messenger/` knows nothing about orgs or meetings beyond the two
 //! nullable columns it stores.
 
-use serde_json::Value;
+use std::collections::BTreeMap;
 
-use crate::core::messenger::{Messenger, Origin};
+use axum::extract::{Extension, Path};
+use axum::Json;
+use serde_json::{json, Value};
+
+use crate::auth::Claims;
+use crate::core::db::Db;
+use crate::core::messenger::{active_users, Messenger, Origin};
 use crate::meetings::Meeting;
-use crate::rbac;
+use crate::rbac::{self, RbacError};
 
 /// The channel the browser reports on; `frontend/src/messenger.js` sends
 /// the whole context under this name.
@@ -72,4 +78,35 @@ async fn allowed(
         }
     }
     true
+}
+
+/// `GET /private/orgs/{org_id}/presence` — who has a socket open reporting
+/// this org, and which meeting each of them is in. The read side of the
+/// same `active_users` rows the handler above writes: the sidebar's roster
+/// polls it, so "active" means "has a socket", not "has a membership row".
+///
+/// Membership-gated like every other org read: a roster is org data.
+pub async fn org_presence_route(
+    Extension(db): Extension<Db>,
+    Extension(claims): Extension<Claims>,
+    Path(org_id): Path<String>,
+) -> Result<Json<Value>, RbacError> {
+    rbac::require_member(&db, &claims.sub, &org_id).await?;
+
+    // One row per socket, so a person with three tabs open is three rows.
+    // Fold them to one entry each, keeping any meeting one of the tabs is in.
+    let mut users: BTreeMap<String, Option<String>> = BTreeMap::new();
+    for row in active_users::in_org(&db, &org_id).await? {
+        let entry = users.entry(row.user_email).or_insert(None);
+        if entry.is_none() {
+            *entry = row.meeting;
+        }
+    }
+
+    let users: Vec<Value> = users
+        .into_iter()
+        .map(|(email, meeting)| json!({ "email": email, "meeting": meeting }))
+        .collect();
+
+    Ok(Json(json!({ "users": users })))
 }

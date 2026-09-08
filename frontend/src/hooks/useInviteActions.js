@@ -1,12 +1,17 @@
 import { callApi } from "../api";
 import { useAuth } from "../auth/AuthContext";
+import { useActiveMeeting } from "../meeting/MeetingContext";
+import { useNavigate } from "../router";
 
 /**
  * Accepting an org or meeting invite, shared between `PendingInvites` and
- * `Toast` so the two don't drift. `onJoinMeeting` carries the code to `Shell`.
+ * the invite toast so the two don't drift. An accepted meeting invite is
+ * also an instruction to go there, which is the navigation below.
  */
-export function useInviteActions({ onJoinMeeting } = {}) {
+export function useInviteActions() {
   const { loginWithToken } = useAuth();
+  const { join } = useActiveMeeting();
+  const navigate = useNavigate();
 
   async function acceptOrg(inviteId) {
     const response = await callApi({
@@ -24,7 +29,8 @@ export function useInviteActions({ onJoinMeeting } = {}) {
     });
     if (response.ok) {
       loginWithToken(response.data.token);
-      onJoinMeeting?.(response.data.code);
+      join(response.data.code);
+      navigate(`/meeting/${encodeURIComponent(response.data.code)}`);
     }
     return response;
   }

@@ -12,8 +12,16 @@ export default function RoleCheckboxes({ roles, onChange }) {
   return (
     <div className="flex flex-wrap gap-3">
       {ROLE_OPTIONS.map((role) => (
-        <label key={role} className="flex items-center gap-1 text-xs text-slate-300">
-          <input type="checkbox" checked={roles.includes(role)} onChange={() => toggle(role)} />
+        <label
+          key={role}
+          className="flex items-center gap-1.5 text-xs text-ink-muted select-none"
+        >
+          <input
+            type="checkbox"
+            checked={roles.includes(role)}
+            onChange={() => toggle(role)}
+            className="accent-[var(--om-brand)]"
+          />
           {role}
         </label>
       ))}

@@ -133,3 +133,128 @@ export function IconClose(props) {
     </Svg>
   );
 }
+
+/// The mark beside the product name — an "o" with an office window in it.
+export function IconLogo({ className = "h-6 w-6" }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} aria-hidden="true">
+      <rect x="2" y="2" width="20" height="20" rx="6" fill="currentColor" />
+      <rect x="7" y="7" width="4.2" height="4.2" rx="1" fill="var(--om-bg)" />
+      <rect x="12.8" y="7" width="4.2" height="4.2" rx="1" fill="var(--om-bg)" />
+      <rect x="7" y="12.8" width="4.2" height="4.2" rx="1" fill="var(--om-bg)" />
+      <rect x="12.8" y="12.8" width="4.2" height="4.2" rx="1" fill="var(--om-bg)" />
+    </svg>
+  );
+}
+
+export function IconChevronLeft(props) {
+  return (
+    <Svg {...props}>
+      <path d="M14.5 5.5L8 12l6.5 6.5" />
+    </Svg>
+  );
+}
+
+export function IconChevronRight(props) {
+  return (
+    <Svg {...props}>
+      <path d="M9.5 5.5L16 12l-6.5 6.5" />
+    </Svg>
+  );
+}
+
+export function IconChevronDown(props) {
+  return (
+    <Svg {...props}>
+      <path d="M5.5 9.5L12 16l6.5-6.5" />
+    </Svg>
+  );
+}
+
+/// The roster link on the mobile bar.
+export function IconList(props) {
+  return (
+    <Svg {...props}>
+      <path d="M4 6.5h16M4 12h16M4 17.5h16" />
+    </Svg>
+  );
+}
+
+export function IconChat(props) {
+  return (
+    <Svg {...props}>
+      <path d="M20.5 12.5a7.5 7.5 0 0 1-10.9 6.7L4 20.5l1.4-5.2A7.5 7.5 0 1 1 20.5 12.5z" />
+    </Svg>
+  );
+}
+
+export function IconOrg(props) {
+  return (
+    <Svg {...props}>
+      <path d="M3.5 20.5h17M5.5 20.5V5.5a2 2 0 0 1 2-2h5a2 2 0 0 1 2 2v15M14.5 10.5h2a2 2 0 0 1 2 2v8" />
+      <path d="M8.5 8h3M8.5 12h3M8.5 16h3" />
+    </Svg>
+  );
+}
+
+export function IconPlus(props) {
+  return (
+    <Svg {...props}>
+      <path d="M12 5v14M5 12h14" />
+    </Svg>
+  );
+}
+
+export function IconSun(props) {
+  return (
+    <Svg {...props}>
+      <circle cx="12" cy="12" r="4" />
+      <path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.2 5.2l1.4 1.4M17.4 17.4l1.4 1.4M18.8 5.2l-1.4 1.4M6.6 17.4l-1.4 1.4" />
+    </Svg>
+  );
+}
+
+export function IconMoon(props) {
+  return (
+    <Svg {...props}>
+      <path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5z" />
+    </Svg>
+  );
+}
+
+export function IconMonitor(props) {
+  return (
+    <Svg {...props}>
+      <rect x="2.5" y="4" width="19" height="13" rx="2" />
+      <path d="M8.5 20.5h7M12 17v3.5" />
+    </Svg>
+  );
+}
+
+/// A live meeting, on the mobile bar and in the roster.
+export function IconMeeting(props) {
+  return (
+    <Svg {...props}>
+      <rect x="2.5" y="6" width="13" height="12" rx="2.5" />
+      <path d="M15.5 10.5l6-3.5v10l-6-3.5z" />
+    </Svg>
+  );
+}
+
+export function IconRefresh(props) {
+  return (
+    <Svg {...props}>
+      <path d="M20 11.5a8 8 0 1 0-.7 4.5" />
+      <path d="M20 4.5v5h-5" />
+    </Svg>
+  );
+}
+
+export function IconTrash(props) {
+  return (
+    <Svg {...props}>
+      <path d="M4.5 6.5h15M9.5 6.5V4.5a1 1 0 0 1 1-1h3a1 1 0 0 1 1 1v2" />
+      <path d="M6.5 6.5l1 13a1 1 0 0 0 1 1h7a1 1 0 0 0 1-1l1-13" />
+    </Svg>
+  );
+}

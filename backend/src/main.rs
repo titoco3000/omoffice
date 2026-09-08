@@ -183,6 +183,10 @@ fn app(keys: KeySource, chime: ChimeState, db: Db, messenger: Messenger) -> Rout
         )
         .route("/private/orgs/{org_id}/billing", get(private_org_billing))
         .route(
+            "/private/orgs/{org_id}/presence",
+            get(presence::org_presence_route),
+        )
+        .route(
             "/private/orgs/{org_id}/invites",
             post(rbac::create_invite_route).get(rbac::list_invites_route),
         )

@@ -1,15 +1,18 @@
 import { useEffect, useState } from "react";
-import { callApi, describeFailure } from "../api";
+import { callApi } from "../api";
 import { useAuth } from "../auth/AuthContext";
 import { useInviteActions } from "../hooks/useInviteActions";
+import Button from "../ui/Button";
+import Card, { CardHeader } from "../ui/Card";
 
 /**
- * `GET /private/invites`, for whoever logged in directly instead of a magic
- * link. Accepting reuses `useInviteActions`'s token adoption.
+ * `GET /private/invites`, for whoever logged in directly instead of through
+ * a magic link. Accepting reuses `useInviteActions`'s token adoption, so an
+ * accepted meeting invite lands in the meeting exactly like a link does.
  */
-export default function PendingInvites({ onJoinMeeting }) {
+export default function PendingInvites() {
   const { token } = useAuth();
-  const { acceptOrg, acceptMeeting } = useInviteActions({ onJoinMeeting });
+  const { acceptOrg, acceptMeeting } = useInviteActions();
   const [reloads, setReloads] = useState(0);
   const [result, setResult] = useState({
     stamp: null,
@@ -29,7 +32,7 @@ export default function PendingInvites({ onJoinMeeting }) {
         stamp: `${token}:${reloads}`,
         orgInvites: response.ok ? (response.data.org_invites ?? []) : [],
         meetingInvites: response.ok ? (response.data.meeting_invites ?? []) : [],
-        error: response.ok ? "" : describeFailure(response),
+        error: response.ok ? "" : "could not load invites",
       });
     });
     return () => {
@@ -37,110 +40,92 @@ export default function PendingInvites({ onJoinMeeting }) {
     };
   }, [token, reloads]);
 
-  const shown = result.stamp === stamp ? result : { orgInvites: [], meetingInvites: [], error: "" };
+  const shown =
+    result.stamp === stamp
+      ? result
+      : { orgInvites: [], meetingInvites: [], error: "" };
   const { orgInvites, meetingInvites, error } = shown;
 
   function refresh() {
     setReloads((count) => count + 1);
   }
 
-  async function accept(invite) {
+  /// Every button here is the same shape: act, then re-read the list.
+  async function act(invite, action) {
     setBusyId(invite.id);
-    await acceptOrg(invite.id);
+    await action();
     setBusyId(null);
     refresh();
   }
 
-  async function declineOrg(invite) {
-    setBusyId(invite.id);
-    await callApi({
+  function decline(kind, invite) {
+    return callApi({
       method: "POST",
-      path: `/private/invites/org/${encodeURIComponent(invite.id)}/decline`,
+      path: `/private/invites/${kind}/${encodeURIComponent(invite.id)}/decline`,
       token,
     });
-    setBusyId(null);
-    refresh();
-  }
-
-  async function acceptOneMeeting(invite) {
-    setBusyId(invite.id);
-    await acceptMeeting(invite.id);
-    setBusyId(null);
-    refresh();
-  }
-
-  async function declineMeeting(invite) {
-    setBusyId(invite.id);
-    await callApi({
-      method: "POST",
-      path: `/private/invites/meetings/${encodeURIComponent(invite.id)}/decline`,
-      token,
-    });
-    setBusyId(null);
-    refresh();
   }
 
   // Silent when there's nothing to show — a fetch error here shouldn't
-  // block the rest of the app.
+  // take a whole page down with it.
   if (error || (orgInvites.length === 0 && meetingInvites.length === 0)) return null;
 
   return (
-    <section className="mb-6 rounded-xl border border-amber-800 bg-amber-950/30 p-4">
-      <h2 className="text-sm font-medium text-amber-300">pending invites</h2>
-      <ul className="mt-2 grid gap-2">
+    <Card className="border-warning/50">
+      <CardHeader title="invites" subtitle="waiting for you" />
+      <ul className="grid gap-2">
         {orgInvites.map((invite) => (
           <li
             key={invite.id}
-            className="flex flex-wrap items-center gap-2 rounded-lg bg-slate-950 px-3 py-2"
+            className="flex flex-wrap items-center gap-2 rounded-lg bg-muted px-3 py-2"
           >
-            <span className="min-w-0 flex-1 truncate text-sm text-slate-200">
-              {invite.invited_by} invited you to <strong>{invite.org_name}</strong>
+            <span className="min-w-0 flex-1 truncate text-sm text-ink">
+              {invite.invited_by} invited you to{" "}
+              <strong className="font-semibold">{invite.org_name}</strong>
             </span>
-            <button
-              type="button"
+            <Button
+              size="sm"
               disabled={busyId === invite.id}
-              onClick={() => accept(invite)}
-              className="rounded-lg bg-sky-600 px-3 py-1 text-xs font-medium text-white hover:bg-sky-500 disabled:opacity-50"
+              onClick={() => act(invite, () => acceptOrg(invite.id))}
             >
               accept
-            </button>
-            <button
-              type="button"
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
               disabled={busyId === invite.id}
-              onClick={() => declineOrg(invite)}
-              className="rounded-lg bg-slate-700 px-3 py-1 text-xs text-white hover:bg-slate-600 disabled:opacity-50"
+              onClick={() => act(invite, () => decline("org", invite))}
             >
               decline
-            </button>
+            </Button>
           </li>
         ))}
         {meetingInvites.map((invite) => (
           <li
             key={invite.id}
-            className="flex flex-wrap items-center gap-2 rounded-lg bg-slate-950 px-3 py-2"
+            className="flex flex-wrap items-center gap-2 rounded-lg bg-muted px-3 py-2"
           >
-            <span className="min-w-0 flex-1 truncate text-sm text-slate-200">
+            <span className="min-w-0 flex-1 truncate text-sm text-ink">
               {invite.invited_by} invited you to a meeting
             </span>
-            <button
-              type="button"
+            <Button
+              size="sm"
               disabled={busyId === invite.id}
-              onClick={() => acceptOneMeeting(invite)}
-              className="rounded-lg bg-sky-600 px-3 py-1 text-xs font-medium text-white hover:bg-sky-500 disabled:opacity-50"
+              onClick={() => act(invite, () => acceptMeeting(invite.id))}
             >
               join
-            </button>
-            <button
-              type="button"
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
               disabled={busyId === invite.id}
-              onClick={() => declineMeeting(invite)}
-              className="rounded-lg bg-slate-700 px-3 py-1 text-xs text-white hover:bg-slate-600 disabled:opacity-50"
+              onClick={() => act(invite, () => decline("meetings", invite))}
             >
               decline
-            </button>
+            </Button>
           </li>
         ))}
       </ul>
-    </section>
+    </Card>
   );
 }

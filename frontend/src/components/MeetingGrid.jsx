@@ -49,6 +49,7 @@ export default function MeetingGrid({
   onMute,
   onCameraOff,
   participantsPosition,
+  compact = false,
 }) {
   const cells = roster.map((entry) => ({
     key: entry.attendeeId,
@@ -74,6 +75,7 @@ export default function MeetingGrid({
         onBindVideo={onBindVideo}
         onMute={() => onMute(cell)}
         onCameraOff={() => onCameraOff(cell)}
+        compact={compact}
       />
     );
   }
@@ -96,7 +98,13 @@ export default function MeetingGrid({
   }
 
   return (
-    <div className="grid h-full w-full auto-rows-fr grid-cols-[repeat(auto-fit,minmax(220px,1fr))] gap-2 overflow-y-auto p-2">
+    <div
+      className={`grid h-full w-full auto-rows-fr gap-2 overflow-y-auto p-2 ${
+        compact
+          ? "grid-cols-[repeat(auto-fit,minmax(72px,1fr))] gap-1 p-1"
+          : "grid-cols-[repeat(auto-fit,minmax(220px,1fr))]"
+      }`}
+    >
       {cells.map((cell) => (
         <div key={cell.key} className="min-h-0 min-w-0">
           {tileFor(cell, false)}

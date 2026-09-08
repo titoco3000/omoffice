@@ -1,10 +1,12 @@
 import { useEffect, useState } from "react";
-import { callApi, describeFailure } from "../../api";
+import { callApi } from "../../api";
 import { visibleRoles } from "../../rbac";
+import Badge from "../../ui/Badge";
+import Button from "../../ui/Button";
 
 /**
  * The org's still-pending invites, team-management only, with a revoke
- * button per row. Own "stamp" pattern, same as `OrgDetail`'s roster fetch.
+ * button per row. Own "stamp" pattern, same as the roster fetch above it.
  */
 export default function PendingOrgInvites({ org, token }) {
   const [reloads, setReloads] = useState(0);
@@ -22,7 +24,7 @@ export default function PendingOrgInvites({ org, token }) {
       setResult({
         stamp: `${org.id}:${token}:${reloads}`,
         invites: response.ok ? (response.data.invites ?? []) : [],
-        error: response.ok ? "" : describeFailure(response),
+        error: response.ok ? "" : "could not load pending invites",
       });
     });
     return () => {
@@ -45,35 +47,34 @@ export default function PendingOrgInvites({ org, token }) {
   }
 
   return (
-    <div className="mt-3 border-t border-slate-800 pt-3">
-      <h3 className="text-xs font-medium text-slate-400">pending invites</h3>
-      <ul className="mt-2 grid gap-1">
+    <div>
+      <h3 className="mb-2 text-xs font-semibold tracking-wide text-ink-faint uppercase">
+        pending invites
+      </h3>
+      <ul className="grid gap-1">
         {shown.invites.map((invite) => (
           <li
             key={invite.id}
-            className="flex flex-wrap items-center gap-2 rounded-lg bg-slate-950 px-3 py-2"
+            className="flex flex-wrap items-center gap-2 rounded-lg bg-muted px-3 py-2"
           >
-            <span className="min-w-0 flex-1 truncate font-mono text-sm text-slate-300">
+            <span className="min-w-0 flex-1 truncate font-mono text-sm text-ink-muted">
               {invite.email}
             </span>
             <span className="flex shrink-0 flex-wrap gap-1">
               {visibleRoles(invite.roles).map((role) => (
-                <span
-                  key={role}
-                  className="rounded bg-sky-500/15 px-1.5 py-0.5 text-xs text-sky-300"
-                >
+                <Badge key={role} tone="brand">
                   {role}
-                </span>
+                </Badge>
               ))}
             </span>
-            <button
-              type="button"
+            <Button
+              variant="ghost"
+              size="sm"
               disabled={revokingId === invite.id}
               onClick={() => revoke(invite)}
-              className="shrink-0 rounded-lg bg-slate-700 px-2 py-1 text-xs text-white hover:bg-slate-600 disabled:opacity-50"
             >
               revoke
-            </button>
+            </Button>
           </li>
         ))}
       </ul>

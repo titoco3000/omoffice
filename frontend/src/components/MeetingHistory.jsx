@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 import { callApi, describeFailure } from "../api";
+import Button from "../ui/Button";
+import Notice from "../ui/Notice";
 
 /**
  * Every meeting in `orgId`, not just ones the caller made or joined. A code
@@ -36,60 +38,46 @@ export default function MeetingHistory({ token, orgId, onPick }) {
   const shown = result.stamp === stamp ? result : { meetings: [], error: "" };
 
   return (
-    <div className="mt-4 border-t border-slate-800 pt-3">
-      <div className="flex items-center gap-2">
-        <h3 className="text-xs font-medium text-slate-400">org meetings</h3>
-        <button
-          type="button"
-          onClick={() => setReloads((count) => count + 1)}
-          disabled={!token || !orgId || loading}
-          className="text-xs text-slate-500 hover:text-slate-300 disabled:opacity-50"
-        >
-          {loading ? "..." : "refresh"}
-        </button>
-      </div>
-
-      {shown.error && (
-        <p className="mt-2 font-mono text-xs break-all text-rose-300">
-          {shown.error}
-        </p>
-      )}
+    <div className="grid gap-2">
+      {shown.error && <Notice>{shown.error}</Notice>}
 
       {!shown.error && shown.meetings.length === 0 && (
-        <p className="mt-2 text-xs text-slate-600">
-          {!orgId
-            ? "pick an org above to see its meetings"
-            : loading
-              ? "loading..."
-              : "none yet"}
+        <p className="text-xs text-ink-faint">
+          {!orgId ? "no org selected" : loading ? "loading..." : "none yet"}
         </p>
       )}
 
-      <ul className="mt-2 grid gap-1">
+      <ul className="grid gap-1">
         {shown.meetings.map((meeting) => (
           <li
             key={meeting.code}
-            className="flex items-center gap-3 rounded-lg bg-slate-950 px-2 py-1.5"
+            className="flex flex-wrap items-center gap-3 rounded-lg bg-muted px-3 py-2"
           >
-            <code className="min-w-0 flex-1 truncate font-mono text-xs text-slate-300">
+            <code className="min-w-0 flex-1 truncate font-mono text-xs text-ink">
               {meeting.code}
             </code>
-            <span className="shrink-0 text-xs text-slate-500">
+            <span className="shrink-0 text-xs text-ink-muted">
               {meeting.created_by}
             </span>
-            <span className="shrink-0 text-xs text-slate-600">
+            <span className="shrink-0 text-xs text-ink-faint">
               {new Date(meeting.created_at).toLocaleString()}
             </span>
-            <button
-              type="button"
-              onClick={() => onPick(meeting.code)}
-              className="shrink-0 rounded bg-slate-700 px-2 py-0.5 text-xs text-white hover:bg-slate-600"
-            >
+            <Button variant="secondary" size="sm" onClick={() => onPick(meeting.code)}>
               rejoin
-            </button>
+            </Button>
           </li>
         ))}
       </ul>
+
+      <Button
+        variant="ghost"
+        size="sm"
+        className="justify-self-start"
+        onClick={() => setReloads((count) => count + 1)}
+        disabled={!token || !orgId || loading}
+      >
+        {loading ? "..." : "refresh"}
+      </Button>
     </div>
   );
 }
