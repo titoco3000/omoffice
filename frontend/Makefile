@@ -1,6 +1,11 @@
 SHELL := /bin/bash
 .DEFAULT_GOAL := help
 
+# Root env (AWS_PROFILE, AWS_REGION, PROJECT) -- sourced automatically, no
+# manual export needed.
+-include ../.env
+export AWS_PROFILE AWS_REGION PROJECT
+
 NPM  ?= npm
 DIST := dist
 
@@ -13,9 +18,8 @@ ENV_FILE := .env.$(STAGE)
 
 define REQUIRE_ENV
 @test -n "$$PROJECT" || { \
-  echo "error: PROJECT is not set -- the root env vars are not exported."; \
-  echo "export them from the repo root first (see README):"; \
-  echo "  set -a; . ../.env; set +a"; \
+  echo "error: PROJECT is not set -- ../.env is missing or malformed."; \
+  echo "expected AWS_PROFILE, AWS_REGION, PROJECT in the repo root .env."; \
   exit 1; }
 endef
 
