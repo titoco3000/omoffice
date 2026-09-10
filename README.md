@@ -21,18 +21,13 @@ state is separate.
 - AWS CLI with a configured profile
 - `psql` 14+
 
-## Local Quickstart
+## Quickstart
 
 ```sh
-# in one terminal
-cd backend
 make init
-make run dev    # http://localhost:8000, reloads on src edit
-
-# in another
-cd frontend
-make init
-make run local  # http://localhost:5173, refreshes on src edit
+make -C infra deploy dev
+# manually copy contents to backend/.env.dev
+make run    # starts both backend and frontend, each reloads on their respective src edit
 ```
 
 ## Usage Guide
