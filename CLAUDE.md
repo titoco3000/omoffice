@@ -4,152 +4,126 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-`omoffice` — a sample API: a single Rust (axum) binary deployed to AWS Lambda behind an API Gateway v2 HTTP API, plus a React/Vite/Tailwind frontend on S3 + CloudFront, an Aurora DSQL database, with all AWS resources managed by Terraform. Two deployed stages: `dev` and `prod`.
-
-## Environment
-
-Every command below assumes the root `.env` is exported first (it carries `AWS_PROFILE`, `AWS_REGION`, `PROJECT`):
-
-```sh
-export $(grep -v '^#' .env | xargs -d '\n')
-```
-
-Every make target except `help` starts with `$(REQUIRE_ENV)`, which fails if
-`PROJECT` is unset — that is the signal the root env was never exported.
+Omoffice: meetings app for organizations. Rust (axum) backend deployed as both a
+local server and a Lambda handler from the same router, React/Vite/Tailwind
+frontend, Terraform-managed AWS infra (Lambda, API Gateway incl. a WebSocket
+API, Aurora DSQL, S3/CloudFront, Secrets Manager). Stages are `dev` and `prod`
+(`local` too, for the frontend, meaning "talk to localhost:8000").
 
 ## Commands
 
-`backend/`, `frontend/` and `infra/` each drive everything through a Makefile that takes the stage as a bare second word (`make deploy dev`); with no stage word it defaults to `dev` (`local` in `frontend/`). The Makefiles declare the stage names as no-op phony targets so make does not try to build them.
-
-Backend (`cd backend`):
-
-```sh
-make init            # verify cargo/zig, install cargo-lambda + cargo-watch, add linux targets, cargo fetch
-make run dev         # local server on http://localhost:8000, rebuilds+restarts on src edits (PORT overrides, WATCH=0 disables)
-make build dev       # cross-compile the lambda zip via cargo-lambda (ARCH, default arm64)
-make deploy dev      # build, then aws lambda update-function-code from .env.<stage>
-make db-status dev   # which migrations are applied, which are not, which were interrupted
-make db-migrate dev  # apply every pending migration
-make db-revert dev   # revert the most recent one (destructive; prompts for the stage name)
-make db-shell dev    # psql against the stage, with a freshly generated IAM token
-make db-generate     # diff schema.rs against migrations/.snapshot.json, write new migration files
-make test            # cargo test
-make fmt             # cargo fmt
-make lint            # cargo clippy --all-targets -- -D warnings
-```
-
-Run a single test: `cd backend && cargo test <test_name>` (`-- --nocapture` to see output). Nothing in the build touches a database. Every `db-*` target does, and needs `DATABASE_ENDPOINT` in `backend/.env.<stage>` plus AWS credentials, because there is no local database to fall back to.
-
-Frontend (`cd frontend`):
+Each of `backend/`, `frontend/`, `infra/` is driven by its own Makefile; `make
+help` in any of them lists the full target set. The stage is a bare second
+word (`make run dev`, `make deploy prod`) — `backend`/`infra` default to `dev`,
+`frontend` to `local`. All three source AWS_PROFILE/AWS_REGION/PROJECT from
+the repo-root `.env` automatically.
 
 ```sh
-make init            # verify node/npm/aws cli, npm install
-make run local       # vite on http://localhost:5173 against localhost:8000 (PORT overrides)
-make run dev         # same UI against the deployed dev API
-make build dev       # production build into dist/
-make deploy dev      # build, then s3 sync + cloudfront invalidation from .env.<stage>
-make preview dev     # build, then serve dist/ locally
-make lint            # eslint
+cd backend && make run dev    # http://localhost:8000
+cd frontend && make run local # http://localhost:5173
 ```
 
-Stages here are `local`, `dev`, `prod`; `make deploy local` is refused because only `dev`/`prod` have infrastructure.
+Backend: `make build [stage]` (cross-compile lambda zip via cargo-lambda),
+`make deploy [stage]` (build + push zip only — never touches infra), 
+`make test | fmt | lint` (lint is `clippy --all-targets -- -D warnings`). 
+Single test: `cd backend && cargo test <test_name>`.
 
-Infra (`cd infra`):
+Backend DB (Aurora DSQL, no local emulator — `dev` is a real cluster):
+edit `backend/src/schema.rs` → `make db-generate` (diffs it against
+`migrations/.snapshot.json`, writes new `.up.sql`/`.down.sql` — local, no
+stage, no DB touched) → review the generated SQL → `make db-migrate <stage>`.
+Also `make db-status <stage>`, `make db-revert <stage>` (destructive, asks
+first), `make db-shell <stage>` (psql with a fresh IAM token). A test in
+`schema.rs` fails the build if `TABLES` was edited without a matching
+`make db-generate` run.
 
-```sh
-make init            # terraform init + fmt -check + validate
-make plan dev
-make deploy dev      # apply, then print outputs
-make output dev      # reprint outputs, including the blocks for backend/.env.<stage> and frontend/.env.<stage>
-make destroy dev     # prompts: type the stage name to confirm
-make fmt             # terraform fmt -recursive
-```
+Frontend: `make build [stage]` (into `dist/`), `make deploy [stage]` (build +
+S3 sync + CloudFront invalidation, `dev`/`prod` only), `make preview [stage]`,
+`make lint`. No test runner is configured.
 
-Every infra target except `init` requires `.terraform/` to exist and selects the stage's terraform workspace (`terraform workspace select -or-create <stage>`) before running.
+Infra: `make plan <stage>`, `make deploy <stage>` (apply, then print
+outputs), `make output <stage>`, `make destroy <stage>` (asks first). State
+is local (`infra/terraform.tfstate.d/`, gitignored). `make deploy`/`make
+output` print a `backend_env_file` / `frontend_env_file` block — copy those
+into `backend/.env.<stage>` / `frontend/.env.<stage>` by hand. That handoff
+is manual on purpose: Terraform owns infrastructure, each app's own `make
+deploy` owns code/assets, so applying infra never overwrites what's running.
 
-## Architecture
+## Backend architecture (`backend/src/`)
 
-**One binary, two runtimes.** `backend/src/main.rs` builds a single `axum::Router` in `app()`. `main` checks `AWS_LAMBDA_RUNTIME_API` (set only by the Lambda execution environment): if present it hands the router to `lambda_http::run`, otherwise it binds a local `TcpListener`. Add routes in `app()` and both paths get them.
+`main.rs::app()` builds one `axum::Router` used both by `axum::serve`
+(local) and `lambda_http::run` (Lambda) — same handlers, same middleware,
+either way. Route list, CORS, and the auth middleware layering all live
+there; read it first when adding a route.
 
-**Terraform owns infrastructure, the backend owns code.** `infra/main.tf` creates the Lambda from a placeholder zip (`infra/placeholder/bootstrap`) and then `ignore_changes = [filename, source_code_hash]`. The real binary is pushed only by `backend/make deploy`, so a `terraform apply` never reverts deployed code. This is why the two deploy steps exist and must not be merged.
+- `core/` — building blocks with no feature knowledge: `db` (DSQL), `chime`
+  (Amazon Chime SDK client), `apigw_management` (push to WebSocket
+  connections when deployed), `orm` (schema-as-Rust-data, SQL rendering,
+  diffing — see the DB workflow above), `messenger` (below).
+- `auth/` — JWT bearer auth. `AuthConfig` in `main.rs::app()` decides which
+  path prefixes are protected; `keys.rs` holds the signing key.
+- `rbac/` — organizations and per-user roles. `require_role`/`require_member`
+  are the gates other modules call. Roles native to the RBAC live in
+  `rbac::roles`; a project's own extra roles (this project has one: `"post"`,
+  in `main.rs`) are plain strings registered via `RolesConfig::project_roles`.
+- `users/`, `meetings/`, `chat/`, `presence/` — feature modules, each owning
+  its own routes/queries. `meetings/` is the only module that knows both
+  Chime and DSQL for a meeting.
+- `migrate/` — the `migrate` subcommand (`generate`/`up`/`down`/`status`),
+  invoked via `cargo run -- migrate ...`; `main.rs` dispatches to it before
+  starting the server when `argv[1] == "migrate"`.
+- `schema.rs` — every table's current shape, in one place. The only file to
+  edit to change the schema (see DB workflow above).
 
-**The frontend is the same two-step split.** `infra/frontend.tf` creates a private S3 bucket (`<project>-frontend-<stage>-<account-id>`, globally-unique names) and a CloudFront distribution reading it through an Origin Access Control; `frontend/make deploy <stage>` uploads `dist/` and invalidates the distribution. Terraform never touches the objects. 403/404 both rewrite to `/index.html` so the SPA owns routing.
+**Messenger** (`core/messenger/`): one interface, two directions. Out:
+`Messenger::send`/`send_to_users_on_org`/`send_to_users_on_meeting` take a
+JSON message, a channel name, transports (`Via::Websocket`/`Via::Email`) and
+an audience. In: `Messenger::on_message(channel, handler)` registers a
+handler called once per frame a client sends on that channel — `chat/`,
+`presence/`, and `rbac/invites.rs` each register their own. The wire frame is
+`{"channel": ..., "message": ...}` in both directions over the one `/ws`
+socket (not under `/private` — a handshake carries no header, so it
+authenticates itself with `?token=...`). Delivery goes through
+`active_users` and whichever transport each row is on: the in-process
+`websocket::Hub` locally, API Gateway's Management API when deployed
+(`core/messenger::lambda_entry` is the router's fallback, catching a
+WebSocket-API event since it claims no real HTTP route path).
 
-**Frontend stage config does not use Vite's `.env` loading.** Vite reads `.env.local` in *every* mode, which would clobber `make run dev`. Instead `frontend/Makefile` sources `frontend/.env.<stage>` and exports `VITE_API_URL`/`VITE_STAGE` into vite's process env — the same shape as `backend/Makefile`. `.env.local` (checked in) points at `localhost:8000`; `.env.dev`/`.env.prod` come from `infra/make output <stage>`, which prints a `frontend_env_file` block (`API_URL`, `FRONTEND_BUCKET`, `FRONTEND_DISTRIBUTION_ID`, `FRONTEND_URL`).
+`presence/` decides who may join an org's "room": a browser reports its
+current org/meeting on the `presence` channel, presence checks it against
+RBAC and stores it, and everything else (`chat/`'s room, who a broadcast
+reaches) trusts that stored context rather than re-checking. Presence
+snapshots are pushed on change (`org_presence` channel), not polled; the
+`GET /private/orgs/{id}/presence` route only covers a tab's first paint.
 
-**The database is Aurora DSQL, and there is no local one** (`backend/src/core/db.rs`, `infra/dsql.tf`). One cluster per stage; it is serverless, scales to zero and has a public endpoint, so the lambda stays out of a VPC and the stack needs no NAT gateway. There is no DSQL emulator or container image, so local runs talk to the real `dev` cluster — the same pattern as `make run dev` already reading the real per-stage JWT secret with your AWS profile. Terraform owns the cluster; the schema inside it is owned by `make db-migrate`, the same split as the lambda and its code.
+## Frontend architecture (`frontend/src/`)
 
-**Connecting is an IAM token, not a password.** Nothing is stored and nothing rotates: `db.rs` SigV4-presigns a `DbConnectAdmin` call locally and uses the result as the postgres password (`infra/dsql.tf` grants `dsql:DbConnectAdmin` on the cluster). Those tokens expire, so a pool cannot keep the one it got at cold start: `Db::pool()` re-signs before the current token ages out and hands the new one to the pool with sqlx's `set_connect_options`. That check is pull-based rather than a background refresh task on purpose — a lambda is frozen between invocations, and a timer that only ticks while the sandbox is awake would hand out an expired token after an idle gap. The pool is built lazily, so a cold start pays for neither the token nor a connection.
+No router or state library — `router.jsx` is a from-scratch History-API
+router (5 routes, `matchPath("/meeting/:code", path)` pattern matching) kept
+deliberately dependency-free because the bundle is already over budget from
+the Chime SDK. `App.jsx`'s provider nesting order is the dependency order —
+read the comment there before reordering:
+`Theme → Router → Auth → InviteLink → Messenger → Org → Meeting → Shell`.
+`InviteLink` accepts `?invite=org:{id}` / `?invite=meeting:{id}` magic-link
+query params on mount (calling the matching `accept` route) before rendering
+anything else. The meeting is held in a provider above the router
+(`meeting/MeetingContext.jsx`) so navigating away from `/meeting/{code}`
+doesn't end the call — `MeetingDock`, mounted once at the app root beside the
+routed content, owns the actual Chime session and covers whatever `slot`
+the current page registered as its stage.
 
-**`db.rs` is deliberately dumb.** It hands out a connected pool, retries a write that lost an optimistic-concurrency race, and words a database failure as HTTP — nothing in it knows a table or a column name. Same split on the Chime side: `chime.rs` only knows how to call Chime (`create_meeting`/`get_meeting`/`create_attendee`) and the JSON shapes the browser SDK reads; it does not know meetings get recorded anywhere. `users.rs` and `meetings.rs` are the domain modules that own a table each and, for meetings, use *both* `db.rs` and `chime.rs` to do the thing a meeting actually is — create it in Chime, then record it. Route handlers live in the domain module, not in `chime.rs` or `db.rs`: a base module gaining a route, a query, or a dependency on the other base module is the thing to catch in review.
+`messenger/messenger.js`'s `Messenger` class mirrors the backend: one
+socket, opened by `MessengerContext` for the session's token, with
+`CHANNELS` (`chat`/`invites`/`presence`) matching the backend's channel
+names exactly. No component below `MessengerContext` opens a socket of its
+own or knows about it directly — a feature just names a channel. `Shell`
+calls `usePresence({ org: selectedOrgId })` once, so the org a tab is
+"looking at" (and thus its chat room) is whatever `OrgContext` currently has
+selected.
 
-**Migrations are ordered SQL pairs with a three-step ledger** (`backend/migrations/`, `backend/src/migrate/`, split into `commands.rs`/`ledger.rs`/`files.rs`). Every migration is `<version>_<name>.up.sql` plus a `.down.sql`; the runner is a subcommand of the API binary (`omoffice-api migrate <status|up|down|generate>`), so it shares the connection code and there is still one binary to cross-compile. Normally a migration tool writes its ledger row inside the same transaction as the schema change, so a crash rolls back both. DSQL forbids DDL and DML in one transaction, so that guarantee is unavailable and ordering alone does not replace it — ledger-first leaves a row claiming a migration that never ran, ledger-last leaves a change no row admits to. So the ledger has states: insert `pending`, run the DDL, update to `applied` (and `applied` -> `reverting` -> row deleted on the way back). A crash leaves a row in an in-between state and the next run stops with a named error saying which migration was interrupted. `sqlx`'s own migrator was not used: its `success` flag is written by the same transaction the DDL is in, which is exactly the thing DSQL will not do.
-
-**The queries are built at runtime, and that is forced.** `sqlx::query!` was the plan; it does not work against DSQL. The macro opens its own connection to describe each query at compile time, and `sqlx-macros-core` unconditionally sends a `DO $$ ... $$` block on that connection to set `plan_cache_mode`. DSQL has no PL/pgSQL and answers `ERROR: DO with language plpgsql not supported`, so every `query!` and every `cargo sqlx prepare` fails — online or offline, with or without a cache. There is no setting that turns the block off. So `users.rs`/`meetings.rs` use `sqlx::query`/`query_as::<_, T>` with `.bind(...)`, and there is no `.sqlx/` directory, no `db-prepare` target and no offline mode to think about. The cost is real: a wrong column name is a 500 at runtime rather than a build error, so the tables the queries name are worth re-reading when a migration changes them. Verify with `psql` before assuming a newer sqlx has fixed this; the block is in `sqlx-macros-core/src/database/mod.rs`.
-
-**What is in the database.** `users.rs` keys `users` by the email `/auth/request-key/{email}` already issues tokens for, and `auth.rs` writes a row there (best effort — a token that is already signed should not be withheld because the database is down). `meetings.rs` keys `meetings` by the Chime meeting code from `POST /private/meetings`: code, creator, created_at, with a real foreign key to `users`. That write is not best effort — a meeting missing from the history is worse than an empty Chime meeting, which Chime drops on its own. `GET /private/meetings` reads it back, and `frontend/src/components/MeetingHistory.jsx` is the visible list on `/users`.
-
-**`RouteTester` derives its form from its props** (`frontend/src/components/RouteTester.jsx`): `{placeholders}` in `route` become path inputs, `fields` (`{name: "string" | "boolean" | "number"}`) becomes the JSON body, `onResult` gets the parsed body of a 2xx. It is the sample API's own bench, not part of the product: `components/DeveloperTools.jsx` is the one caller, inside a `<details>` on `/me`. `src/api.js` holds the URL/param helpers and `callApi`, which flattens a network or CORS failure into the same `{ok, status, ms, data}` shape as a 401 so there is one render path.
-
-**One theme file, and no raw color anywhere else** (`frontend/src/index.css`). The palette is declared twice as CSS variables — `:root` for light, `.dark` for dark — and `@theme inline` maps them onto semantic Tailwind utilities (`bg-surface`, `text-ink-muted`, `border-line`, `bg-brand/15`). A component never writes `slate-800` or a `dark:` class; it names a role and both palettes follow. `theme/ThemeContext.jsx` owns the `dark` class on `<html>` and the three-state choice (`system`/`light`/`dark`, `system` being `prefers-color-scheme`). The layout's three widths (`--spacing-rail`, `--spacing-side`, `--spacing-chat`) live in the same block, so `w-side` and the sidebar cannot disagree. `ui/` holds the primitives that consume it — `Button` (the only place a variant's colors are spelled out), `Input`, `Card`, `Badge`, `Notice`, `Avatar`, `Dropdown`, `icons`.
-
-**The router is 100 lines of History API** (`frontend/src/router.jsx`), not a dependency: the Chime SDK already puts the bundle over vite's warning, and five routes need only a path, `navigate`, and `matchPath("/meeting/:code", path)`. `App.jsx`'s `routed()` is the whole table — `/` (the landing) and `/login` stand alone, everything else is wrapped in `NavContainer` and redirects to `/login` without a token. Deep links survive a reload because `infra/frontend.tf` already rewrites 403/404 to `/index.html`. Pages are `pages/`, the frame is `layout/`.
-
-**`NavContainer` is the frame, `OrgUserList` is its body** (`frontend/src/layout/`). Desktop is a sidebar (logo and collapse toggle, the roster, a footer link to `/me`) plus the rest of the screen; a phone gets a bottom bar instead (profile, logo, and either "back to the meeting" or a link to `/users`), which is why the roster also exists as a page. Collapsed, the sidebar keeps the roster's avatars and its actions and drops only the words. In `OrgUserList` a click on a person is a verb, not navigation: with no meeting of your own it creates one, invites them, and goes there; with one already running the row becomes a dropdown, because "invite them here" and "leave and start a new one with them" are then two different things.
-
-**The roster is two reads merged, and presence is polled** (`frontend/src/hooks/useOrgRoster.js`, `presence::org_presence_route`). Membership comes from `GET /private/orgs/{id}`; who is actually here comes from `GET /private/orgs/{id}/presence`, which folds `active_users` rows (one per socket) down to one entry per person plus the meeting that socket reported. Live meetings are that same answer grouped by code — a meeting is "live" because somebody is in it, so there is no second request. It polls every 10s and skips a hidden tab: the `presence` channel carries a browser's claim *to* the backend and nothing fans a roster change back out, so there is nothing to subscribe to yet.
-
-**A meeting outlives the page you started it on** (`frontend/src/meeting/`). `MeetingContext` holds only which code is active; `MeetingDock` mounts the one `<Meeting>` for the whole app, position-fixed and never unmounted, so navigating away cannot tear the Chime session down. `MeetingPage` renders an empty stage element and registers it (`setSlot`); the dock measures that rectangle with a `ResizeObserver` and covers it, and with no stage registered it shrinks to a corner rectangle with just "expand" and "leave". Measuring rather than reusing the layout's width classes is deliberate: the stage is whatever is left after the nav and the chat sidebar have had their say. `/meeting/{code}` is also an instruction — landing on a code you are not in joins it, which is how a magic link and a rejoin both work.
-
-**The handoff between the halves is `backend/.env.<stage>` and `frontend/.env.<stage>`.** `infra/make output <stage>` prints a `backend_env_file` output (`LAMBDA_FUNCTION_NAME`, `API_URL`, `JWT_SECRET_ID`, `DATABASE_ENDPOINT`) that must be pasted into `backend/.env.dev` / `.env.prod`; `backend/make deploy` fails with a pointer to that command if the file, `LAMBDA_FUNCTION_NAME` or `DATABASE_ENDPOINT` is missing. `make run` sources the same file, so local runs read the real per-stage JWT secret with your AWS profile.
-
-**Auth policy is declared in `app()`, implemented in `backend/src/auth/`** (`mod.rs` for `Claims`/`AuthConfig`/the routes, `keys.rs` for the signing-key machinery). `app()` builds an `AuthConfig` naming the protected prefixes (`.protect(vec!["/private"])`); `auth/mod.rs` holds no policy of its own. `AuthConfig::allow_emails(...)` still exists but `app()` no longer calls it — org invites need to provision arbitrary emails — so `is_allowed` currently lets everyone through. `require_bearer` is layered once over the whole router and checks the prefixes per request, so adding one to `.protect(...)` is the entire cost of protecting a route tree. Verified `Claims` are inserted as a request extension. `/auth/request-key/{email}` signs an HS256 token (7 days) and returns it directly — there is no proof of email ownership, which is fine for a sample and not for real users.
-
-**The signing key is a Secrets Manager secret rotated weekly** (`infra/secrets.tf`, `omoffice/jwt-key-<stage>`, `cron(0 7 ? * SUN *)` from `var.jwt_rotation_schedule`). `infra/rotator/index.py` is a standard four-step rotation lambda that terraform owns end to end — unlike the API lambda, its code is not deployed separately. The API verifies against `AWSCURRENT` then `AWSPREVIOUS`, so a token survives one rotation after it's issued; keys are cached in-process for 5 minutes. `KeySource::from_env()` picks the key once at startup: `JWT_KEY` env var, then `JWT_SECRET_ID`, then a built-in insecure key that is a hard startup error inside Lambda.
-
-**RBAC owns organizations, membership and roles, and nothing else** (`backend/src/rbac/`, split into `orgs.rs`, `invites.rs` and `routes.rs` behind `mod.rs`'s shared error type and role checks). `create_org` always makes its creator `admin`; `add_member`/`replace_roles` fold a bare invite down to a hidden `roles::DEFAULT` row rather than no row at all, so "is this email a member" is still just "does a row exist"; `require_role`/`require_member` are the gates `meetings.rs` and `presence/mod.rs` both call before touching their own tables. `invites.rs` is a pending-invite layer on top: same public magic-link accept route shape as `meetings.rs`'s own invites, but gated on `team-management` rather than being the meeting's creator.
-
-**Messaging is one interface with two directions, and no caller sees a socket** (`backend/src/core/messenger/`, `frontend/src/messenger/`). Outbound: `Messenger::send(message, channel, via, to)` and its `send_to_users_on_org` / `send_to_users_on_meeting` variants; `via` is a list of `Via::Websocket` / `Via::Email`. Inbound: `Messenger::on_message(channel, handler)`, the handler taking `(messenger, message, origin)` — it is *handed* the messenger rather than capturing one, so answering a message does not close an `Arc` cycle. The wire frame is `{channel, message}` in both directions, so one browser socket carries every channel. `chat/mod.rs` is now only a channel name plus "a message goes to the sender's org"; `rbac::invites`/`meetings::invites` only call `send`, twice, because their email body and their toast body are worded differently. `websocket.rs` (the in-process hub, local runs) and `email.rs` (a console stub) are the two transports; `active_users.rs` owns the table both halves resolve an audience through. `Messenger` holds the `Db` and the `ApiGatewayManagement` client itself, which is why no route handler takes them for messaging any more.
-
-**`active_users` replaced `connections`** (`schema::ACTIVE_USERS`, migrations `0011`/`0012`): one row per open socket, with `transport` (`local` or `apigw` — which half of delivery owns it), plus the `org_id` and `meeting` that socket last reported. Local runs write rows too, so one roster query answers "who is listening" in both modes; a local process sweeps leftover `local` rows at startup (`Messenger::clear_local_connections`), since sockets cannot outlive the process but rows can.
-
-**Context is claimed by the browser and checked by `presence/`** (`backend/src/presence/mod.rs`, `frontend/src/messenger/MessengerContext.jsx`'s `usePresence`). A tab reports `{org, meeting}` on the `presence` channel; the backend checks org membership (`rbac::require_member`) and that the meeting exists before storing it. A report is the whole context, not a patch. This is why the deployed `$connect` no longer takes an `org_id` and switching orgs no longer reopens a socket — and why chat's fan-out needs no membership check of its own: a socket only carries an org that was already checked.
-
-**The browser opens exactly one socket** (`frontend/src/messenger/messenger.js`, one `Messenger` per session in `MessengerContext.jsx`). `messenger.send({channel, message})`, `messenger.on_message(channel, handler)`, `messenger.setContext({org})` / `{meeting}` (merged, sent whole). React sees it as `useChannel(channel, handler)` and `usePresence(patch)`. Frames sent before the socket opens are queued, not lost. Chat's own messages come back off the socket like anyone else's — the backend fans out to the sender's sockets too, so no component echoes locally.
-
-**`core/orm/` is the schema-as-data layer `schema.rs`/`migrate.rs` build on** — `schema_types.rs` (`Column`/`Table`, `const`-buildable), `state.rs` (their owned, JSON-serializable mirrors for `migrations/.snapshot.json`), `diff.rs` (`diff()` and the SQL each detected change renders to). See its module doc for why the const/owned split exists.
-
-**`diff()` orders new tables first, then per-table column changes, then dropped tables last** (a table an added column references must exist before that column's migration runs). It refuses rather than guesses at a column's type/default/foreign-key changing, a primary-key status changing, or an existing column gaining `NOT NULL` (DSQL has none) — write those migrations by hand. A rename is never inferred from the name diff alone (indistinguishable from a coincidental drop-and-add); it's only ever declared via `Column::renamed_from`, and a whole table rename has no such hint at all yet.
-
-**Meetings are Chime plus a history row, and `meetings.rs` is the only module that knows both** (`backend/src/meetings/mod.rs`, `backend/src/core/chime.rs`). `POST /private/meetings` takes an `org_id` — the caller must be a member, checked via `rbac::require_member` before Chime is ever called — then calls `ChimeState::create_meeting` and `Meeting::record`; the Chime `MeetingId` *is* the meeting code, `meetings.rs` never invents one. A meeting is a shared org resource, the same as the org's chat room: `GET /private/meetings?org_id=...` (also membership-gated) lists every meeting that org has, not just the caller's own, so any member can see and rejoin any of them. `schema::MEETINGS.org_id` is nullable only because it was added after rows already existed with nothing to put there — every meeting `create` makes now always has one. `POST /private/meetings/{code}/attendees` is `get_meeting` + `create_attendee`, needs nothing but the code from the database, and a code dies with its meeting (`404 meeting_not_found`) since Chime drops an empty meeting on its own; it also writes a `meeting_attendees` row for the caller, best effort — bookkeeping only (listing runs on org membership, not this), for a meeting reached without an org at all (a `meeting_invites` link, or a bare code) to still have some record the caller was there. Both responses carry `Meeting`/`Attendee` objects keyed the way the browser SDK's `MeetingSessionConfiguration` reads them; the Rust SDK types are not `Serialize`, so `chime::meeting_json`/`chime::attendee_json` spell that shape out and must keep matching what `frontend/src/components/Meeting.jsx` feeds the SDK. `ChimeState` and `Db` reach `meetings.rs`'s handlers as `Extension`s, so `AuthState` stays the router's only `State`. `infra/chime.tf` grants the calls and creates nothing.
-
-**The meeting UI is a roster, not a tile list** (`frontend/src/components/Meeting.jsx`). `meeting/MeetingDock.jsx` mounts `<Meeting code token onLeave>` once for the whole app, keyed by the code so a new meeting is a new session. `Meeting` joins on mount and renders one area per attendee the SDK reports *present*, not one per video tile: a camera-less attendee keeps their area and shows a placeholder, and toggling a camera never reshuffles the layout. A screen share arrives as its own attendee (Chime's `#content` modality, read with `DefaultModality`) and so gets its own area, auto-expanded when it starts. `ControlPanel.jsx` is the overlay (settings, mic, camera, share, leave); its two settings — where the panel sits, and where the other participants sit while one is expanded — are the `PANEL_POSITIONS`/`PARTICIPANT_POSITIONS` maps beside it and the `STRIP` map in `MeetingGrid.jsx`. The per-attendee hover controls in `ParticipantTile.jsx` mute or stop the camera of somebody else. Icons are hand-written SVGs in `ui/icons.jsx` rather than a package, because the bundle is already over vite's warning.
-
-**Moderation is a broadcast the target obeys** (`MODERATION_TOPIC` in `Meeting.jsx`). Chime data messages have no per-attendee delivery, so the message carries its `target` and every client but that one drops it; the target mutes itself *at the source*, which is why A muting B is silent for C as well, with nothing enforced per-listener. B's mute badge on the other screens then comes from the ordinary volume indicator, not from the message. There is deliberately no `unmute` action — only B can unmute B — and stopping a camera works the same way. A hostile client could simply ignore the message; real enforcement would mean holding the roster in the backend and calling Chime's server-side mute.
-
-**Video elements are bound, not rendered.** `Meeting` owns `bindVideo(tileId, element)` and a tileId -> element map; `ParticipantTile` only reports the `<video>` it mounted. Both layouts (grid, and expanded + strip) move elements between containers, so React remounts them and the tile rebinds — the map is what stops a plain re-render from rebinding an already-bound element.
-
-**CORS is wide open, on purpose** (`cors()` in `backend/src/main.rs`). The API carries no cookies, so the bearer token is the only thing granting access and any origin may call it. The layer sits *outside* the auth middleware, or the browser's unauthenticated `OPTIONS` preflight for a `/private` route would be answered with a 401.
-
-**Stage isolation is by terraform workspace**, not by directory: one root module in `infra/`, per-stage `envs/<stage>.tfvars` (currently only `stage = "..."`), separate state per workspace. Resource names are derived in `locals` as `<project>-api-<stage>` etc.
-
-**State is local** (`infra/terraform.tfstate.d/`, gitignored). Move to an S3 backend before a second person deploys.
-
-## Constraints
-
-- Lambda architecture must match on both sides: `lambda_architecture` in `infra/envs/<stage>.tfvars` (default `arm64` from `variables.tf`) and `ARCH` in `backend/Makefile`. Change them together.
-- `var.stage` is validated against `["dev", "prod"]`; adding a stage means touching `variables.tf`, a new `envs/*.tfvars`, and the Makefiles' phony stage targets.
-- The API Gateway route is `$default` on a `$default` auto-deploy stage — all paths reach the Lambda, so routing is entirely in the axum router.
-- `jsonwebtoken` has no default crypto provider: the `rust_crypto` feature is what supplies one. The AWS SDK deps are pinned to the rustls/ring TLS backend (`legacy-client` / `rustls`) because the default `aws-lc-rs` needs cmake and a C toolchain that the zig cross-build does not have. Changing either feature set breaks `make build`.
-- The dev secret has `recovery_window_in_days = 0` so `make destroy` frees the name immediately instead of holding it for 30 days.
-- `frontend/make deploy` gives hashed assets a one-year immutable cache and `index.html` `no-cache`, then invalidates `/*`. Uploading `index.html` with a long TTL would serve a stale page pointing at deleted asset hashes.
-- `amazon-chime-sdk-js` probes for browser APIs through node's `global` (`'document' in global` in its `CSPMonitor`, reached while a meeting session is constructed), so `frontend/vite.config.js` maps `global` to `globalThis` in *both* `define` (the build) and `optimizeDeps.esbuildOptions.define` (the dependency vite pre-bundles for `vite dev`). Dropping either brings back `ReferenceError: global is not defined` on join.
-- `amazon-chime-sdk-js` dominates the frontend bundle (~1.5 MB raw, ~374 kB gzipped), which is over vite's chunk-size warning. Code-split it before adding anything else large.
-- Write DSQL, not postgres. The compatibility list moves — check the current docs before designing a schema — but as of September 2026: one database (`postgres`) per cluster, no views, no triggers, no extensions, no PL/pgSQL, no temporary tables, no `TRUNCATE`; foreign keys work (since August 2026) and so do sequences and identity columns, though UUID or otherwise random primary keys are still what spreads writes across the cluster. Indexes are `CREATE INDEX ASYNC` and build in the background. A primary key is fixed at `CREATE TABLE` and cannot be added later. DDL and DML need separate transactions, one DDL statement per transaction, and 3,000 modified rows per transaction. Isolation is `Repeatable Read`, concurrency is optimistic: a write can fail at commit with SQLSTATE `40001`, which is why writes go through `db::retry_on_conflict`. Connections are closed after an hour.
-- There are no indexes yet, on purpose: there is no data to speak of, so they buy nothing and their absence keeps the first migrations simple.
-- One statement per migration file is the shipped convention (a test asserts it) — the runner splits files on top-level semicolons and runs the statements one at a time, since DSQL allows one DDL statement per transaction.
-- The release profile is size-tuned (`opt-level = "z"`, `lto`, `strip`, `panic = "abort"`); `panic = "abort"` means no unwinding, so avoid code that relies on catching panics.
-
-## dev-docs
-
-`dev-docs/phase/<N>.md` holds the original feature prompts per phase, in order. Phases 1–12 are all implemented: 1/1.1 (initial API), 2 (JWT auth), 3 (frontend), 4 (Chime meetings), 5 (meeting UI), 6 (Aurora DSQL), 7 (RBAC), 8 (messaging), 9 (org invites), 10 (cleanup), 11 (the channel-based messenger), 12 (the UI overhaul).
+`api.js::callApi` always resolves to the same `{ok, status, ms, data}`
+shape (including on a network/CORS failure, as `status: 0`) so a failed
+request and a 401 render the same way. `rbac.js` mirrors the backend's role
+logic client-side (`hasRole`, `admin` implying `team-management`/`billing`)
+to gate UI — a defense against a confusing click, not the actual
+authorization boundary, which the backend still enforces.
