@@ -49,6 +49,11 @@ into `backend/.env.<stage>` / `frontend/.env.<stage>` by hand. That handoff
 is manual on purpose: Terraform owns infrastructure, each app's own `make
 deploy` owns code/assets, so applying infra never overwrites what's running.
 
+## Conventions
+
+Comments stay short. If one needs more than two lines, code probably needs
+refactor instead.
+
 ## Backend architecture (`backend/src/`)
 
 `main.rs::app()` builds one `axum::Router` used both by `axum::serve`
