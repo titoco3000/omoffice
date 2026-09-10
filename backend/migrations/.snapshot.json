@@ -19,7 +19,7 @@
         "default": null,
         "foreign_key": [
           "meetings",
-          "code"
+          "id"
         ],
         "renamed_from": null
       },
@@ -39,13 +39,13 @@
     "name": "meetings",
     "columns": [
       {
-        "name": "code",
+        "name": "id",
         "sql_type": "text",
         "not_null": false,
         "primary_key": true,
         "default": null,
         "foreign_key": null,
-        "renamed_from": null
+        "renamed_from": "code"
       },
       {
         "name": "created_by",
@@ -84,6 +84,42 @@
     "primary_key": []
   },
   {
+    "name": "chime_meeting_pool",
+    "columns": [
+      {
+        "name": "id",
+        "sql_type": "text",
+        "not_null": false,
+        "primary_key": true,
+        "default": null,
+        "foreign_key": null,
+        "renamed_from": null
+      },
+      {
+        "name": "assigned_to",
+        "sql_type": "text",
+        "not_null": false,
+        "primary_key": false,
+        "default": null,
+        "foreign_key": [
+          "meetings",
+          "id"
+        ],
+        "renamed_from": null
+      },
+      {
+        "name": "created_at",
+        "sql_type": "timestamptz",
+        "not_null": true,
+        "primary_key": false,
+        "default": "now()",
+        "foreign_key": null,
+        "renamed_from": null
+      }
+    ],
+    "primary_key": []
+  },
+  {
     "name": "meeting_attendees",
     "columns": [
       {
@@ -94,7 +130,7 @@
         "default": null,
         "foreign_key": [
           "meetings",
-          "code"
+          "id"
         ],
         "renamed_from": null
       },
@@ -266,7 +302,7 @@
         "default": null,
         "foreign_key": [
           "meetings",
-          "code"
+          "id"
         ],
         "renamed_from": null
       },
@@ -395,7 +431,7 @@
         "default": null,
         "foreign_key": [
           "meetings",
-          "code"
+          "id"
         ],
         "renamed_from": null
       },

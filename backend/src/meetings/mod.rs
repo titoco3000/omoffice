@@ -10,18 +10,23 @@ use axum::{
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use uuid::Uuid;
 
 use crate::auth::{AuthError, Claims};
 use crate::core::chime::{self, ChimeError, ChimeState};
 use crate::core::db::{retry_on_conflict, Db, DbError};
 use crate::rbac::{self, RbacError};
 use crate::users;
+use pool::PoolError;
 
 pub mod invites;
+pub mod pool;
 pub use invites::*;
 
 /// One row of `meetings`. `org_id` is `None` only for a meeting created
 /// before org-scoping existed — every meeting `create` makes now has one.
+/// `code` is the DB's `id` column, aliased: which live Chime meeting backs
+/// it is never stored here, only in `pool::live`.
 #[derive(Debug, Serialize, sqlx::FromRow)]
 pub struct Meeting {
     pub code: String,
@@ -31,8 +36,10 @@ pub struct Meeting {
 }
 
 impl Meeting {
-    /// Record a meeting just created in Chime, under `org_id`. The `users`
-    /// row is written first because `meetings.created_by` references it.
+    /// Record a meeting just created under `org_id`, with no live Chime
+    /// meeting assigned yet — `pool::live` does that next, once this row
+    /// exists for it to point at. The `users` row is written first because
+    /// `meetings.created_by` references it.
     pub async fn record(
         db: &Db,
         code: &str,
@@ -43,8 +50,8 @@ impl Meeting {
         let pool = db.pool().await?;
         retry_on_conflict(|| async move {
             sqlx::query(
-                "INSERT INTO meetings (code, created_by, org_id) VALUES ($1, $2, $3)
-                 ON CONFLICT (code) DO NOTHING",
+                "INSERT INTO meetings (id, created_by, org_id) VALUES ($1, $2, $3)
+                 ON CONFLICT (id) DO NOTHING",
             )
             .bind(code)
             .bind(created_by)
@@ -56,11 +63,12 @@ impl Meeting {
         .await
     }
 
-    /// Single-row fetch by code, for `invites`' creator check.
+    /// Single-row fetch by code, for `invites`' creator check and `join`'s
+    /// existence check.
     pub async fn get(db: &Db, code: &str) -> Result<Option<Self>, DbError> {
         let pool = db.pool().await?;
         let row = sqlx::query_as::<_, Self>(
-            "SELECT code, created_by, created_at, org_id FROM meetings WHERE code = $1",
+            "SELECT id AS code, created_by, created_at, org_id FROM meetings WHERE id = $1",
         )
         .bind(code)
         .fetch_optional(pool)
@@ -73,7 +81,7 @@ impl Meeting {
     pub async fn in_org(db: &Db, org_id: &str) -> Result<Vec<Self>, DbError> {
         let pool = db.pool().await?;
         let rows = sqlx::query_as::<_, Self>(
-            "SELECT code, created_by, created_at, org_id
+            "SELECT id AS code, created_by, created_at, org_id
              FROM meetings
              WHERE org_id = $1
              ORDER BY created_at DESC
@@ -111,7 +119,8 @@ pub struct CreateMeetingBody {
 }
 
 /// `POST /private/meetings` — create a meeting under `org_id` and hand back
-/// its code. Requires membership, checked before Chime is ever called.
+/// its own code, never the Chime `MeetingId` `code` used to be. Requires
+/// membership, checked before Chime is ever called.
 pub async fn create(
     Extension(chime): Extension<ChimeState>,
     Extension(db): Extension<Db>,
@@ -120,14 +129,14 @@ pub async fn create(
 ) -> Result<Json<Value>, MeetingError> {
     rbac::require_member(&db, &claims.sub, &body.org_id).await?;
 
-    let meeting = chime.create_meeting().await?;
-    let code = meeting.meeting_id().unwrap_or_default().to_string();
-
+    let code = Uuid::new_v4().to_string();
     // Not best effort: a meeting missing from history is worse than an
-    // empty Chime meeting, which Chime drops on its own.
+    // empty Chime meeting, which the pool (or Chime itself) reclaims. The
+    // row must exist before `pool::live`, whose pool row points back at it.
     Meeting::record(&db, &code, &claims.sub, &body.org_id).await?;
+    let (chime_id, meeting) = pool::live(&db, &chime, &code).await?;
     tracing::info!(
-        "meeting {code} created by {} in org {}",
+        "meeting {code} created by {} in org {} (chime {chime_id})",
         claims.sub,
         body.org_id
     );
@@ -140,17 +149,25 @@ pub async fn create(
     })))
 }
 
-/// `POST /private/meetings/{code}/attendees` — join by `code`. Best-effort
-/// records the join; only Chime actually has to succeed here.
+/// `POST /private/meetings/{code}/attendees` — join by our own `code`. If
+/// the pool reassigned its Chime meeting elsewhere (or Chime dropped it),
+/// `pool::live` mints a fresh one and claims it back for `code`, rather
+/// than dropping the caller into whatever meeting the pool moved it to.
+/// Best-effort records the join; only Chime actually has to succeed here.
 pub async fn join(
     Extension(chime): Extension<ChimeState>,
     Extension(db): Extension<Db>,
     Extension(claims): Extension<Claims>,
     Path(code): Path<String>,
 ) -> Result<Json<Value>, MeetingError> {
-    let meeting = chime.get_meeting(&code).await?;
+    Meeting::get(&db, &code)
+        .await?
+        .ok_or(MeetingError::NotFound)?;
+
+    let (chime_id, meeting) = pool::live(&db, &chime, &code).await?;
+
     let attendee = chime
-        .create_attendee(&code, &chime::external_user_id(&claims.sub))
+        .create_attendee(&chime_id, &chime::external_user_id(&claims.sub))
         .await?;
 
     if let Err(err) = Meeting::record_attendee(&db, &code, &claims.sub).await {
@@ -236,6 +253,17 @@ impl From<RbacError> for MeetingError {
 impl From<sqlx::Error> for MeetingError {
     fn from(err: sqlx::Error) -> Self {
         Self::Database(DbError::from(err))
+    }
+}
+
+/// Collapses [`pool::live`]'s errors to this module's own
+/// `Chime`/`Database`, same as `RbacError` above.
+impl From<PoolError> for MeetingError {
+    fn from(err: PoolError) -> Self {
+        match err {
+            PoolError::Chime(err) => Self::Chime(err),
+            PoolError::Database(err) => Self::Database(err),
+        }
     }
 }
 

@@ -9,19 +9,18 @@ pub const USERS: Table = Table::new(
     "users",
     &[
         Column::new("email", "text").primary_key(),
-        Column::new("last_meeting", "text").references("meetings", "code"),
+        Column::new("last_meeting", "text").references("meetings", "id"),
         Column::new("created_at", "timestamptz")
             .not_null()
             .default("now()"),
     ],
 );
 
-/// `code` is the Chime `MeetingId`, already unique, so it's the primary key.
-/// `org_id` is nullable only for pre-org-scoping rows — see CLAUDE.md. See `meetings/mod.rs`.
+/// internal meetings control
 pub const MEETINGS: Table = Table::new(
     "meetings",
     &[
-        Column::new("code", "text").primary_key(),
+        Column::new("id", "text").primary_key().renamed_from("code"),
         Column::new("created_by", "text")
             .not_null()
             .references("users", "email"),
@@ -32,6 +31,18 @@ pub const MEETINGS: Table = Table::new(
     ],
 );
 
+/// The reusable pool of live Chime meetings. `id` is the Chime `MeetingId`
+pub const CHIME_POOL: Table = Table::new(
+    "chime_meeting_pool",
+    &[
+        Column::new("id", "text").primary_key(),
+        Column::new("assigned_to", "text").references("meetings", "id"),
+        Column::new("created_at", "timestamptz")
+            .not_null()
+            .default("now()"),
+    ],
+);
+
 /// One row per (meeting, person who joined it), best effort. See
 /// `meetings/mod.rs::record_attendee`.
 pub const MEETING_ATTENDEES: Table = Table::new(
@@ -39,7 +50,7 @@ pub const MEETING_ATTENDEES: Table = Table::new(
     &[
         Column::new("code", "text")
             .not_null()
-            .references("meetings", "code"),
+            .references("meetings", "id"),
         Column::new("user_email", "text")
             .not_null()
             .references("users", "email"),
@@ -96,7 +107,7 @@ pub const ACTIVE_USERS: Table = Table::new(
         // connection) -- which half of `Messenger`'s delivery owns it.
         Column::new("transport", "text").not_null(),
         Column::new("org_id", "text").references("organizations", "id"),
-        Column::new("meeting", "text").references("meetings", "code"),
+        Column::new("meeting", "text").references("meetings", "id"),
         Column::new("connected_at", "timestamptz")
             .not_null()
             .default("now()"),
@@ -138,7 +149,7 @@ pub const MEETING_INVITES: Table = Table::new(
         Column::new("id", "text").primary_key(),
         Column::new("code", "text")
             .not_null()
-            .references("meetings", "code"),
+            .references("meetings", "id"),
         Column::new("email", "text").not_null(),
         Column::new("invited_by", "text")
             .not_null()
@@ -156,6 +167,7 @@ pub const MEETING_INVITES: Table = Table::new(
 pub const TABLES: &[Table] = &[
     USERS,
     MEETINGS,
+    CHIME_POOL,
     MEETING_ATTENDEES,
     ORGANIZATIONS,
     ORG_ROLES,

@@ -1,0 +1,1 @@
+ALTER TABLE meetings RENAME COLUMN id TO code;
