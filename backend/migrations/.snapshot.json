@@ -108,6 +108,15 @@
         "renamed_from": null
       },
       {
+        "name": "idle_since",
+        "sql_type": "timestamptz",
+        "not_null": false,
+        "primary_key": false,
+        "default": null,
+        "foreign_key": null,
+        "renamed_from": null
+      },
+      {
         "name": "created_at",
         "sql_type": "timestamptz",
         "not_null": true,

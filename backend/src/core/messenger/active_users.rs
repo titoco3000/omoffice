@@ -59,21 +59,24 @@ pub async fn record(
 
 /// Forget a socket: `$disconnect`, a closed local socket, or a lazy cleanup
 /// after a push came back `Gone`. Removing an already-gone row is not an
-/// error. Returns the org it had reported, if any and if there was a row at
-/// all -- `Messenger::forget` uses that to tell `presence` an org's roster
-/// just shrank.
-pub async fn remove(db: &Db, connection_id: &str) -> Result<Option<String>, DbError> {
+/// error. Returns the org and meeting it had reported, if there was a row
+/// at all -- `Messenger::forget` uses that to tell `presence` an org's
+/// roster, or a meeting's, just shrank.
+pub async fn remove(
+    db: &Db,
+    connection_id: &str,
+) -> Result<Option<(Option<String>, Option<String>)>, DbError> {
     let pool = db.pool().await?;
-    let org_id = retry_on_conflict(|| async move {
-        sqlx::query_scalar::<_, Option<String>>(
-            "DELETE FROM active_users WHERE connection_id = $1 RETURNING org_id",
+    let row = retry_on_conflict(|| async move {
+        sqlx::query_as::<_, (Option<String>, Option<String>)>(
+            "DELETE FROM active_users WHERE connection_id = $1 RETURNING org_id, meeting",
         )
         .bind(connection_id)
         .fetch_optional(pool)
         .await
     })
     .await?;
-    Ok(org_id.flatten())
+    Ok(row)
 }
 
 /// Mark a socket as still alive. Called on every inbound frame

@@ -60,6 +60,7 @@ export default function Meeting({ code, token, onLeave, mini = false, onExpand }
         <div className="absolute inset-0 z-20 flex items-center justify-center bg-bg/90 p-4">
           <div className="max-w-md text-center">
             <p className="font-mono text-sm text-ink-muted">
+              {status === "waiting" && "waiting for someone else to join..."}
               {status === "joining" && `joining ${code}...`}
               {status === "ended" && "the meeting ended"}
               {status === "error" && "could not join"}

@@ -16,8 +16,15 @@
 //! reported context is that org). `GET /private/orgs/{id}/presence` still
 //! exists for the one read a tab has no push to answer yet: its own first
 //! paint, before anything has changed.
+//!
+//! A meeting gets the same viewer-count treatment on `meeting_presence`.
+//! Every recompute also hands the fresh count to
+//! [`meetings::pool::note_occupancy`], which is how `pool` learns a meeting
+//! just went (or stopped being) a lone viewer, without this module knowing
+//! anything about Chime or the pool beyond that one call — the same way
+//! this module knows nothing about `core/messenger`'s transports.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use axum::extract::{Extension, Path};
 use axum::Json;
@@ -26,7 +33,7 @@ use serde_json::{json, Value};
 use crate::auth::Claims;
 use crate::core::db::{Db, DbError};
 use crate::core::messenger::{active_users, Messenger, Origin, Via};
-use crate::meetings::Meeting;
+use crate::meetings::{pool, Meeting};
 use crate::rbac::{self, RbacError};
 
 /// The channel a browser reports its own context on.
@@ -34,6 +41,10 @@ pub const CHANNEL: &str = "presence";
 
 /// The channel a browser listens on for someone else's org changing.
 pub const BROADCAST_CHANNEL: &str = "org_presence";
+
+/// The channel a browser listens on for its own meeting's occupancy
+/// changing -- someone else joining or leaving.
+pub const MEETING_BROADCAST_CHANNEL: &str = "meeting_presence";
 
 /// Wire the channel up. Called once, from `main::app`.
 pub fn register(messenger: &Messenger) {
@@ -62,22 +73,40 @@ pub fn register(messenger: &Messenger) {
             return;
         }
 
-        let mut changed: Vec<&str> = Vec::new();
+        let mut changed_orgs: Vec<&str> = Vec::new();
         if let Some(left) = origin.org.as_deref() {
-            changed.push(left);
+            changed_orgs.push(left);
         }
         if let Some(joined) = org {
             if Some(joined) != origin.org.as_deref() {
-                changed.push(joined);
+                changed_orgs.push(joined);
             }
         }
-        for org_id in changed {
+        for org_id in changed_orgs {
             broadcast(&messenger, org_id).await;
+        }
+
+        let mut changed_meetings: Vec<&str> = Vec::new();
+        if let Some(left) = origin.meeting.as_deref() {
+            changed_meetings.push(left);
+        }
+        if let Some(joined) = meeting {
+            if Some(joined) != origin.meeting.as_deref() {
+                changed_meetings.push(joined);
+            }
+        }
+        for code in changed_meetings {
+            broadcast_meeting(&messenger, code).await;
         }
     });
 
-    messenger.on_disconnect(|messenger, org_id| async move {
-        broadcast(&messenger, &org_id).await;
+    messenger.on_disconnect(|messenger, org_id, meeting| async move {
+        if let Some(org_id) = org_id {
+            broadcast(&messenger, &org_id).await;
+        }
+        if let Some(code) = meeting {
+            broadcast_meeting(&messenger, &code).await;
+        }
     });
 }
 
@@ -93,6 +122,26 @@ async fn broadcast(messenger: &Messenger, org_id: &str) {
     };
     messenger
         .send_to_users_on_org(&body, BROADCAST_CHANNEL, &[Via::Websocket], org_id)
+        .await;
+}
+
+/// Recompute one meeting's occupancy, tell `pool` about it (the moment a
+/// meeting drops under 2 viewers, or climbs back, is exactly what it needs
+/// to know to stamp or clear `idle_since` -- see `meetings/pool.rs`), and
+/// push the fresh count to whoever is currently on that meeting's page.
+async fn broadcast_meeting(messenger: &Messenger, code: &str) {
+    let (body, viewer_count) = match meeting_snapshot(messenger.db(), code).await {
+        Ok(snapshot) => snapshot,
+        Err(err) => {
+            tracing::warn!("presence: could not read meeting {code} to broadcast it: {err:?}");
+            return;
+        }
+    };
+    if let Err(err) = pool::note_occupancy(messenger.db(), code, viewer_count).await {
+        tracing::warn!("presence: could not update chime idleness for {code}: {err:?}");
+    }
+    messenger
+        .send_to_users_on_meeting(&body, MEETING_BROADCAST_CHANNEL, &[Via::Websocket], code)
         .await;
 }
 
@@ -144,6 +193,23 @@ async fn snapshot(db: &Db, org_id: &str) -> Result<Value, DbError> {
         .collect();
 
     Ok(json!({ "org_id": org_id, "users": users }))
+}
+
+/// How many distinct people are on `code`'s page -- folded per email the
+/// same way [`snapshot`] folds an org's, so someone's second tab doesn't
+/// count them twice. Returns the broadcast body alongside the bare count,
+/// since [`broadcast_meeting`] needs both.
+async fn meeting_snapshot(db: &Db, code: &str) -> Result<(Value, usize), DbError> {
+    let mut viewers: BTreeSet<String> = BTreeSet::new();
+    for row in active_users::in_meeting(db, code).await? {
+        viewers.insert(row.user_email);
+    }
+
+    let viewer_count = viewers.len();
+    Ok((
+        json!({ "meeting": code, "viewer_count": viewer_count }),
+        viewer_count,
+    ))
 }
 
 /// `GET /private/orgs/{org_id}/presence` -- a tab's own first read, before

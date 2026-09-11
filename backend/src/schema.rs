@@ -31,12 +31,16 @@ pub const MEETINGS: Table = Table::new(
     ],
 );
 
-/// The reusable pool of live Chime meetings. `id` is the Chime `MeetingId`
+/// The reusable pool of live Chime meetings. `id` is the Chime `MeetingId`.
+/// `idle_since` is stamped by `presence` the moment a meeting's viewer
+/// count drops under 2, cleared the moment it climbs back -- `pool`'s own
+/// idle check just compares it, lazily, at claim time. See `meetings/pool.rs`.
 pub const CHIME_POOL: Table = Table::new(
     "chime_meeting_pool",
     &[
         Column::new("id", "text").primary_key(),
         Column::new("assigned_to", "text").references("meetings", "id"),
+        Column::new("idle_since", "timestamptz"),
         Column::new("created_at", "timestamptz")
             .not_null()
             .default("now()"),

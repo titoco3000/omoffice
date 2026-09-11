@@ -8,9 +8,15 @@ import {
   MeetingSessionConfiguration,
 } from "amazon-chime-sdk-js";
 import { callApi, describeFailure } from "../api";
+import { useChannel } from "../messenger/MessengerContext";
 
 /** A Chime data message broadcast; see CLAUDE.md for why it's self-enforced. */
 const MODERATION_TOPIC = "moderation";
+
+/// A lone viewer waits this long after everyone else leaves before Chime is
+/// actually dropped -- long enough that a quick reconnect doesn't cost a
+/// fresh session, short enough to free the room promptly either way.
+const SOLO_GRACE_MS = 20_000;
 
 /// How long Chime keeps the message for an attendee not connected right now.
 const MODERATION_LIFETIME_MS = 5000;
@@ -20,11 +26,17 @@ function shortLabel(externalUserId) {
 }
 
 /**
- * Joins `code` on mount and owns the Chime SDK session: roster, media
- * controls, moderation. Renders nothing — callers read `roster` and call `bindVideo`.
+ * Owns the Chime SDK session for `code`: roster, media controls,
+ * moderation. Renders nothing — callers read `roster` and call `bindVideo`.
+ *
+ * Chime itself is joined lazily, not on mount: a lone viewer costs no
+ * Chime room (`status` sits at "waiting"), connecting only once
+ * `meeting_presence` reports someone else on the page too, and dropping
+ * back to "waiting" [`SOLO_GRACE_MS`] after everyone else leaves again —
+ * see `meetings::pool` for the backend half.
  */
 export default function useMeetingSession({ code, token, onLeave }) {
-  const [status, setStatus] = useState("joining"); // joining | live | error | ended
+  const [status, setStatus] = useState("waiting"); // waiting | joining | live | error | ended
   const [error, setError] = useState("");
   const [notice, setNotice] = useState(""); // "X muted you", and the like
   const [roster, setRoster] = useState([]);
@@ -32,6 +44,7 @@ export default function useMeetingSession({ code, token, onLeave }) {
   const [cameraOn, setCameraOn] = useState(false);
   const [sharing, setSharing] = useState(false);
   const [focused, setFocused] = useState(null); // attendee id, or null for the grid
+  const [viewerCount, setViewerCount] = useState(null); // null until the first broadcast
 
   const sessionRef = useRef(null);
   const audioRef = useRef(null);
@@ -40,6 +53,20 @@ export default function useMeetingSession({ code, token, onLeave }) {
   const volumeSubscriptions = useRef(new Set()); // attendee ids already watched
   const meRef = useRef(null); // this browser's attendee id
   const noticeTimer = useRef(null);
+  const cancelledRef = useRef(false); // true once this hook has unmounted
+  const connectingRef = useRef(false); // guards against a second connect() mid-flight
+  const graceTimer = useRef(null); // the SOLO_GRACE_MS countdown, while it's running
+  // Sessions `disposeSession` has already torn down on purpose -- its own
+  // `audioVideo.stop()` fires the *same* `audioVideoDidStop` observer a
+  // real Chime-side drop would, sometimes well after `disposeSession`
+  // itself returns, so the observer needs to tell "we did this" from "this
+  // just happened to us" apart, or it stomps whatever status we already
+  // moved on to (see `disposeSession` and `buildSession`).
+  const disposedSessions = useRef(new WeakSet());
+
+  useChannel("meeting_presence", (message) => {
+    if (message.meeting === code) setViewerCount(message.viewer_count);
+  });
 
   /// Add or patch one attendee. Upserts since presence and a video tile can
   /// arrive in either order; `insert: false` avoids resurrecting a leaver.
@@ -92,6 +119,7 @@ export default function useMeetingSession({ code, token, onLeave }) {
   /// Tear a session down. Safe on a session that never started.
   const disposeSession = useCallback(async (session) => {
     if (!session) return;
+    disposedSessions.current.add(session);
     const audioVideo = session.audioVideo;
     try {
       await audioVideo.stopContentShare();
@@ -104,11 +132,21 @@ export default function useMeetingSession({ code, token, onLeave }) {
   }, []);
 
   const leave = useCallback(async () => {
+    clearTimeout(graceTimer.current);
     const session = sessionRef.current;
     sessionRef.current = null;
     await disposeSession(session);
     onLeave?.();
   }, [disposeSession, onLeave]);
+
+  /// Drop Chime back to "waiting", without leaving the meeting page.
+  const disconnectToWaiting = useCallback(async () => {
+    const session = sessionRef.current;
+    sessionRef.current = null;
+    await disposeSession(session);
+    if (cancelledRef.current) return;
+    setStatus("waiting");
+  }, [disposeSession]);
 
   /// Show a line over the video for a few seconds.
   const showNotice = useCallback((text) => {
@@ -203,7 +241,10 @@ export default function useMeetingSession({ code, token, onLeave }) {
         if (owner) upsertAttendee(owner, { tileId: null }, false);
       },
       audioVideoDidStop() {
-        // The meeting ended, or the connection gave up.
+        // `disposeSession` already tore this one down on purpose (leaving,
+        // going solo, reconnecting) -- its caller owns whatever status
+        // follows, so this fires for a genuine, unexpected drop only.
+        if (disposedSessions.current.has(session)) return;
         sessionRef.current = null;
         void disposeSession(session);
         setStatus("ended");
@@ -253,55 +294,105 @@ export default function useMeetingSession({ code, token, onLeave }) {
     audioVideo.start();
   }
 
-  // Every await checks `cancelled`: StrictMode runs this effect twice, and a
-  // stray session would be a second attendee nobody can see.
-  useEffect(() => {
-    let cancelled = false;
+  /// Actually join Chime: the old mount-time join, now called only once
+  /// `viewerCount` says somebody else is here. Every await checks
+  /// `cancelledRef`: StrictMode mounts twice, and a stray session would be
+  /// a second attendee nobody can see.
+  async function connect() {
+    if (connectingRef.current || sessionRef.current) return;
+    connectingRef.current = true;
+    // A fresh session gets a fresh Chime attendee id even for the same
+    // person reconnecting -- leftover roster/tile state from whichever
+    // session came before would otherwise just sit alongside the new
+    // entries as ghost tiles rather than being replaced by them.
     volumeSubscriptions.current.clear();
     tileOwners.current.clear();
+    boundElements.current.clear();
+    setRoster([]);
+    setFocused(null);
+    setStatus("joining");
+    setError("");
 
-    (async () => {
-      const response = await callApi({
-        method: "POST",
-        path: `/private/meetings/${encodeURIComponent(code)}/attendees`,
-        token,
-      });
-      if (cancelled) return;
-      if (!response.ok) {
-        setStatus("error");
-        setError(describeFailure(response));
+    const response = await callApi({
+      method: "POST",
+      path: `/private/meetings/${encodeURIComponent(code)}/attendees`,
+      token,
+    });
+    if (cancelledRef.current) {
+      connectingRef.current = false;
+      return;
+    }
+    if (!response.ok) {
+      connectingRef.current = false;
+      setStatus("error");
+      setError(describeFailure(response));
+      return;
+    }
+
+    let session;
+    try {
+      session = buildSession(response.data);
+      if (cancelledRef.current) {
+        await disposeSession(session);
         return;
       }
+      sessionRef.current = session;
+      connectingRef.current = false;
+      await startMedia(session);
+      if (cancelledRef.current) return;
+      setStatus("live");
+    } catch (failure) {
+      // Almost always a denied microphone permission or an insecure origin.
+      connectingRef.current = false;
+      sessionRef.current = null;
+      await disposeSession(session);
+      if (cancelledRef.current) return;
+      setStatus("error");
+      setError(String(failure));
+    }
+  }
 
-      let session;
-      try {
-        session = buildSession(response.data);
-        if (cancelled) {
-          await disposeSession(session);
-          return;
-        }
-        sessionRef.current = session;
-        await startMedia(session);
-        if (cancelled) return;
-        setStatus("live");
-      } catch (failure) {
-        // Almost always a denied microphone permission or an insecure origin.
-        sessionRef.current = null;
-        await disposeSession(session);
-        if (cancelled) return;
-        setStatus("error");
-        setError(String(failure));
-      }
-    })();
-
+  // Leaving the meeting page altogether (not just going solo) always tears
+  // the session down, unconditionally -- `disconnectToWaiting` is for
+  // staying on the page with Chime dropped.
+  useEffect(() => {
+    cancelledRef.current = false;
+    connectingRef.current = false;
     return () => {
-      cancelled = true;
+      cancelledRef.current = true;
+      clearTimeout(graceTimer.current);
       const session = sessionRef.current;
       sessionRef.current = null;
       void disposeSession(session);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [code, token]);
+
+  // The occupancy policy: connect once someone else shows up, and once
+  // alone again, wait out SOLO_GRACE_MS before dropping back to "waiting"
+  // -- a quick reconnect (someone's tab briefly reloading) shouldn't cost
+  // a fresh Chime session. `viewerCount` starts `null` until the first
+  // `meeting_presence` broadcast, which arrives moments after mount as an
+  // echo of this tab's own presence report.
+  useEffect(() => {
+    clearTimeout(graceTimer.current);
+    graceTimer.current = null;
+    if (viewerCount === null) return undefined;
+
+    if (viewerCount >= 2) {
+      if (!sessionRef.current && !connectingRef.current) void connect();
+      return undefined;
+    }
+
+    if (sessionRef.current) {
+      graceTimer.current = setTimeout(() => {
+        graceTimer.current = null;
+        void disconnectToWaiting();
+      }, SOLO_GRACE_MS);
+    }
+    return () => clearTimeout(graceTimer.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [viewerCount]);
 
   function toggleMute() {
     const audioVideo = sessionRef.current?.audioVideo;

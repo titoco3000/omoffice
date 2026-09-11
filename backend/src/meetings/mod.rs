@@ -120,9 +120,10 @@ pub struct CreateMeetingBody {
 
 /// `POST /private/meetings` — create a meeting under `org_id` and hand back
 /// its own code, never the Chime `MeetingId` `code` used to be. Requires
-/// membership, checked before Chime is ever called.
+/// membership. No Chime meeting is claimed here: a room with nobody in it
+/// yet (or only its creator) costs nothing until `join` actually needs one
+/// — see `pool`.
 pub async fn create(
-    Extension(chime): Extension<ChimeState>,
     Extension(db): Extension<Db>,
     Extension(claims): Extension<Claims>,
     Json(body): Json<CreateMeetingBody>,
@@ -130,13 +131,9 @@ pub async fn create(
     rbac::require_member(&db, &claims.sub, &body.org_id).await?;
 
     let code = Uuid::new_v4().to_string();
-    // Not best effort: a meeting missing from history is worse than an
-    // empty Chime meeting, which the pool (or Chime itself) reclaims. The
-    // row must exist before `pool::live`, whose pool row points back at it.
     Meeting::record(&db, &code, &claims.sub, &body.org_id).await?;
-    let (chime_id, meeting) = pool::live(&db, &chime, &code).await?;
     tracing::info!(
-        "meeting {code} created by {} in org {} (chime {chime_id})",
+        "meeting {code} created by {} in org {}",
         claims.sub,
         body.org_id
     );
@@ -145,14 +142,16 @@ pub async fn create(
         "code": code,
         "created_by": claims.sub,
         "org_id": body.org_id,
-        "Meeting": chime::meeting_json(&meeting),
     })))
 }
 
-/// `POST /private/meetings/{code}/attendees` — join by our own `code`. If
-/// the pool reassigned its Chime meeting elsewhere (or Chime dropped it),
-/// `pool::live` mints a fresh one and claims it back for `code`, rather
-/// than dropping the caller into whatever meeting the pool moved it to.
+/// `POST /private/meetings/{code}/attendees` — join Chime for our own
+/// `code`, claiming a live Chime meeting (a pooled idle one, or a fresh
+/// one) if `code` doesn't already have one. If the pool reassigned its
+/// Chime meeting elsewhere (or Chime dropped it), `pool::live` mints a
+/// fresh one and claims it back for `code`, rather than dropping the
+/// caller into whatever meeting the pool moved it to. The frontend calls
+/// this only once someone else is actually on the page — see `presence`.
 /// Best-effort records the join; only Chime actually has to succeed here.
 pub async fn join(
     Extension(chime): Extension<ChimeState>,

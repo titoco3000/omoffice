@@ -75,10 +75,12 @@ impl From<ActiveUser> for Origin {
 /// reference cycle back into the `Arc` it is stored in.
 type Handler = Arc<dyn Fn(Messenger, Value, Origin) -> BoxFuture<'static, ()> + Send + Sync>;
 
-/// What runs when a socket is forgotten and it had reported an org --
-/// unlike [`Handler`] this is not per-channel (a disconnect names no
-/// channel), so there is one slot rather than a map.
-type DisconnectHandler = Arc<dyn Fn(Messenger, String) -> BoxFuture<'static, ()> + Send + Sync>;
+/// What runs when a socket is forgotten -- the org and the meeting it had
+/// reported, either or both possibly `None`. Unlike [`Handler`] this is not
+/// per-channel (a disconnect names no channel), so there is one slot rather
+/// than a map.
+type DisconnectHandler =
+    Arc<dyn Fn(Messenger, Option<String>, Option<String>) -> BoxFuture<'static, ()> + Send + Sync>;
 
 /// The messaging system. Reaches handlers as an `Extension`; cheap to clone
 /// (every field is an `Arc` or carries no state).
@@ -147,7 +149,6 @@ impl Messenger {
 
     /// Send to everyone whose reported context is meeting `meeting` — the
     /// people actually in it right now, not everyone who ever joined.
-    #[allow(dead_code)] // No feature broadcasts per meeting yet; `chat` is per org.
     pub async fn send_to_users_on_meeting(
         &self,
         message: &Value,
@@ -200,17 +201,18 @@ impl Messenger {
             .insert(channel.to_string(), handler);
     }
 
-    /// Register what runs when a socket that had reported an org is
-    /// forgotten. Registering twice replaces the first, same as
+    /// Register what runs when a socket that had reported an org or a
+    /// meeting is forgotten. Registering twice replaces the first, same as
     /// [`on_message`](Self::on_message) -- there is only one thing a
     /// disconnect ever means. Called once, from `presence::register`.
     pub fn on_disconnect<F, Fut>(&self, handler: F)
     where
-        F: Fn(Messenger, String) -> Fut + Send + Sync + 'static,
+        F: Fn(Messenger, Option<String>, Option<String>) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = ()> + Send + 'static,
     {
-        let handler: DisconnectHandler =
-            Arc::new(move |messenger, org_id| Box::pin(handler(messenger, org_id)));
+        let handler: DisconnectHandler = Arc::new(move |messenger, org_id, meeting| {
+            Box::pin(handler(messenger, org_id, meeting))
+        });
         *self
             .on_disconnect
             .write()
@@ -221,23 +223,23 @@ impl Messenger {
     /// called, so whichever of the three paths finds a connection gone
     /// (`$disconnect`, a closed local socket, a `Gone` reply while pushing
     /// to it) notices exactly once, the same way. If the row had reported
-    /// an org, [`on_disconnect`](Self::on_disconnect)'s handler hears about
-    /// it after the row is actually gone -- `presence` uses that to
-    /// broadcast the org's roster shrinking without `core::messenger`
-    /// itself knowing what an org is.
+    /// an org or a meeting, [`on_disconnect`](Self::on_disconnect)'s
+    /// handler hears about it after the row is actually gone -- `presence`
+    /// uses that to broadcast the org's roster, or the meeting's, shrinking
+    /// without `core::messenger` itself knowing what either is.
     async fn forget(&self, connection_id: &str) {
         match active_users::remove(&self.db, connection_id).await {
-            Ok(Some(org_id)) => {
+            Ok(Some((org_id, meeting))) if org_id.is_some() || meeting.is_some() => {
                 let handler = self
                     .on_disconnect
                     .read()
                     .unwrap_or_else(|err| err.into_inner())
                     .clone();
                 if let Some(handler) = handler {
-                    handler(self.clone(), org_id).await;
+                    handler(self.clone(), org_id, meeting).await;
                 }
             }
-            Ok(None) => {}
+            Ok(_) => {}
             Err(err) => tracing::warn!("messenger: could not forget a connection: {err:?}"),
         }
     }
