@@ -35,6 +35,11 @@ CREATE TABLE meeting_invites (
     created_at timestamptz NOT NULL DEFAULT now(),
     last_status_change timestamptz NOT NULL DEFAULT now()
 );
+CREATE TABLE meeting_rooms (
+    id text PRIMARY KEY,
+    assigned_to text REFERENCES meetings (id),
+    created_at timestamptz NOT NULL DEFAULT now()
+);
 CREATE TABLE org_invites (
     id text PRIMARY KEY,
     org_id text NOT NULL REFERENCES organizations (id),
@@ -57,9 +62,4 @@ CREATE TABLE org_users (
     name text,
     online boolean,
     PRIMARY KEY (org_id, user_id)
-);
-CREATE TABLE meeting_rooms (
-    id text PRIMARY KEY,
-    assigned_to text REFERENCES meetings (id),
-    created_at timestamptz NOT NULL DEFAULT now()
 );

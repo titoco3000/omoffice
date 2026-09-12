@@ -49,15 +49,17 @@ dev prod:
 
 .PHONY: help
 help:
-	@echo "make init            install toolchain + fetch deps"
-	@echo "make run [stage]     run locally on http://localhost:8000 (reloads on src edits; WATCH=0 disables)"
-	@echo "make db-generate     diff schema.rs against the current shape, write any migration files (local only, no stage)"
-	@echo "make db-shell [stage] psql against the stage, with a fresh IAM token"
+	@echo "make init                install toolchain + fetch deps"
+	@echo "make run [stage]         run locally on http://localhost:8000 (reloads on src edits; WATCH=0 disables)"
+	@echo "make db-generate         diff schema.rs against the last generated migration, write any new one (local only, no stage)"
+	@echo "make db-status [stage]   which migrations are applied, and which are not"
+	@echo "make db-migrate [stage]  apply every pending migration"
+	@echo "make db-revert [stage]   revert the most recently applied one (destructive, asks first)"
+	@echo "make db-shell [stage]    psql against the stage, with a fresh IAM token"
 	@echo "make test | fmt | lint | clean"
 	@echo
-	@echo "note: this backend is mid-overhaul -- no 'migrate up/down/status' yet"
-	@echo "(core::data::orm::generate is still a stub), and no lambda build/deploy"
-	@echo "until the Lambda wiring comes back."
+	@echo "note: this backend is mid-overhaul -- no lambda build/deploy until the"
+	@echo "Lambda wiring comes back."
 
 .PHONY: init
 init:
@@ -102,18 +104,47 @@ lint:
 # ---------------------------------------------------------------------------
 # Database
 #
-# `db-generate` diffs schema.rs against the database's last known shape and
-# writes whatever migration files the difference calls for -- see
-# core/data/orm/mod.rs. It touches no database and needs no stage or
-# .env.<stage>, same as the old backend's `db-generate`; the diffing itself
-# is still a stub, so this currently fails loudly with a "not yet
-# implemented" rather than writing anything.
+# Migrations are ordered .up.sql/.down.sql pairs in migrations/, applied by
+# the runner in core/data/migrate/. It writes a ledger row as `pending`, runs
+# the DDL, then marks it `applied` -- DSQL cannot put the DDL and the ledger
+# write in one transaction, so a crash has to be visible rather than
+# silently half-done.
+#
+# `db-generate` is the odd one out: it diffs schema.rs against
+# migrations/.snapshot.json (the shape as of the last time it ran) and writes
+# whatever .up.sql/.down.sql the difference calls for, instead of you typing
+# matching SQL into two files by hand -- see core/data/orm/mod.rs. It
+# touches no database and needs no stage or .env.<stage>: it is local
+# codegen, checked in the same way the files (and the snapshot) it writes are.
 # ---------------------------------------------------------------------------
 
 .PHONY: db-generate
 db-generate:
 	$(REQUIRE_ENV)
 	cargo run --quiet -- migrate generate
+
+.PHONY: db-status
+db-status:
+	$(REQUIRE_ENV)
+	$(REQUIRE_DB)
+	@set -a; . ./$(ENV_FILE); set +a; cargo run --quiet -- migrate status
+
+.PHONY: db-migrate
+db-migrate:
+	$(REQUIRE_ENV)
+	$(REQUIRE_DB)
+	@set -a; . ./$(ENV_FILE); set +a; cargo run --quiet -- migrate up
+
+.PHONY: db-revert
+db-revert:
+	$(REQUIRE_ENV)
+	$(REQUIRE_DB)
+	@echo "about to REVERT the most recently applied migration on '$(STAGE)'."
+	@echo "a down migration drops what its up migration created -- dropping a column"
+	@echo "drops the data that was in it, and there is no backup here."
+	@read -r -p "type '$(STAGE)' to confirm: " ans; \
+	  test "$$ans" = "$(STAGE)" || { echo "aborted."; exit 1; }
+	@set -a; . ./$(ENV_FILE); set +a; cargo run --quiet -- migrate down
 
 .PHONY: db-shell
 db-shell:

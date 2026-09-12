@@ -1,12 +1,13 @@
-//! Entry point: `migrate generate` runs the schema tool; anything else
-//! builds the shared state, wires each feature's channels and events, and
-//! serves `router::app`. This file is deliberately thin -- argument parsing
-//! and wiring only, calling straight into the `omoffice_api` library crate
-//! under `lib/` for everything else.
+//! Entry point: `migrate <status|up|down|generate>` runs the migration
+//! tool; anything else builds the shared state, wires each feature's
+//! channels and events, and serves `router::app`. This file is
+//! deliberately thin -- argument parsing and wiring only, calling straight
+//! into the `omoffice_api` library crate under `lib/` for everything else.
 
 use omoffice_api::core::chime::ChimeState;
 use omoffice_api::core::communication::web_messenger::Messenger;
 use omoffice_api::core::data::db::Db;
+use omoffice_api::core::data::orm::migrate;
 use omoffice_api::{core, features, router};
 
 #[tokio::main]
@@ -24,7 +25,7 @@ async fn main() {
         .init();
 
     if migrating {
-        if let Err(message) = run_migrate(&args[1..]) {
+        if let Err(message) = migrate::run(&args[1..]).await {
             eprintln!("error: {message}");
             std::process::exit(1);
         }
@@ -49,15 +50,4 @@ async fn main() {
     axum::serve(listener, router::app(db, chime, messenger))
         .await
         .expect("server crashed");
-}
-
-/// `cargo run -- migrate generate` -- the only subcommand so far, wired
-/// straight to `core::data::orm::generate`. `migrate up`/`down`/`status`
-/// come back once there's a runner to apply what it writes.
-fn run_migrate(args: &[String]) -> Result<(), String> {
-    match args.first().map(String::as_str) {
-        Some("generate") => core::data::orm::generate(),
-        Some(other) => Err(format!("unknown migrate subcommand: {other}")),
-        None => Err("usage: migrate generate".to_string()),
-    }
 }

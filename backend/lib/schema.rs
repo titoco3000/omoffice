@@ -177,12 +177,12 @@ mod tests {
             vec![
                 "meeting_attendees",
                 "meeting_invites",
+                "meeting_rooms",
                 "meetings",
                 "org_invites",
                 "org_roles",
                 "org_users",
                 "organizations",
-                "meeting_rooms",
                 "users",
             ]
         );

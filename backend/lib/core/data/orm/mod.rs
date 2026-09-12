@@ -3,10 +3,13 @@
 //! itself ([`diff`]). [`generate`] ties them together: it reads the last
 //! snapshot off disk, diffs it against every table currently registered in
 //! [`TABLES`], and writes whatever `.up.sql`/`.down.sql` pair the
-//! difference calls for. Nothing in this module talks to the database
-//! directly -- that's [`super::db`].
+//! difference calls for. [`migrate`] applies what `generate` writes against
+//! the DSQL cluster -- this module only talks to the database through it;
+//! `generate` itself is pure local codegen (see [`super::db`] for the
+//! connection either eventually goes through).
 
 pub mod diff;
+pub mod migrate;
 pub mod schema_types;
 pub mod state;
 
@@ -31,7 +34,7 @@ const SNAPSHOT_FILE: &str = ".snapshot.json";
 /// Where the ordered `.up.sql`/`.down.sql` pairs live: `MIGRATIONS_DIR`, or
 /// `migrations/` next to this crate's `Cargo.toml`. The latter default is
 /// independent of the working directory a command happens to run from.
-fn migrations_dir() -> PathBuf {
+pub(crate) fn migrations_dir() -> PathBuf {
     match std::env::var("MIGRATIONS_DIR") {
         Ok(dir) if !dir.is_empty() => PathBuf::from(dir),
         _ => PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"),
@@ -101,7 +104,7 @@ pub fn generate() -> Result<(), String> {
     println!("wrote {} and {}", up_path.display(), down_path.display());
 
     write_snapshot(&snapshot_path, &new)?;
-    println!("done. Review the new file(s); applying them needs a migration runner this overhaul doesn't have yet.");
+    println!("done. Review the new file(s), then 'migrate up' to apply them.");
     Ok(())
 }
 

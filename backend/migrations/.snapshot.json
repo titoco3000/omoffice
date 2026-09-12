@@ -238,6 +238,39 @@
     "primary_key": []
   },
   {
+    "name": "meeting_rooms",
+    "columns": [
+      {
+        "name": "id",
+        "sql_type": "text",
+        "not_null": false,
+        "primary_key": true,
+        "default": null,
+        "foreign_key": null
+      },
+      {
+        "name": "assigned_to",
+        "sql_type": "text",
+        "not_null": false,
+        "primary_key": false,
+        "default": null,
+        "foreign_key": [
+          "meetings",
+          "id"
+        ]
+      },
+      {
+        "name": "created_at",
+        "sql_type": "timestamptz",
+        "not_null": true,
+        "primary_key": false,
+        "default": "now()",
+        "foreign_key": null
+      }
+    ],
+    "primary_key": []
+  },
+  {
     "name": "org_invites",
     "columns": [
       {
@@ -399,38 +432,5 @@
       "org_id",
       "user_id"
     ]
-  },
-  {
-    "name": "meeting_rooms",
-    "columns": [
-      {
-        "name": "id",
-        "sql_type": "text",
-        "not_null": false,
-        "primary_key": true,
-        "default": null,
-        "foreign_key": null
-      },
-      {
-        "name": "assigned_to",
-        "sql_type": "text",
-        "not_null": false,
-        "primary_key": false,
-        "default": null,
-        "foreign_key": [
-          "meetings",
-          "id"
-        ]
-      },
-      {
-        "name": "created_at",
-        "sql_type": "timestamptz",
-        "not_null": true,
-        "primary_key": false,
-        "default": "now()",
-        "foreign_key": null
-      }
-    ],
-    "primary_key": []
   }
 ]
