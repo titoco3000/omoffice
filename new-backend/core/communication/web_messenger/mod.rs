@@ -9,5 +9,7 @@ On the same interface, its possible to receive messages from the frontend
 by subscribing a closure to a certain channel.
 
 User beeing connected or disconected acts like a channel. 
+
+There is only one websocket per frontend instance. Multiple channels may go through one socket.
 */ 
 
