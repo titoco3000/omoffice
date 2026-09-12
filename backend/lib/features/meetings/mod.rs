@@ -56,7 +56,7 @@ use rooms::RoomError;
 const IDLE_AFTER_SECONDS: i64 = 60;
 
 /// Pushes `{"org_id", "meetings": [Meeting, ...]}` to every online member of
-/// an org whenever a meeting is created or terminated 
+/// an org whenever a meeting is created or terminated
 pub const LIST_CHANNEL: web_messenger::Channel = "meeting_list";
 
 /// Pushes a room reconnect/disconnect to one meeting's attendees directly,

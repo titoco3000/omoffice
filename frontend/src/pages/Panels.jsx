@@ -81,7 +81,7 @@ export default function Panels() {
       />
       {currentOrg && (
         <OrgPanel
-          key={currentOrg.id}
+          key={`org-${currentOrg.id}`}
           token={token}
           org={currentOrg}
           onOrgChanged={reloadOrgs}
@@ -89,7 +89,11 @@ export default function Panels() {
         />
       )}
       {currentOrg && (
-        <MeetingsPanel key={currentOrg.id} token={token} org={currentOrg} />
+        <MeetingsPanel
+          key={`meetings-${currentOrg.id}`}
+          token={token}
+          org={currentOrg}
+        />
       )}
     </main>
   );
