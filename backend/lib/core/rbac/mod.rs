@@ -737,6 +737,20 @@ async fn leave_org_route(
     Ok(Json(json!({ "org_id": org_id, "left_by": claims.sub })))
 }
 
+/// Same removal as [`leave_org_route`], gated on `team-management` (which
+/// `admin` also satisfies, see [`has_role`]) since it targets someone other
+/// than the caller. [`leave_org`] itself still refuses to strip the org's
+/// last admin, whoever asks.
+async fn remove_member_route(
+    Extension(db): Extension<Db>,
+    Extension(claims): Extension<Claims>,
+    Path((org_id, user_id)): Path<(String, String)>,
+) -> Result<Json<serde_json::Value>, RbacError> {
+    require_role(&db, &org_id, &claims.sub, roles::TEAM_MANAGEMENT).await?;
+    leave_org(&db, &org_id, &user_id).await?;
+    Ok(Json(json!({ "org_id": org_id, "removed": user_id })))
+}
+
 async fn assign_role_route(
     Extension(db): Extension<Db>,
     Extension(claims): Extension<Claims>,
@@ -835,6 +849,7 @@ pub fn routes() -> Router {
         .route("/orgs/{org_id}/name", put(rename_org_route))
         .route("/orgs/{org_id}/members", get(list_members_route))
         .route("/orgs/{org_id}/members/me", delete(leave_org_route))
+        .route("/orgs/{org_id}/members/{user_id}", delete(remove_member_route))
         .route(
             "/orgs/{org_id}/roles",
             post(assign_role_route).delete(revoke_role_route),

@@ -20,6 +20,8 @@ export const leaveOrg = (token, orgId) =>
   apiFetch(`/rbac/orgs/${orgId}/members/me`, { method: "DELETE", token });
 
 export const listMembers = (token, orgId) => apiFetch(`/rbac/orgs/${orgId}/members`, { token });
+export const removeMember = (token, orgId, userId) =>
+  apiFetch(`/rbac/orgs/${orgId}/members/${userId}`, { method: "DELETE", token });
 
 export const assignRole = (token, orgId, userId, role) =>
   apiFetch(`/rbac/orgs/${orgId}/roles`, { method: "POST", token, body: { user_id: userId, role } });

@@ -3,6 +3,7 @@ import { decodeJwt } from "../lib/jwt";
 import { ROLES } from "../lib/roles";
 import {
   listMembers,
+  removeMember,
   renameOrg,
   deleteOrg,
   createInvite,
@@ -72,10 +73,17 @@ export default function OrgPanel({ token, org, onOrgChanged, onOrgDeleted }) {
     }
   };
 
-  const remove = (inviteId) =>
+  const revoke = (inviteId) =>
     revokeInvite(token, org.id, inviteId)
       .then(() => setInvites((list) => list.filter((invite) => invite.id !== inviteId)))
       .catch((err) => setError(err.message));
+
+  const removeMemberFromOrg = (userId, displayName) => {
+    if (!window.confirm(`Remove ${displayName} from ${org.name}?`)) return;
+    removeMember(token, org.id, userId)
+      .then(reloadMembers)
+      .catch((err) => setError(err.message));
+  };
 
   const removeOrg = () => {
     if (!window.confirm(`Delete ${org.name}? This cannot be undone.`)) return;
@@ -100,6 +108,7 @@ export default function OrgPanel({ token, org, onOrgChanged, onOrgDeleted }) {
           <tr className="text-left text-ink-muted">
             <th className="py-1 font-medium">Member</th>
             <th className="py-1 font-medium">Roles</th>
+            {canManageTeam && <th className="py-1" />}
           </tr>
         </thead>
         <tbody>
@@ -122,6 +131,18 @@ export default function OrgPanel({ token, org, onOrgChanged, onOrgDeleted }) {
                   </label>
                 ))}
               </td>
+              {canManageTeam && (
+                <td className="py-1.5 text-right">
+                  {member.user_id !== myId && (
+                    <button
+                      onClick={() => removeMemberFromOrg(member.user_id, member.display_name)}
+                      className="text-danger hover:underline"
+                    >
+                      remove
+                    </button>
+                  )}
+                </td>
+              )}
             </tr>
           ))}
         </tbody>
@@ -158,7 +179,7 @@ export default function OrgPanel({ token, org, onOrgChanged, onOrgDeleted }) {
               {invites.map((invite) => (
                 <li key={invite.id} className="flex items-center justify-between text-ink-muted">
                   <span>{invite.email} -- pending</span>
-                  <button onClick={() => remove(invite.id)} className="text-danger hover:underline">
+                  <button onClick={() => revoke(invite.id)} className="text-danger hover:underline">
                     revoke
                   </button>
                 </li>
