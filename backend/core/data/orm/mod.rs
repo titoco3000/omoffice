@@ -1,6 +1,0 @@
-/*
-Import db
-
-Generates migrations
-*/ 
-

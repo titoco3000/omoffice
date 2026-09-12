@@ -1,7 +1,10 @@
-use crate::core::data::orm::{Column, Table};
+use linkme::distributed_slice;
+
+use crate::core::data::orm::{self, Column, Table};
 
 // basic RBAC tables
-pub const USERS: Table = Table::build(
+#[distributed_slice(orm::TABLES)]
+static USERS: Table = Table::new(
     "users",
     &[
         Column::new("id", "text").primary_key(),
@@ -13,7 +16,8 @@ pub const USERS: Table = Table::build(
     ],
 );
 
-pub const ORGANIZATIONS: Table = Table::build(
+#[distributed_slice(orm::TABLES)]
+static ORGANIZATIONS: Table = Table::new(
     "organizations",
     &[
         Column::new("id", "text").primary_key(),
@@ -27,7 +31,8 @@ pub const ORGANIZATIONS: Table = Table::build(
     ],
 );
 
-pub const ORG_USERS: Table = Table::build(
+#[distributed_slice(orm::TABLES)]
+static ORG_USERS: Table = Table::new(
     "org_users",
     &[
         Column::new("org_id", "text")
@@ -42,7 +47,8 @@ pub const ORG_USERS: Table = Table::build(
 )
 .primary_key(&["org_id", "user_id"]);
 
-pub const ORG_ROLES: Table = Table::build(
+#[distributed_slice(orm::TABLES)]
+static ORG_ROLES: Table = Table::new(
     "org_roles",
     &[
         Column::new("org_id", "text")
@@ -56,7 +62,8 @@ pub const ORG_ROLES: Table = Table::build(
 )
 .primary_key(&["org_id", "user_id", "role"]);
 
-pub const ORG_INVITES: Table = Table::build(
+#[distributed_slice(orm::TABLES)]
+static ORG_INVITES: Table = Table::new(
     "org_invites",
     &[
         Column::new("id", "text").primary_key(),
@@ -84,13 +91,14 @@ pub const ORG_INVITES: Table = Table::build(
 
 /// meeting tables
 
-pub const MEETINGS: Table = Table::build(
+#[distributed_slice(orm::TABLES)]
+static MEETINGS: Table = Table::new(
     "meetings",
     &[
         Column::new("id", "text").primary_key(),
         Column::new("created_by", "text")
             .not_null()
-            .references("users", "email"),
+            .references("users", "id"),
         Column::new("created_at", "timestamptz")
             .not_null()
             .default("now()"),
@@ -99,7 +107,8 @@ pub const MEETINGS: Table = Table::build(
     ],
 );
 
-pub const ROOMS_POOL: Table = Table::build(
+#[distributed_slice(orm::TABLES)]
+static ROOMS_POOL: Table = Table::new(
     "rooms_pool",
     &[
         Column::new("id", "text").primary_key(),
@@ -110,7 +119,8 @@ pub const ROOMS_POOL: Table = Table::build(
     ],
 );
 
-pub const MEETING_INVITES: Table = Table::build(
+#[distributed_slice(orm::TABLES)]
+static MEETING_INVITES: Table = Table::new(
     "meeting_invites",
     &[
         Column::new("id", "text").primary_key(),
@@ -120,7 +130,7 @@ pub const MEETING_INVITES: Table = Table::build(
         Column::new("email", "text").not_null(),
         Column::new("invited_by", "text")
             .not_null()
-            .references("users", "email"),
+            .references("users", "id"),
         // pending | accepted | revoked | declined
         Column::new("status", "text")
             .not_null()
@@ -134,7 +144,8 @@ pub const MEETING_INVITES: Table = Table::build(
     ],
 );
 
-pub const MEETING_ATTENDEES: Table = Table::build(
+#[distributed_slice(orm::TABLES)]
+static MEETING_ATTENDEES: Table = Table::new(
     "meeting_attendees",
     &[
         Column::new("meeting_id", "text")
@@ -149,3 +160,31 @@ pub const MEETING_ATTENDEES: Table = Table::build(
     ],
 )
 .primary_key(&["meeting_id", "user_id"]);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every `static` above reached `orm::TABLES` on its own -- nothing here
+    /// assembles the list by hand. Order isn't guaranteed, so this checks
+    /// membership, not sequence.
+    #[test]
+    fn every_table_registered_itself() {
+        let mut names: Vec<&str> = orm::TABLES.iter().map(|table| table.name).collect();
+        names.sort_unstable();
+        assert_eq!(
+            names,
+            vec![
+                "meeting_attendees",
+                "meeting_invites",
+                "meetings",
+                "org_invites",
+                "org_roles",
+                "org_users",
+                "organizations",
+                "rooms_pool",
+                "users",
+            ]
+        );
+    }
+}
