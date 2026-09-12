@@ -16,6 +16,7 @@ dev prod:
 .PHONY: help
 help:
 	@echo "make init          run 'make init' in backend, frontend, infra"
+	@echo "make fmt           run 'make fmt' in backend, frontend, infra"
 	@echo "make run [stage]   run backend (dev/prod, default dev) and frontend (local) together, ctrl+c stops both"
 
 .PHONY: init
@@ -23,6 +24,12 @@ init:
 	$(MAKE) -C backend init
 	$(MAKE) -C frontend init
 	$(MAKE) -C infra init
+
+.PHONY: fmt
+fmt:
+	$(MAKE) -C backend fmt
+	$(MAKE) -C frontend fmt
+	$(MAKE) -C infra fmt
 
 .PHONY: run
 run:

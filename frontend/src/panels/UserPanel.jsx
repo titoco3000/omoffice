@@ -1,7 +1,14 @@
 import { useEffect, useState } from "react";
 import { me, renameMe, createOrg, leaveOrg } from "../lib/rbac";
 
-export default function UserPanel({ token, orgs, orgId, onSelectOrg, onOrgsChanged, onLogout }) {
+export default function UserPanel({
+  token,
+  orgs,
+  orgId,
+  onSelectOrg,
+  onOrgsChanged,
+  onLogout,
+}) {
   const [name, setName] = useState("");
   const [newOrgName, setNewOrgName] = useState("");
   const [error, setError] = useState(null);
@@ -43,7 +50,10 @@ export default function UserPanel({ token, orgs, orgId, onSelectOrg, onOrgsChang
     <section className="rounded-card border bg-surface p-5">
       <div className="flex items-center justify-between">
         <h2 className="text-lg font-semibold text-ink">You</h2>
-        <button onClick={onLogout} className="text-sm text-ink-muted hover:text-ink">
+        <button
+          onClick={onLogout}
+          className="text-sm text-ink-muted hover:text-ink"
+        >
           Log out
         </button>
       </div>
@@ -84,8 +94,13 @@ export default function UserPanel({ token, orgs, orgId, onSelectOrg, onOrgsChang
 
       {orgId && (
         <div className="mt-4 rounded-card border border-danger/40 p-3">
-          <p className="text-sm text-ink-muted">Leaving removes you from this org.</p>
-          <button onClick={leave} className="mt-2 text-sm font-medium text-danger hover:underline">
+          <p className="text-sm text-ink-muted">
+            Leaving removes you from this org.
+          </p>
+          <button
+            onClick={leave}
+            className="mt-2 text-sm font-medium text-danger hover:underline"
+          >
             Leave organization
           </button>
         </div>

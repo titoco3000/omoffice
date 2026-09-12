@@ -26,7 +26,8 @@ export default function OrgPanel({ token, org, onOrgChanged, onOrgDeleted }) {
 
   const me = members.find((member) => member.user_id === myId);
   const isAdmin = me?.roles.includes("admin") ?? false;
-  const canManageTeam = isAdmin || (me?.roles.includes("team-management") ?? false);
+  const canManageTeam =
+    isAdmin || (me?.roles.includes("team-management") ?? false);
 
   const reloadMembers = () =>
     listMembers(token, org.id)
@@ -47,7 +48,8 @@ export default function OrgPanel({ token, org, onOrgChanged, onOrgDeleted }) {
   useEffect(
     () =>
       messenger.on(ORG_ROSTER_CHANNEL, (message) => {
-        if (message.org_id === org.id && message.members) setMembers(message.members);
+        if (message.org_id === org.id && message.members)
+          setMembers(message.members);
       }),
     [org.id],
   );
@@ -68,11 +70,15 @@ export default function OrgPanel({ token, org, onOrgChanged, onOrgDeleted }) {
 
   const toggleRole = (userId, role, checked) => {
     const call = checked ? assignRole : revokeRole;
-    call(token, org.id, userId, role).then(reloadMembers).catch((err) => setError(err.message));
+    call(token, org.id, userId, role)
+      .then(reloadMembers)
+      .catch((err) => setError(err.message));
   };
 
   const toggleInviteRole = (role) =>
-    setInviteRoles((roles) => (roles.includes(role) ? roles.filter((r) => r !== role) : [...roles, role]));
+    setInviteRoles((roles) =>
+      roles.includes(role) ? roles.filter((r) => r !== role) : [...roles, role],
+    );
 
   const submitInvite = async (event) => {
     event.preventDefault();
@@ -89,7 +95,9 @@ export default function OrgPanel({ token, org, onOrgChanged, onOrgDeleted }) {
 
   const revoke = (inviteId) =>
     revokeInvite(token, org.id, inviteId)
-      .then(() => setInvites((list) => list.filter((invite) => invite.id !== inviteId)))
+      .then(() =>
+        setInvites((list) => list.filter((invite) => invite.id !== inviteId)),
+      )
       .catch((err) => setError(err.message));
 
   const removeMemberFromOrg = (userId, displayName) => {
@@ -101,7 +109,9 @@ export default function OrgPanel({ token, org, onOrgChanged, onOrgDeleted }) {
 
   const removeOrg = () => {
     if (!window.confirm(`Delete ${org.name}? This cannot be undone.`)) return;
-    deleteOrg(token, org.id).then(onOrgDeleted).catch((err) => setError(err.message));
+    deleteOrg(token, org.id)
+      .then(onOrgDeleted)
+      .catch((err) => setError(err.message));
   };
 
   return (
@@ -139,12 +149,17 @@ export default function OrgPanel({ token, org, onOrgChanged, onOrgDeleted }) {
               </td>
               <td className="py-1.5">
                 {ROLES.map((role) => (
-                  <label key={role} className="mr-3 inline-flex items-center gap-1 text-ink-muted">
+                  <label
+                    key={role}
+                    className="mr-3 inline-flex items-center gap-1 text-ink-muted"
+                  >
                     <input
                       type="checkbox"
                       disabled={!canManageTeam}
                       checked={member.roles.includes(role)}
-                      onChange={(event) => toggleRole(member.user_id, role, event.target.checked)}
+                      onChange={(event) =>
+                        toggleRole(member.user_id, role, event.target.checked)
+                      }
                     />
                     {role}
                   </label>
@@ -154,7 +169,9 @@ export default function OrgPanel({ token, org, onOrgChanged, onOrgDeleted }) {
                 <td className="py-1.5 text-right">
                   {member.user_id !== myId && (
                     <button
-                      onClick={() => removeMemberFromOrg(member.user_id, member.display_name)}
+                      onClick={() =>
+                        removeMemberFromOrg(member.user_id, member.display_name)
+                      }
                       className="text-danger hover:underline"
                     >
                       remove
@@ -169,7 +186,10 @@ export default function OrgPanel({ token, org, onOrgChanged, onOrgDeleted }) {
 
       {canManageTeam && (
         <>
-          <form onSubmit={submitInvite} className="mt-4 flex flex-wrap items-center gap-2">
+          <form
+            onSubmit={submitInvite}
+            className="mt-4 flex flex-wrap items-center gap-2"
+          >
             <input
               type="email"
               required
@@ -179,7 +199,10 @@ export default function OrgPanel({ token, org, onOrgChanged, onOrgDeleted }) {
               className="flex-1 rounded-card border bg-bg px-3 py-1.5 text-ink"
             />
             {ROLES.map((role) => (
-              <label key={role} className="inline-flex items-center gap-1 text-sm text-ink-muted">
+              <label
+                key={role}
+                className="inline-flex items-center gap-1 text-sm text-ink-muted"
+              >
                 <input
                   type="checkbox"
                   checked={inviteRoles.includes(role)}
@@ -196,9 +219,15 @@ export default function OrgPanel({ token, org, onOrgChanged, onOrgDeleted }) {
           {invites.length > 0 && (
             <ul className="mt-3 space-y-1 text-sm">
               {invites.map((invite) => (
-                <li key={invite.id} className="flex items-center justify-between text-ink-muted">
+                <li
+                  key={invite.id}
+                  className="flex items-center justify-between text-ink-muted"
+                >
                   <span>{invite.email} -- pending</span>
-                  <button onClick={() => revoke(invite.id)} className="text-danger hover:underline">
+                  <button
+                    onClick={() => revoke(invite.id)}
+                    className="text-danger hover:underline"
+                  >
                     revoke
                   </button>
                 </li>
@@ -210,8 +239,13 @@ export default function OrgPanel({ token, org, onOrgChanged, onOrgDeleted }) {
 
       {isAdmin && (
         <div className="mt-5 rounded-card border border-danger/40 p-3">
-          <p className="text-sm text-ink-muted">Deletes the org for every member. Cannot be undone.</p>
-          <button onClick={removeOrg} className="mt-2 text-sm font-medium text-danger hover:underline">
+          <p className="text-sm text-ink-muted">
+            Deletes the org for every member. Cannot be undone.
+          </p>
+          <button
+            onClick={removeOrg}
+            className="mt-2 text-sm font-medium text-danger hover:underline"
+          >
             Delete organization
           </button>
         </div>

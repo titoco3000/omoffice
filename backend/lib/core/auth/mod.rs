@@ -156,7 +156,9 @@ mod tests {
     #[tokio::test]
     async fn issued_tokens_verify_back_to_the_same_subject() {
         let token = issue("user-123").expect("HS256 encode should not fail");
-        let claims = verify(&token).await.expect("a freshly issued token must verify");
+        let claims = verify(&token)
+            .await
+            .expect("a freshly issued token must verify");
         assert_eq!(claims.sub, "user-123");
     }
 }

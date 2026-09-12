@@ -60,13 +60,16 @@ export default function PendingInvite({ token, onAccepted, onDeclined }) {
 
       {invite && (
         <p className="text-ink">
-          You&apos;re invited to <span className="font-semibold">{invite.org_name}</span>
+          You&apos;re invited to{" "}
+          <span className="font-semibold">{invite.org_name}</span>
           {invite.roles.length > 0 && <> as {invite.roles.join(", ")}</>}.
         </p>
       )}
 
       {invite && invite.status !== "pending" && (
-        <p className="mt-1 text-sm text-ink-muted">This invite was already {invite.status}.</p>
+        <p className="mt-1 text-sm text-ink-muted">
+          This invite was already {invite.status}.
+        </p>
       )}
 
       {invite?.status === "pending" && (

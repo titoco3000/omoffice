@@ -27,7 +27,9 @@ function tokenFromLoginLink() {
 }
 
 export function AuthProvider({ children }) {
-  const [token, setToken] = useState(() => tokenFromLoginLink() ?? readStoredToken());
+  const [token, setToken] = useState(
+    () => tokenFromLoginLink() ?? readStoredToken(),
+  );
 
   useEffect(() => {
     const fromLink = tokenFromLoginLink();
@@ -36,7 +38,9 @@ export function AuthProvider({ children }) {
     // An invite's magic link carries both -- keep `invite` riding along so
     // `Panels` can still read it off the URL it lands on.
     const invite = new URL(window.location.href).searchParams.get("invite");
-    navigate(invite ? `/panels?invite=${encodeURIComponent(invite)}` : "/panels");
+    navigate(
+      invite ? `/panels?invite=${encodeURIComponent(invite)}` : "/panels",
+    );
   }, []);
 
   const logout = (redirectTo = "/") => {
@@ -63,7 +67,11 @@ export function AuthProvider({ children }) {
     return () => window.removeEventListener(UNAUTHORIZED_EVENT, onUnauthorized);
   }, []);
 
-  return <AuthContext.Provider value={{ token, logout }}>{children}</AuthContext.Provider>;
+  return (
+    <AuthContext.Provider value={{ token, logout }}>
+      {children}
+    </AuthContext.Provider>
+  );
 }
 
 export function useAuth() {

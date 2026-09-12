@@ -5,8 +5,8 @@ export default function Home() {
     <main className="mx-auto flex min-h-full max-w-2xl flex-col items-center justify-center gap-6 px-6 text-center">
       <h1 className="text-4xl font-semibold text-ink">omoffice</h1>
       <p className="text-ink-muted">
-        Meetings and org management in one place -- rooms, roles and invites, without a separate
-        tool for each.
+        Meetings and org management in one place -- rooms, roles and invites,
+        without a separate tool for each.
       </p>
       <Link
         to="/login"

@@ -35,7 +35,8 @@ export async function apiFetch(path, { method = "GET", token, body } = {}) {
     window.dispatchEvent(new Event(UNAUTHORIZED_EVENT));
   }
 
-  const data = response.status === 204 ? null : await response.json().catch(() => null);
+  const data =
+    response.status === 204 ? null : await response.json().catch(() => null);
   if (!response.ok) throw new ApiError(response.status, data);
   return data;
 }

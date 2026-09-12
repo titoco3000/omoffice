@@ -193,7 +193,9 @@ pub async fn create_invite(
         }
     };
 
-    let invite = get_invite(db, &id).await?.ok_or(RbacError::InviteNotFound)?;
+    let invite = get_invite(db, &id)
+        .await?
+        .ok_or(RbacError::InviteNotFound)?;
 
     // The link logs the invited email in, same as a `request_key` one --
     // clicking it shouldn't leave them stuck asking for a second sign-in

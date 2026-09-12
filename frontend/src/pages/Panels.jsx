@@ -11,7 +11,9 @@ const CURRENT_ORG_KEY = "omoffice_current_org";
 export default function Panels() {
   const { token, logout } = useAuth();
   const [orgs, setOrgs] = useState([]);
-  const [orgId, setOrgId] = useState(() => localStorage.getItem(CURRENT_ORG_KEY));
+  const [orgId, setOrgId] = useState(() =>
+    localStorage.getItem(CURRENT_ORG_KEY),
+  );
   const [error, setError] = useState(null);
 
   const reloadOrgs = () =>

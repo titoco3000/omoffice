@@ -19,7 +19,9 @@ export function RouterProvider({ children }) {
     return () => window.removeEventListener("popstate", onPopState);
   }, []);
 
-  return <LocationContext.Provider value={path}>{children}</LocationContext.Provider>;
+  return (
+    <LocationContext.Provider value={path}>{children}</LocationContext.Provider>
+  );
 }
 
 export function useLocation() {

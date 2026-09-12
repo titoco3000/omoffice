@@ -2,7 +2,11 @@ import { useState } from "react";
 import { requestKey } from "../lib/rbac";
 
 function Centered({ children }) {
-  return <main className="flex min-h-full items-center justify-center px-6">{children}</main>;
+  return (
+    <main className="flex min-h-full items-center justify-center px-6">
+      {children}
+    </main>
+  );
 }
 
 export default function Login() {
