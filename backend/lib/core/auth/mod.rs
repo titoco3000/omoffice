@@ -62,7 +62,11 @@ fn signing_key() -> String {
     std::env::var("JWT_KEY").unwrap_or_else(|_| "insecure-local-development-key".to_string())
 }
 
-fn issue(user_id: &str) -> Result<String, AuthError> {
+/// Mint a bearer token for `user_id`. `pub(crate)` rather than private:
+/// `rbac::org_invites` mints one too, so an invite's magic link logs the
+/// invited email in the same way a `request_key` one does, not a second
+/// sign-in step after accepting.
+pub(crate) fn issue(user_id: &str) -> Result<String, AuthError> {
     let claims = Claims {
         sub: user_id.to_string(),
         exp: now() + TOKEN_TTL_SECONDS,
@@ -143,4 +147,16 @@ pub async fn require_bearer(mut request: Request, next: Next) -> Response {
 /// `/auth/*` -- just the one public route.
 pub fn routes() -> Router {
     Router::new().route("/request-key/{email}", get(request_key))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn issued_tokens_verify_back_to_the_same_subject() {
+        let token = issue("user-123").expect("HS256 encode should not fail");
+        let claims = verify(&token).await.expect("a freshly issued token must verify");
+        assert_eq!(claims.sub, "user-123");
+    }
 }

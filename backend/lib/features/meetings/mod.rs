@@ -111,7 +111,11 @@ pub async fn list(db: &Db, org_id: &str) -> Result<Vec<Meeting>, MeetingError> {
 }
 
 /// `/meeting/*` -- create/join/list, plus chat, invites and room status
-/// nested in from the sibling modules.
+/// nested in from the sibling modules. Empty for now: `create`/`join`/`list`
+/// above and `rooms::assign` are still `todo!()`, so there is nothing to
+/// route to yet that wouldn't panic on the first request. An empty router
+/// 404s instead, so `router::app` builds and the rest of the server -- rbac
+/// included -- is reachable and testable ahead of phase 14.3.
 pub fn routes() -> Router {
-    todo!("create, join, list, and nest chat/meeting_invites/rooms' own routes")
+    Router::new()
 }

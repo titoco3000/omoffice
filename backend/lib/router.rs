@@ -6,6 +6,7 @@
 //! [`web_messenger::upgrade_route`].
 
 use axum::{middleware, routing::get, Extension, Router};
+use tower_http::cors::{Any, CorsLayer};
 
 use crate::core::auth;
 use crate::core::chime::ChimeState;
@@ -29,4 +30,14 @@ pub fn app(db: Db, chime: ChimeState, messenger: Messenger) -> Router {
         .layer(Extension(db))
         .layer(Extension(chime))
         .layer(Extension(messenger))
+        // Any origin: the API is bearer-token authenticated, not
+        // cookie-based, so there is no session for a third-party origin to
+        // ride along on. Outermost layer so it also answers the browser's
+        // OPTIONS preflight before a request ever reaches `require_bearer`.
+        .layer(
+            CorsLayer::new()
+                .allow_origin(Any)
+                .allow_methods(Any)
+                .allow_headers(Any),
+        )
 }

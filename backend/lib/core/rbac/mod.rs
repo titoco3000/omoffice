@@ -17,11 +17,19 @@
 pub mod org_invites;
 pub use org_invites::*;
 
-use axum::Router;
+use axum::extract::{Extension, Path};
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
+use axum::routing::{delete, get, post, put};
+use axum::{Json, Router};
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+use uuid::Uuid;
 
+use crate::core::auth::Claims;
 use crate::core::communication::web_messenger::{self, Messenger};
-use crate::core::data::db::{Db, DbError};
+use crate::core::data::db::{retry_on_conflict, Db, DbError};
 
 /// The roles native to the RBAC. A member with none of these still has a
 /// row in `org_users` -- membership and role are separate, see the module doc.
@@ -31,7 +39,11 @@ pub mod roles {
     pub const TEAM_MANAGEMENT: &str = "team-management";
 }
 
-#[derive(Debug)]
+fn is_known_role(role: &str) -> bool {
+    role == roles::ADMIN || role == roles::BILLING || role == roles::TEAM_MANAGEMENT
+}
+
+#[derive(Debug, Serialize, sqlx::FromRow)]
 pub struct Org {
     pub id: String,
     pub name: String,
@@ -40,13 +52,35 @@ pub struct Org {
 }
 
 /// One row of `org_users`, folded with that member's `org_roles`.
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct OrgMember {
     pub user_id: String,
-    /// This org's own display name for the member, if they set one.
-    pub name: Option<String>,
+    /// Org name, else global name, else email, else the id itself -- see
+    /// [`display_name`].
+    pub display_name: String,
     pub online: bool,
     pub roles: Vec<String>,
+}
+
+/// Org name, else global name, else email, else `user_id` itself -- the
+/// order the roster shows a member by. Blank strings count as missing, same
+/// as `NULL`.
+fn display_name(
+    org_name: &Option<String>,
+    global_name: &Option<String>,
+    email: &Option<String>,
+    user_id: &str,
+) -> String {
+    let present = |value: &Option<String>| {
+        value
+            .as_ref()
+            .filter(|s| !s.trim().is_empty())
+            .map(String::from)
+    };
+    present(org_name)
+        .or_else(|| present(global_name))
+        .or_else(|| present(email))
+        .unwrap_or_else(|| user_id.to_string())
 }
 
 #[derive(Debug)]
@@ -68,29 +102,251 @@ impl From<DbError> for RbacError {
     }
 }
 
-/// Find or create the `users` row for `email`, returning its id.
+/// So a plain `sqlx::query...(...).await?` composes inside a function
+/// returning `Result<_, RbacError>`.
+impl From<sqlx::Error> for RbacError {
+    fn from(err: sqlx::Error) -> Self {
+        Self::Database(DbError::from(err))
+    }
+}
+
+impl IntoResponse for RbacError {
+    fn into_response(self) -> Response {
+        let (status, error, message) = match self {
+            Self::Forbidden => (
+                StatusCode::FORBIDDEN,
+                "role_required",
+                "you do not hold the role this action requires".to_string(),
+            ),
+            Self::OrgNotFound => (
+                StatusCode::NOT_FOUND,
+                "org_not_found",
+                "no such organization".to_string(),
+            ),
+            Self::MemberNotFound => (
+                StatusCode::NOT_FOUND,
+                "member_not_found",
+                "that user is not a member of this organization".to_string(),
+            ),
+            Self::LastAdmin => (
+                StatusCode::CONFLICT,
+                "last_admin_cannot_leave",
+                "an organization must keep at least one admin".to_string(),
+            ),
+            Self::UnknownRole => (
+                StatusCode::BAD_REQUEST,
+                "unknown_role",
+                "that role is not native to the RBAC".to_string(),
+            ),
+            Self::InviteNotFound => (
+                StatusCode::NOT_FOUND,
+                "invite_not_found",
+                "no such invite".to_string(),
+            ),
+            Self::InviteNotPending => (
+                StatusCode::CONFLICT,
+                "invite_not_pending",
+                "this invite has already been accepted, revoked or declined".to_string(),
+            ),
+            Self::Database(err) => return err.into_response(),
+        };
+        (status, Json(json!({ "error": error, "message": message }))).into_response()
+    }
+}
+
+fn normalize_email(email: &str) -> String {
+    email.trim().to_lowercase()
+}
+
+async fn org_exists(db: &Db, org_id: &str) -> Result<bool, RbacError> {
+    let pool = db.pool().await?;
+    let row: Option<i32> = sqlx::query_scalar("SELECT 1 FROM organizations WHERE id = $1")
+        .bind(org_id)
+        .fetch_optional(pool)
+        .await?;
+    Ok(row.is_some())
+}
+
+async fn is_member(db: &Db, org_id: &str, user_id: &str) -> Result<bool, RbacError> {
+    let pool = db.pool().await?;
+    let row: Option<i32> =
+        sqlx::query_scalar("SELECT 1 FROM org_users WHERE org_id = $1 AND user_id = $2")
+            .bind(org_id)
+            .bind(user_id)
+            .fetch_optional(pool)
+            .await?;
+    Ok(row.is_some())
+}
+
+async fn has_exact_role(
+    db: &Db,
+    org_id: &str,
+    user_id: &str,
+    role: &str,
+) -> Result<bool, RbacError> {
+    let pool = db.pool().await?;
+    let row: Option<i32> = sqlx::query_scalar(
+        "SELECT 1 FROM org_roles WHERE org_id = $1 AND user_id = $2 AND role = $3",
+    )
+    .bind(org_id)
+    .bind(user_id)
+    .bind(role)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.is_some())
+}
+
+/// `admin` also satisfies a `team-management`/`billing` check -- creating an
+/// org only ever grants its creator `admin`, not all three as separate rows.
+async fn has_role(db: &Db, org_id: &str, user_id: &str, role: &str) -> Result<bool, RbacError> {
+    if has_exact_role(db, org_id, user_id, role).await? {
+        return Ok(true);
+    }
+    if role == roles::TEAM_MANAGEMENT || role == roles::BILLING {
+        return has_exact_role(db, org_id, user_id, roles::ADMIN).await;
+    }
+    Ok(false)
+}
+
+/// True if `user_id` is the only `admin` of `org_id`.
+async fn is_last_admin(db: &Db, org_id: &str, user_id: &str) -> Result<bool, RbacError> {
+    let pool = db.pool().await?;
+    let admins: Vec<String> =
+        sqlx::query_scalar("SELECT user_id FROM org_roles WHERE org_id = $1 AND role = $2")
+            .bind(org_id)
+            .bind(roles::ADMIN)
+            .fetch_all(pool)
+            .await?;
+    Ok(admins.len() == 1 && admins[0] == user_id)
+}
+
+/// Find or create the `users` row for `email`, returning its id. Not
+/// airtight against two callers racing to register the same brand-new
+/// email at once -- `email` carries no unique constraint the ORM can
+/// declare (only a primary key can be fixed at `CREATE TABLE` time) -- but
+/// that's the same race every magic-link request already runs.
 pub async fn register_user(db: &Db, email: &str, name: Option<&str>) -> Result<String, RbacError> {
-    let _ = (db, email, name);
-    todo!("insert into users on conflict (email) do nothing, return its id")
+    let email = normalize_email(email);
+    let pool = db.pool().await?;
+
+    if let Some(id) = sqlx::query_scalar::<_, String>("SELECT id FROM users WHERE email = $1")
+        .bind(&email)
+        .fetch_optional(pool)
+        .await?
+    {
+        return Ok(id);
+    }
+
+    let id = Uuid::new_v4().to_string();
+    let name = name.map(str::to_string);
+    retry_on_conflict(|| {
+        let id = id.clone();
+        let email = email.clone();
+        let name = name.clone();
+        async move {
+            sqlx::query("INSERT INTO users (id, email, name) VALUES ($1, $2, $3)")
+                .bind(&id)
+                .bind(&email)
+                .bind(&name)
+                .execute(pool)
+                .await
+                .map(|_| ())
+        }
+    })
+    .await?;
+    Ok(id)
+}
+
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct User {
+    pub id: String,
+    pub email: String,
+    pub name: Option<String>,
+}
+
+pub async fn get_user(db: &Db, user_id: &str) -> Result<Option<User>, RbacError> {
+    let pool = db.pool().await?;
+    let user = sqlx::query_as::<_, User>("SELECT id, email, name FROM users WHERE id = $1")
+        .bind(user_id)
+        .fetch_optional(pool)
+        .await?;
+    Ok(user)
 }
 
 /// Create an org. The creator is always its first `admin` -- an org can
 /// never exist with zero admins.
 pub async fn create_org(db: &Db, name: &str, creator: &str) -> Result<Org, RbacError> {
-    let _ = (db, name, creator);
-    todo!()
+    let id = Uuid::new_v4().to_string();
+    let pool = db.pool().await?;
+    let org = retry_on_conflict(|| {
+        let id = id.clone();
+        async move {
+            sqlx::query_as::<_, Org>(
+                "INSERT INTO organizations (id, name, created_by) VALUES ($1, $2, $3)
+                 RETURNING id, name, created_by, created_at",
+            )
+            .bind(&id)
+            .bind(name)
+            .bind(creator)
+            .fetch_one(pool)
+            .await
+        }
+    })
+    .await?;
+
+    add_member(db, &org.id, creator).await?;
+    assign_role(db, &org.id, creator, roles::ADMIN).await?;
+    Ok(org)
 }
 
 /// Delete an org: its `org_roles` and `org_users` rows first (DSQL has no
 /// cascading deletes), then the `organizations` row itself.
 pub async fn delete_org(db: &Db, org_id: &str) -> Result<(), RbacError> {
-    let _ = (db, org_id);
-    todo!()
+    if !org_exists(db, org_id).await? {
+        return Err(RbacError::OrgNotFound);
+    }
+    let pool = db.pool().await?;
+    retry_on_conflict(|| async move {
+        sqlx::query("DELETE FROM org_roles WHERE org_id = $1")
+            .bind(org_id)
+            .execute(pool)
+            .await
+            .map(|_| ())
+    })
+    .await?;
+    retry_on_conflict(|| async move {
+        sqlx::query("DELETE FROM org_users WHERE org_id = $1")
+            .bind(org_id)
+            .execute(pool)
+            .await
+            .map(|_| ())
+    })
+    .await?;
+    retry_on_conflict(|| async move {
+        sqlx::query("DELETE FROM organizations WHERE id = $1")
+            .bind(org_id)
+            .execute(pool)
+            .await
+            .map(|_| ())
+    })
+    .await?;
+    Ok(())
 }
 
 pub async fn rename_org(db: &Db, org_id: &str, name: &str) -> Result<(), RbacError> {
-    let _ = (db, org_id, name);
-    todo!()
+    let pool = db.pool().await?;
+    let result = retry_on_conflict(|| async move {
+        sqlx::query("UPDATE organizations SET name = $1 WHERE id = $2")
+            .bind(name)
+            .bind(org_id)
+            .execute(pool)
+            .await
+    })
+    .await?;
+    if result.rows_affected() == 0 {
+        return Err(RbacError::OrgNotFound);
+    }
+    Ok(())
 }
 
 /// Renames how `user_id` appears inside `org_id` only (`org_users.name`).
@@ -100,27 +356,155 @@ pub async fn rename_in_org(
     user_id: &str,
     name: &str,
 ) -> Result<(), RbacError> {
-    let _ = (db, org_id, user_id, name);
-    todo!()
+    let pool = db.pool().await?;
+    let result = retry_on_conflict(|| async move {
+        sqlx::query("UPDATE org_users SET name = $1 WHERE org_id = $2 AND user_id = $3")
+            .bind(name)
+            .bind(org_id)
+            .bind(user_id)
+            .execute(pool)
+            .await
+    })
+    .await?;
+    if result.rows_affected() == 0 {
+        return Err(RbacError::MemberNotFound);
+    }
+    Ok(())
 }
 
 /// Renames `user_id` everywhere (`users.name`).
 pub async fn rename_globally(db: &Db, user_id: &str, name: &str) -> Result<(), RbacError> {
-    let _ = (db, user_id, name);
-    todo!()
+    let pool = db.pool().await?;
+    retry_on_conflict(|| async move {
+        sqlx::query("UPDATE users SET name = $1 WHERE id = $2")
+            .bind(name)
+            .bind(user_id)
+            .execute(pool)
+            .await
+            .map(|_| ())
+    })
+    .await?;
+    Ok(())
+}
+
+/// One org in `GET /rbac/orgs`, the caller's own roles folded in.
+#[derive(Debug, Serialize)]
+pub struct OrgSummary {
+    pub id: String,
+    pub name: String,
+    pub roles: Vec<String>,
+}
+
+#[derive(sqlx::FromRow)]
+struct OrgRoleRow {
+    id: String,
+    name: String,
+    role: Option<String>,
+}
+
+/// The orgs `user_id` belongs to, each with their own roles in it folded in.
+pub async fn list_orgs_for_user(db: &Db, user_id: &str) -> Result<Vec<OrgSummary>, RbacError> {
+    let pool = db.pool().await?;
+    let rows: Vec<OrgRoleRow> = sqlx::query_as(
+        "SELECT o.id, o.name, r.role
+         FROM org_users u
+         JOIN organizations o ON o.id = u.org_id
+         LEFT JOIN org_roles r ON r.org_id = u.org_id AND r.user_id = u.user_id
+         WHERE u.user_id = $1
+         ORDER BY o.id, r.role",
+    )
+    .bind(user_id)
+    .fetch_all(pool)
+    .await?;
+
+    let mut orgs: Vec<OrgSummary> = Vec::new();
+    for row in rows {
+        match orgs.last_mut() {
+            Some(last) if last.id == row.id => {
+                if let Some(role) = row.role {
+                    last.roles.push(role);
+                }
+            }
+            _ => orgs.push(OrgSummary {
+                id: row.id,
+                name: row.name,
+                roles: row.role.into_iter().collect(),
+            }),
+        }
+    }
+    Ok(orgs)
+}
+
+#[derive(sqlx::FromRow)]
+struct MemberRow {
+    user_id: String,
+    org_name: Option<String>,
+    global_name: Option<String>,
+    email: Option<String>,
+    online: Option<bool>,
+    role: Option<String>,
 }
 
 /// The full roster of `org_id`, each member's roles folded in.
 pub async fn list_members(db: &Db, org_id: &str) -> Result<Vec<OrgMember>, RbacError> {
-    let _ = (db, org_id);
-    todo!()
+    if !org_exists(db, org_id).await? {
+        return Err(RbacError::OrgNotFound);
+    }
+    let pool = db.pool().await?;
+    let rows: Vec<MemberRow> = sqlx::query_as(
+        "SELECT u.user_id, u.name AS org_name, usr.name AS global_name, usr.email, u.online, r.role
+         FROM org_users u
+         JOIN users usr ON usr.id = u.user_id
+         LEFT JOIN org_roles r ON r.org_id = u.org_id AND r.user_id = u.user_id
+         WHERE u.org_id = $1
+         ORDER BY u.user_id, r.role",
+    )
+    .bind(org_id)
+    .fetch_all(pool)
+    .await?;
+
+    let mut members: Vec<OrgMember> = Vec::new();
+    for row in rows {
+        match members.last_mut() {
+            Some(last) if last.user_id == row.user_id => {
+                if let Some(role) = row.role {
+                    last.roles.push(role);
+                }
+            }
+            _ => {
+                let name = display_name(&row.org_name, &row.global_name, &row.email, &row.user_id);
+                members.push(OrgMember {
+                    user_id: row.user_id,
+                    display_name: name,
+                    online: row.online.unwrap_or(false),
+                    roles: row.role.into_iter().collect(),
+                })
+            }
+        }
+    }
+    Ok(members)
 }
 
 /// Add `user_id` to `org_id` -- a bare membership row, no roles yet. What an
 /// accepted invite calls before [`assign_role`] for each invited role.
 pub async fn add_member(db: &Db, org_id: &str, user_id: &str) -> Result<(), RbacError> {
-    let _ = (db, org_id, user_id);
-    todo!()
+    if !org_exists(db, org_id).await? {
+        return Err(RbacError::OrgNotFound);
+    }
+    let pool = db.pool().await?;
+    retry_on_conflict(|| async move {
+        sqlx::query(
+            "INSERT INTO org_users (org_id, user_id) VALUES ($1, $2)
+             ON CONFLICT (org_id, user_id) DO NOTHING",
+        )
+        .bind(org_id)
+        .bind(user_id)
+        .execute(pool)
+        .await
+        .map(|_| ())
+    })
+    .await?;
+    Ok(())
 }
 
 pub async fn assign_role(
@@ -129,8 +513,27 @@ pub async fn assign_role(
     user_id: &str,
     role: &str,
 ) -> Result<(), RbacError> {
-    let _ = (db, org_id, user_id, role);
-    todo!()
+    if !is_known_role(role) {
+        return Err(RbacError::UnknownRole);
+    }
+    if !is_member(db, org_id, user_id).await? {
+        return Err(RbacError::MemberNotFound);
+    }
+    let pool = db.pool().await?;
+    retry_on_conflict(|| async move {
+        sqlx::query(
+            "INSERT INTO org_roles (org_id, user_id, role) VALUES ($1, $2, $3)
+             ON CONFLICT (org_id, user_id, role) DO NOTHING",
+        )
+        .bind(org_id)
+        .bind(user_id)
+        .bind(role)
+        .execute(pool)
+        .await
+        .map(|_| ())
+    })
+    .await?;
+    Ok(())
 }
 
 pub async fn revoke_role(
@@ -139,15 +542,55 @@ pub async fn revoke_role(
     user_id: &str,
     role: &str,
 ) -> Result<(), RbacError> {
-    let _ = (db, org_id, user_id, role);
-    todo!()
+    if !is_member(db, org_id, user_id).await? {
+        return Err(RbacError::MemberNotFound);
+    }
+    if role == roles::ADMIN && is_last_admin(db, org_id, user_id).await? {
+        return Err(RbacError::LastAdmin);
+    }
+    let pool = db.pool().await?;
+    retry_on_conflict(|| async move {
+        sqlx::query("DELETE FROM org_roles WHERE org_id = $1 AND user_id = $2 AND role = $3")
+            .bind(org_id)
+            .bind(user_id)
+            .bind(role)
+            .execute(pool)
+            .await
+            .map(|_| ())
+    })
+    .await?;
+    Ok(())
 }
 
 /// Remove `user_id` from `org_id` entirely -- both `org_users` and
 /// `org_roles`. Refuses if they are the org's last admin; see the module doc.
 pub async fn leave_org(db: &Db, org_id: &str, user_id: &str) -> Result<(), RbacError> {
-    let _ = (db, org_id, user_id);
-    todo!()
+    if !is_member(db, org_id, user_id).await? {
+        return Err(RbacError::MemberNotFound);
+    }
+    if is_last_admin(db, org_id, user_id).await? {
+        return Err(RbacError::LastAdmin);
+    }
+    let pool = db.pool().await?;
+    retry_on_conflict(|| async move {
+        sqlx::query("DELETE FROM org_roles WHERE org_id = $1 AND user_id = $2")
+            .bind(org_id)
+            .bind(user_id)
+            .execute(pool)
+            .await
+            .map(|_| ())
+    })
+    .await?;
+    retry_on_conflict(|| async move {
+        sqlx::query("DELETE FROM org_users WHERE org_id = $1 AND user_id = $2")
+            .bind(org_id)
+            .bind(user_id)
+            .execute(pool)
+            .await
+            .map(|_| ())
+    })
+    .await?;
+    Ok(())
 }
 
 /// The generic "does this user hold this role" gate.
@@ -157,31 +600,297 @@ pub async fn require_role(
     user_id: &str,
     role: &str,
 ) -> Result<(), RbacError> {
-    let _ = (db, org_id, user_id, role);
-    todo!()
+    if has_role(db, org_id, user_id, role).await? {
+        Ok(())
+    } else {
+        Err(RbacError::Forbidden)
+    }
 }
 
 /// Any membership at all, no particular role -- gates a roster read to
 /// members only.
 pub async fn require_member(db: &Db, org_id: &str, user_id: &str) -> Result<(), RbacError> {
-    let _ = (db, org_id, user_id);
-    todo!()
+    if is_member(db, org_id, user_id).await? {
+        Ok(())
+    } else {
+        Err(RbacError::Forbidden)
+    }
+}
+
+async fn set_online(db: &Db, user_id: &str, online: bool) -> Result<(), RbacError> {
+    let pool = db.pool().await?;
+    retry_on_conflict(|| async move {
+        sqlx::query("UPDATE org_users SET online = $1 WHERE user_id = $2")
+            .bind(online)
+            .bind(user_id)
+            .execute(pool)
+            .await
+            .map(|_| ())
+    })
+    .await?;
+    Ok(())
 }
 
 /// Wire `org_users.online` to the messenger's connection channel. Meant to
 /// be called once, at startup.
-pub fn register(messenger: &Messenger) {
-    messenger.on_message(
-        web_messenger::CONNECTION,
-        |_messenger, user_id, message| async move {
+pub fn register(messenger: &Messenger, db: Db) {
+    messenger.on_message(web_messenger::CONNECTION, move |_messenger, user_id, message| {
+        let db = db.clone();
+        async move {
             let online = message.as_str() == Some(web_messenger::CONNECTED);
-            let _ = (user_id, online);
-            todo!("set org_users.online = {online} for every org this user belongs to")
-        },
-    );
+            if let Err(err) = set_online(&db, &user_id, online).await {
+                tracing::warn!("rbac: could not set online={online} for {user_id}: {err:?}");
+            }
+        }
+    });
 }
 
-/// `/rbac/*` -- org and membership management.
+#[derive(Deserialize)]
+struct NameBody {
+    name: String,
+}
+
+#[derive(Deserialize)]
+struct RoleBody {
+    user_id: String,
+    role: String,
+}
+
+#[derive(Deserialize)]
+struct InviteBody {
+    email: String,
+    #[serde(default)]
+    roles: Vec<String>,
+}
+
+async fn me_route(
+    Extension(db): Extension<Db>,
+    Extension(claims): Extension<Claims>,
+) -> Result<Json<serde_json::Value>, RbacError> {
+    let user = get_user(&db, &claims.sub).await?.ok_or(RbacError::Forbidden)?;
+    Ok(Json(json!(user)))
+}
+
+async fn rename_me_route(
+    Extension(db): Extension<Db>,
+    Extension(claims): Extension<Claims>,
+    Json(body): Json<NameBody>,
+) -> Result<Json<serde_json::Value>, RbacError> {
+    rename_globally(&db, &claims.sub, &body.name).await?;
+    Ok(Json(json!({ "name": body.name })))
+}
+
+async fn list_orgs_route(
+    Extension(db): Extension<Db>,
+    Extension(claims): Extension<Claims>,
+) -> Result<Json<serde_json::Value>, RbacError> {
+    let orgs = list_orgs_for_user(&db, &claims.sub).await?;
+    Ok(Json(json!({ "orgs": orgs })))
+}
+
+async fn create_org_route(
+    Extension(db): Extension<Db>,
+    Extension(claims): Extension<Claims>,
+    Json(body): Json<NameBody>,
+) -> Result<Json<serde_json::Value>, RbacError> {
+    let org = create_org(&db, &body.name, &claims.sub).await?;
+    Ok(Json(json!({ "org": org })))
+}
+
+async fn rename_org_route(
+    Extension(db): Extension<Db>,
+    Extension(claims): Extension<Claims>,
+    Path(org_id): Path<String>,
+    Json(body): Json<NameBody>,
+) -> Result<Json<serde_json::Value>, RbacError> {
+    require_role(&db, &org_id, &claims.sub, roles::ADMIN).await?;
+    rename_org(&db, &org_id, &body.name).await?;
+    Ok(Json(json!({ "org_id": org_id, "name": body.name })))
+}
+
+async fn delete_org_route(
+    Extension(db): Extension<Db>,
+    Extension(claims): Extension<Claims>,
+    Path(org_id): Path<String>,
+) -> Result<Json<serde_json::Value>, RbacError> {
+    require_role(&db, &org_id, &claims.sub, roles::ADMIN).await?;
+    delete_org(&db, &org_id).await?;
+    Ok(Json(json!({ "deleted": org_id })))
+}
+
+async fn list_members_route(
+    Extension(db): Extension<Db>,
+    Extension(claims): Extension<Claims>,
+    Path(org_id): Path<String>,
+) -> Result<Json<serde_json::Value>, RbacError> {
+    require_member(&db, &org_id, &claims.sub).await?;
+    let members = list_members(&db, &org_id).await?;
+    Ok(Json(json!({ "members": members })))
+}
+
+async fn leave_org_route(
+    Extension(db): Extension<Db>,
+    Extension(claims): Extension<Claims>,
+    Path(org_id): Path<String>,
+) -> Result<Json<serde_json::Value>, RbacError> {
+    leave_org(&db, &org_id, &claims.sub).await?;
+    Ok(Json(json!({ "org_id": org_id, "left_by": claims.sub })))
+}
+
+async fn assign_role_route(
+    Extension(db): Extension<Db>,
+    Extension(claims): Extension<Claims>,
+    Path(org_id): Path<String>,
+    Json(body): Json<RoleBody>,
+) -> Result<Json<serde_json::Value>, RbacError> {
+    require_role(&db, &org_id, &claims.sub, roles::TEAM_MANAGEMENT).await?;
+    assign_role(&db, &org_id, &body.user_id, &body.role).await?;
+    Ok(Json(
+        json!({ "org_id": org_id, "user_id": body.user_id, "role": body.role }),
+    ))
+}
+
+async fn revoke_role_route(
+    Extension(db): Extension<Db>,
+    Extension(claims): Extension<Claims>,
+    Path(org_id): Path<String>,
+    Json(body): Json<RoleBody>,
+) -> Result<Json<serde_json::Value>, RbacError> {
+    require_role(&db, &org_id, &claims.sub, roles::TEAM_MANAGEMENT).await?;
+    revoke_role(&db, &org_id, &body.user_id, &body.role).await?;
+    Ok(Json(
+        json!({ "org_id": org_id, "user_id": body.user_id, "role": body.role }),
+    ))
+}
+
+async fn create_invite_route(
+    Extension(db): Extension<Db>,
+    Extension(claims): Extension<Claims>,
+    Path(org_id): Path<String>,
+    Json(body): Json<InviteBody>,
+) -> Result<Json<serde_json::Value>, RbacError> {
+    require_role(&db, &org_id, &claims.sub, roles::TEAM_MANAGEMENT).await?;
+    let invite = create_invite(&db, &org_id, &body.email, &body.roles, &claims.sub).await?;
+    Ok(Json(json!({ "invite": invite })))
+}
+
+async fn list_invites_route(
+    Extension(db): Extension<Db>,
+    Extension(claims): Extension<Claims>,
+    Path(org_id): Path<String>,
+) -> Result<Json<serde_json::Value>, RbacError> {
+    require_role(&db, &org_id, &claims.sub, roles::TEAM_MANAGEMENT).await?;
+    let invites = list_invites(&db, &org_id).await?;
+    Ok(Json(json!({ "invites": invites })))
+}
+
+async fn revoke_invite_route(
+    Extension(db): Extension<Db>,
+    Extension(claims): Extension<Claims>,
+    Path((org_id, invite_id)): Path<(String, String)>,
+) -> Result<Json<serde_json::Value>, RbacError> {
+    require_role(&db, &org_id, &claims.sub, roles::TEAM_MANAGEMENT).await?;
+    revoke_invite(&db, &org_id, &invite_id).await?;
+    Ok(Json(json!({ "revoked": invite_id })))
+}
+
+/// No further check beyond a valid bearer token -- same as accept/decline,
+/// the invite id itself (only reachable from the magic link) is what gates
+/// this, not the caller's own identity.
+async fn invite_preview_route(
+    Extension(db): Extension<Db>,
+    Path(invite_id): Path<String>,
+) -> Result<Json<serde_json::Value>, RbacError> {
+    let invite = preview_invite(&db, &invite_id).await?;
+    Ok(Json(json!({ "invite": invite })))
+}
+
+/// No further check beyond a valid bearer token -- the invited email is
+/// whatever the invite itself names, not necessarily the caller's own.
+async fn accept_invite_route(
+    Extension(db): Extension<Db>,
+    Path(invite_id): Path<String>,
+) -> Result<Json<serde_json::Value>, RbacError> {
+    let invite = accept_invite(&db, &invite_id).await?;
+    Ok(Json(json!({ "invite": invite })))
+}
+
+async fn decline_invite_route(
+    Extension(db): Extension<Db>,
+    Path(invite_id): Path<String>,
+) -> Result<Json<serde_json::Value>, RbacError> {
+    decline_invite(&db, &invite_id).await?;
+    Ok(Json(json!({ "declined": invite_id })))
+}
+
+/// `/rbac/*` -- org and membership management. Nested under
+/// [`auth::require_bearer`](crate::core::auth::require_bearer), so every
+/// handler here can pull `Extension<Claims>` for the caller's `user_id`.
 pub fn routes() -> Router {
-    todo!("orgs CRUD, members, roles, plus org_invites' accept/decline/revoke")
+    Router::new()
+        .route("/me", get(me_route))
+        .route("/me/name", put(rename_me_route))
+        .route("/orgs", get(list_orgs_route).post(create_org_route))
+        .route("/orgs/{org_id}", delete(delete_org_route))
+        .route("/orgs/{org_id}/name", put(rename_org_route))
+        .route("/orgs/{org_id}/members", get(list_members_route))
+        .route("/orgs/{org_id}/members/me", delete(leave_org_route))
+        .route(
+            "/orgs/{org_id}/roles",
+            post(assign_role_route).delete(revoke_role_route),
+        )
+        .route(
+            "/orgs/{org_id}/invites",
+            get(list_invites_route).post(create_invite_route),
+        )
+        .route(
+            "/orgs/{org_id}/invites/{invite_id}",
+            delete(revoke_invite_route),
+        )
+        .route("/invites/{invite_id}", get(invite_preview_route))
+        .route("/invites/{invite_id}/accept", post(accept_invite_route))
+        .route("/invites/{invite_id}/decline", post(decline_invite_route))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn some(s: &str) -> Option<String> {
+        Some(s.to_string())
+    }
+
+    #[test]
+    fn display_name_prefers_org_name_over_everything_else() {
+        assert_eq!(
+            display_name(&some("Org Nick"), &some("Global"), &some("a@b.com"), "u1"),
+            "Org Nick"
+        );
+    }
+
+    #[test]
+    fn display_name_falls_back_to_global_name() {
+        assert_eq!(
+            display_name(&None, &some("Global"), &some("a@b.com"), "u1"),
+            "Global"
+        );
+    }
+
+    #[test]
+    fn display_name_falls_back_to_email() {
+        assert_eq!(display_name(&None, &None, &some("a@b.com"), "u1"), "a@b.com");
+    }
+
+    #[test]
+    fn display_name_falls_back_to_user_id() {
+        assert_eq!(display_name(&None, &None, &None, "u1"), "u1");
+    }
+
+    #[test]
+    fn display_name_treats_blank_strings_as_missing() {
+        assert_eq!(
+            display_name(&some("   "), &some(""), &some("a@b.com"), "u1"),
+            "a@b.com"
+        );
+    }
 }

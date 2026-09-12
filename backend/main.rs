@@ -38,7 +38,7 @@ async fn main() {
 
     // Each feature wires its own channels/events before the router is
     // built, so registering one is never silently forgotten at startup.
-    core::rbac::register(&messenger);
+    core::rbac::register(&messenger, db.clone());
     features::meetings::rooms::register(db.clone(), &chime);
     features::meetings::chat::register(&messenger, db.clone());
 
