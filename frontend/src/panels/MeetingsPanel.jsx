@@ -15,6 +15,7 @@ import * as chime from "../lib/chime";
 export default function MeetingsPanel({ token, org }) {
   const myId = decodeJwt(token)?.sub;
   const audioRef = useRef(null);
+  const selfVideoRef = useRef(null);
   const [meetings, setMeetings] = useState([]);
   // The meeting this tab currently considers itself "in", and whether that
   // means an actual live Chime session or just the app-level fake-connected
@@ -22,6 +23,10 @@ export default function MeetingsPanel({ token, org }) {
   // (backend/lib/features/meetings/mod.rs).
   const [myMeetingId, setMyMeetingId] = useState(null);
   const [roomStatus, setRoomStatus] = useState(null); // "waiting" | "connected" | null
+  const [cameraOn, setCameraOnState] = useState(false);
+  const [micMuted, setMicMutedState] = useState(false);
+  const [sharingScreen, setSharingScreen] = useState(false);
+  const [remoteTiles, setRemoteTiles] = useState([]); // [{tileId, attendeeId, isContent}]
   const [error, setError] = useState(null);
   // Mirrors `myMeetingId` for the unmount cleanup below, which is set up
   // once per mounted org and would otherwise only ever see whatever it was
@@ -33,7 +38,19 @@ export default function MeetingsPanel({ token, org }) {
 
   useEffect(() => {
     chime.setAudioElement(audioRef.current);
+    chime.onRemoteTiles(setRemoteTiles);
+    chime.onScreenShareStopped(() => setSharingScreen(false));
   }, []);
+
+  // The self-preview `<video>` only exists in the DOM while `myMeetingId`
+  // is set (see the render below) -- wiring this up once on mount would
+  // have grabbed `null` forever, since that element hasn't been created
+  // yet at that point. Re-running whenever `myMeetingId` changes catches it
+  // exactly when it mounts (and clears it when it unmounts).
+  useEffect(() => {
+    chime.setSelfVideoElement(selfVideoRef.current);
+    return () => chime.setSelfVideoElement(null);
+  }, [myMeetingId]);
 
   const reloadMeetings = () =>
     listMeetings(token, org.id)
@@ -44,6 +61,27 @@ export default function MeetingsPanel({ token, org }) {
     reloadMeetings();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token, org.id]);
+
+  // Drops a Chime session but stays "in" the meeting -- the room was
+  // cleared out from under this tab, or a fresh join hasn't found anyone to
+  // connect it to yet. Camera/mic preference is kept (the camera falls back
+  // to a chimeless preview automatically, see `lib/chime.js`); a screen
+  // share obviously can't survive with nobody left to see it.
+  const disconnectChime = async () => {
+    await chime.disconnect();
+    setSharingScreen(false);
+  };
+
+  // Drops out of the meeting entirely -- leaving on purpose, the meeting
+  // ending, or it disappearing from under this tab -- so the camera and mic
+  // are released too, not just the Chime session.
+  const teardownMedia = async () => {
+    await chime.setCameraOn(false);
+    await chime.disconnect();
+    setCameraOnState(false);
+    setMicMutedState(false);
+    setSharingScreen(false);
+  };
 
   // Live updates: a meeting appearing or disappearing anywhere in this org
   // lands here -- see `features::meetings::broadcast_list`
@@ -57,11 +95,12 @@ export default function MeetingsPanel({ token, org }) {
         const next = message.meetings ?? [];
         setMeetings(next);
         if (myMeetingId && !next.some((m) => m.id === myMeetingId)) {
-          chime.disconnect();
+          teardownMedia();
           setMyMeetingId(null);
           setRoomStatus(null);
         }
       }),
+
     [org.id, myMeetingId],
   );
 
@@ -72,11 +111,11 @@ export default function MeetingsPanel({ token, org }) {
     return messenger.on(MEETING_ROOM_CHANNEL, (message) => {
       if (message.meeting_id !== myMeetingId) return;
       if (message.ended) {
-        chime.disconnect();
+        teardownMedia();
         setMyMeetingId(null);
         setRoomStatus(null);
       } else if (message.connected === false) {
-        chime.disconnect();
+        disconnectChime();
         setRoomStatus("waiting");
       } else if (message.connected === true) {
         chime
@@ -88,10 +127,10 @@ export default function MeetingsPanel({ token, org }) {
   }, [myMeetingId]);
 
   // Leaving this panel (switching org, logging out) shouldn't leave a ghost
-  // attendee behind.
+  // attendee behind, or the camera running.
   useEffect(() => {
     return () => {
-      chime.disconnect();
+      teardownMedia();
       const meetingId = myMeetingIdRef.current;
       if (meetingId) leaveMeeting(token, meetingId).catch(() => {});
     };
@@ -133,9 +172,39 @@ export default function MeetingsPanel({ token, org }) {
     const meetingId = myMeetingId;
     setMyMeetingId(null);
     setRoomStatus(null);
-    await chime.disconnect();
+    await teardownMedia();
     try {
       await leaveMeeting(token, meetingId);
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  const toggleCamera = async () => {
+    const next = !cameraOn;
+    try {
+      await chime.setCameraOn(next);
+      setCameraOnState(next);
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  const toggleMic = async () => {
+    const next = !micMuted;
+    await chime.setMicMuted(next);
+    setMicMutedState(next);
+  };
+
+  const toggleScreenShare = async () => {
+    try {
+      if (sharingScreen) {
+        chime.stopScreenShare();
+        setSharingScreen(false);
+      } else {
+        await chime.startScreenShare();
+        setSharingScreen(true);
+      }
     } catch (err) {
       setError(err.message);
     }
@@ -168,6 +237,56 @@ export default function MeetingsPanel({ token, org }) {
           New meeting
         </button>
       </div>
+
+      {myMeetingId && (
+        <div className="mt-3 rounded-card border bg-bg p-3">
+          <div className="flex flex-wrap gap-2">
+            {/* Own preview -- a chimeless meeting still shows this, see
+                `setCameraOn` in lib/chime.js. Mirrored and muted: it's a
+                mirror of yourself, not a source of sound. */}
+            <video
+              ref={selfVideoRef}
+              autoPlay
+              muted
+              playsInline
+              className="aspect-video w-40 -scale-x-100 rounded-card bg-black object-cover"
+            />
+            {remoteTiles.map((tile) => (
+              <video
+                key={tile.tileId}
+                ref={(element) => chime.bindRemoteVideo(tile.tileId, element)}
+                autoPlay
+                playsInline
+                className={`aspect-video rounded-card bg-black object-cover ${
+                  tile.isContent ? "w-full sm:w-80" : "w-40"
+                }`}
+              />
+            ))}
+          </div>
+
+          <div className="mt-3 flex flex-wrap gap-2 text-sm">
+            <button
+              onClick={toggleCamera}
+              className={`rounded-card border px-3 py-1.5 ${cameraOn ? "text-ink" : "text-ink-muted"}`}
+            >
+              {cameraOn ? "Turn camera off" : "Turn camera on"}
+            </button>
+            <button
+              onClick={toggleMic}
+              className={`rounded-card border px-3 py-1.5 ${micMuted ? "text-ink-muted" : "text-ink"}`}
+            >
+              {micMuted ? "Unmute" : "Mute"}
+            </button>
+            <button
+              onClick={toggleScreenShare}
+              disabled={roomStatus !== "connected"}
+              className={`rounded-card border px-3 py-1.5 disabled:opacity-50 ${sharingScreen ? "text-ink" : "text-ink-muted"}`}
+            >
+              {sharingScreen ? "Stop sharing screen" : "Share screen"}
+            </button>
+          </div>
+        </div>
+      )}
 
       {meetings.length === 0 && (
         <p className="mt-3 text-sm text-ink-muted">No meetings right now.</p>
