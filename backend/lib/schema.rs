@@ -108,8 +108,8 @@ static MEETINGS: Table = Table::new(
 );
 
 #[distributed_slice(orm::TABLES)]
-static ROOMS_POOL: Table = Table::new(
-    "rooms_pool",
+static MEETING_ROOMS: Table = Table::new(
+    "meeting_rooms",
     &[
         Column::new("id", "text").primary_key(),
         Column::new("assigned_to", "text").references("meetings", "id"),
@@ -182,7 +182,7 @@ mod tests {
                 "org_roles",
                 "org_users",
                 "organizations",
-                "rooms_pool",
+                "meeting_rooms",
                 "users",
             ]
         );

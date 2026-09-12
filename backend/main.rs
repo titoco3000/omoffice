@@ -15,7 +15,11 @@ async fn main() {
     let migrating = args.first().is_some_and(|arg| arg == "migrate");
 
     tracing_subscriber::fmt()
-        .with_max_level(if migrating { tracing::Level::WARN } else { tracing::Level::INFO })
+        .with_max_level(if migrating {
+            tracing::Level::WARN
+        } else {
+            tracing::Level::INFO
+        })
         .with_target(false)
         .init();
 

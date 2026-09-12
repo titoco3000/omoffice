@@ -1,4 +1,4 @@
-//! The reusable pool of live Chime rooms (`rooms_pool` rows) and the claim
+//! The reusable pool of live Chime rooms (`meeting_rooms` rows) and the claim
 //! logic that hands an idle one to a different meeting instead of minting a
 //! fresh Chime session every time. Knows nothing about routes or org
 //! membership.
