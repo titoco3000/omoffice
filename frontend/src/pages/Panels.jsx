@@ -4,6 +4,7 @@ import { ORG_ACTIVE_CHANNEL, ORG_ROSTER_CHANNEL, listOrgs } from "../lib/rbac";
 import { messenger } from "../lib/messenger";
 import UserPanel from "../panels/UserPanel";
 import OrgPanel from "../panels/OrgPanel";
+import MeetingsPanel from "../panels/MeetingsPanel";
 import PendingInvite from "../panels/PendingInvite";
 
 const CURRENT_ORG_KEY = "omoffice_current_org";
@@ -86,6 +87,9 @@ export default function Panels() {
           onOrgChanged={reloadOrgs}
           onOrgDeleted={() => selectOrg(null)}
         />
+      )}
+      {currentOrg && (
+        <MeetingsPanel key={currentOrg.id} token={token} org={currentOrg} />
       )}
     </main>
   );

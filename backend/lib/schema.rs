@@ -104,6 +104,7 @@ static MEETINGS: Table = Table::new(
             .default("now()"),
         Column::new("org_id", "text").references("organizations", "id"),
         Column::new("invite_only", "boolean").default("false"),
+        Column::new("idle_since", "timestamptz"),
     ],
 );
 

@@ -126,6 +126,14 @@
         "primary_key": false,
         "default": "false",
         "foreign_key": null
+      },
+      {
+        "name": "idle_since",
+        "sql_type": "timestamptz",
+        "not_null": false,
+        "primary_key": false,
+        "default": null,
+        "foreign_key": null
       }
     ],
     "primary_key": []
