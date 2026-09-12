@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useAuth } from "../auth/AuthContext";
-import { listOrgs } from "../lib/rbac";
+import { ORG_ACTIVE_CHANNEL, ORG_ROSTER_CHANNEL, listOrgs } from "../lib/rbac";
+import { messenger } from "../lib/messenger";
 import UserPanel from "../panels/UserPanel";
 import OrgPanel from "../panels/OrgPanel";
 import PendingInvite from "../panels/PendingInvite";
@@ -28,6 +29,31 @@ export default function Panels() {
     if (id) localStorage.setItem(CURRENT_ORG_KEY, id);
     else localStorage.removeItem(CURRENT_ORG_KEY);
   };
+
+  // Tell the backend which org this connection means -- see
+  // `core::rbac::ACTIVE_CHANNEL` (backend/lib/core/rbac/mod.rs): "online" is
+  // scoped to the one org actually being looked at, not every org this user
+  // belongs to. The cleanup clears it, both on switching away from an org
+  // and on leaving this page entirely.
+  useEffect(() => {
+    messenger.send(ORG_ACTIVE_CHANNEL, { org_id: orgId });
+    return () => messenger.send(ORG_ACTIVE_CHANNEL, { org_id: null });
+  }, [orgId]);
+
+  // A `removed_you` push (see `core::rbac::notify_removed`,
+  // backend/lib/core/rbac/mod.rs) means this browser lost membership --
+  // either just now (self-leave, kicked) or from a change made in another
+  // tab -- so drop the org from the list and off the selection.
+  useEffect(
+    () =>
+      messenger.on(ORG_ROSTER_CHANNEL, (message) => {
+        if (!message.removed_you) return;
+        reloadOrgs();
+        if (message.org_id === orgId) selectOrg(null);
+      }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [orgId],
+  );
 
   const currentOrg = orgs.find((org) => org.id === orgId) ?? null;
 

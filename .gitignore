@@ -1,5 +1,6 @@
 # rust
 backend/target/
+old-backend/target/
 
 # terraform
 infra/.terraform/

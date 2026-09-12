@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
 import { decodeJwt } from "../lib/jwt";
 import { ROLES } from "../lib/roles";
+import { messenger } from "../lib/messenger";
 import {
+  ORG_ROSTER_CHANNEL,
   listMembers,
   removeMember,
   renameOrg,
@@ -37,6 +39,18 @@ export default function OrgPanel({ token, org, onOrgChanged, onOrgDeleted }) {
     reloadMembers();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
+
+  // Live updates: a role change, join or removal anywhere in this org lands
+  // here on the messenger -- see `core::rbac::broadcast_roster`
+  // (backend/lib/core/rbac/mod.rs) -- so every tab open on it stays current
+  // without polling.
+  useEffect(
+    () =>
+      messenger.on(ORG_ROSTER_CHANNEL, (message) => {
+        if (message.org_id === org.id && message.members) setMembers(message.members);
+      }),
+    [org.id],
+  );
 
   useEffect(() => {
     if (!canManageTeam) return;
@@ -115,8 +129,13 @@ export default function OrgPanel({ token, org, onOrgChanged, onOrgDeleted }) {
           {members.map((member) => (
             <tr key={member.user_id} className="border-t">
               <td className="py-1.5 text-ink">
+                <span
+                  className={`mr-1.5 inline-block ${member.online ? "text-success" : "text-ink-muted/40"}`}
+                  title={member.online ? "online" : "offline"}
+                >
+                  ●
+                </span>
                 {member.display_name}
-                {member.online && <span className="ml-1 text-success">●</span>}
               </td>
               <td className="py-1.5">
                 {ROLES.map((role) => (

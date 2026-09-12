@@ -4,6 +4,7 @@
 
 import { createContext, useContext, useEffect, useState } from "react";
 import { UNAUTHORIZED_EVENT } from "../lib/api";
+import { messenger } from "../lib/messenger";
 import { navigate } from "../router/Router";
 
 const STORAGE_KEY = "omoffice_token";
@@ -40,9 +41,18 @@ export function AuthProvider({ children }) {
 
   const logout = (redirectTo = "/") => {
     localStorage.removeItem(STORAGE_KEY);
+    messenger.disconnect();
     setToken(null);
     navigate(redirectTo);
   };
+
+  // One messenger for the whole session, connected as soon as there's a
+  // token to connect it with -- every panel just subscribes to `messenger`,
+  // see `lib/messenger.js`.
+  useEffect(() => {
+    if (token) messenger.connect(token);
+    else messenger.disconnect();
+  }, [token]);
 
   // A 401 means the token itself is dead (missing/malformed/expired) --
   // drop it and send them back to log in again, instead of every panel

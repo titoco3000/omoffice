@@ -10,12 +10,27 @@
 //! touches the second, and an admin may only leave (or be demoted out of)
 //! `admin` if another admin remains -- see [`leave_org`].
 //!
-//! [`register`] subscribes to the messenger's [`CONNECTION`](web_messenger::CONNECTION)
-//! channel so `org_users.online` reflects whether a member currently has a
-//! live socket, without the messenger itself knowing what an org is.
+//! `org_users.online` is scoped to one org at a time, not to a user's whole
+//! session: a browser tab looks at one org's panel at once, so a connection
+//! is "online" in whichever org it most recently named, never in every org
+//! that user happens to belong to. [`register`] tracks that per-user via the
+//! messenger's [`CONNECTION`](web_messenger::CONNECTION) channel (a
+//! disconnect clears whatever org was current) and [`ACTIVE_CHANNEL`] (the
+//! frontend reports a switch), without the messenger itself knowing what an
+//! org is.
+//!
+//! [`CHANNEL`] is the other direction: whenever a role changes, someone
+//! joins or leaves, or a member's online org changes, [`broadcast_roster`]
+//! pushes the fresh roster to every member of that org with an open socket,
+//! so every tab open on it updates without polling. A member who was just
+//! removed is no longer in that roster to receive the push, so
+//! [`notify_removed`] tells them directly.
 
 pub mod org_invites;
 pub use org_invites::*;
+
+use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
 
 use axum::extract::{Extension, Path};
 use axum::http::StatusCode;
@@ -24,7 +39,7 @@ use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
 use uuid::Uuid;
 
 use crate::core::auth::Claims;
@@ -42,6 +57,11 @@ pub mod roles {
 fn is_known_role(role: &str) -> bool {
     role == roles::ADMIN || role == roles::BILLING || role == roles::TEAM_MANAGEMENT
 }
+
+/// Carries an org's roster out to its members -- see the module doc. Frame
+/// shapes: `{"org_id", "members": [OrgMember, ...]}` from [`broadcast_roster`],
+/// or `{"org_id", "removed_you": true}` from [`notify_removed`].
+pub const CHANNEL: web_messenger::Channel = "org_roster";
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
 pub struct Org {
@@ -485,6 +505,46 @@ pub async fn list_members(db: &Db, org_id: &str) -> Result<Vec<OrgMember>, RbacE
     Ok(members)
 }
 
+/// Push `org_id`'s current roster to every member of it who is currently
+/// online, on [`CHANNEL`] -- an offline member has no open socket to reach
+/// anyway, and will see the fresh roster the next time they load it. The
+/// payload itself still lists every member, online or not, same as
+/// [`list_members`] -- only who it's *sent to* is narrowed. Call this after
+/// any change to membership or roles.
+pub async fn broadcast_roster(
+    messenger: &Messenger,
+    db: &Db,
+    org_id: &str,
+) -> Result<(), RbacError> {
+    let members = list_members(db, org_id).await?;
+    let online_ids: Vec<String> = members
+        .iter()
+        .filter(|member| member.online)
+        .map(|member| member.user_id.clone())
+        .collect();
+    messenger
+        .send(
+            CHANNEL,
+            &online_ids,
+            json!({ "org_id": org_id, "members": members }),
+        )
+        .await;
+    Ok(())
+}
+
+/// Tell `user_id` specifically that they no longer belong to `org_id`, on
+/// [`CHANNEL`] -- call this alongside [`broadcast_roster`] whenever a
+/// removal leaves the removed member out of that roster to receive it.
+pub async fn notify_removed(messenger: &Messenger, org_id: &str, user_id: &str) {
+    messenger
+        .send(
+            CHANNEL,
+            &[user_id.to_string()],
+            json!({ "org_id": org_id, "removed_you": true }),
+        )
+        .await;
+}
+
 /// Add `user_id` to `org_id` -- a bare membership row, no roles yet. What an
 /// accepted invite calls before [`assign_role`] for each invited role.
 pub async fn add_member(db: &Db, org_id: &str, user_id: &str) -> Result<(), RbacError> {
@@ -617,11 +677,15 @@ pub async fn require_member(db: &Db, org_id: &str, user_id: &str) -> Result<(), 
     }
 }
 
-async fn set_online(db: &Db, user_id: &str, online: bool) -> Result<(), RbacError> {
+/// `org_users.online` is per `(org_id, user_id)` -- see the module doc --
+/// so this only ever touches the one row for `org_id`, never every org
+/// `user_id` belongs to.
+async fn set_online(db: &Db, org_id: &str, user_id: &str, online: bool) -> Result<(), RbacError> {
     let pool = db.pool().await?;
     retry_on_conflict(|| async move {
-        sqlx::query("UPDATE org_users SET online = $1 WHERE user_id = $2")
+        sqlx::query("UPDATE org_users SET online = $1 WHERE org_id = $2 AND user_id = $3")
             .bind(online)
+            .bind(org_id)
             .bind(user_id)
             .execute(pool)
             .await
@@ -631,15 +695,88 @@ async fn set_online(db: &Db, user_id: &str, online: bool) -> Result<(), RbacErro
     Ok(())
 }
 
-/// Wire `org_users.online` to the messenger's connection channel. Meant to
-/// be called once, at startup.
+/// [`set_online`] then [`broadcast_roster`], logging rather than failing --
+/// there is no request here to hand a `RbacError` back to.
+async fn set_online_and_broadcast(
+    messenger: &Messenger,
+    db: &Db,
+    org_id: &str,
+    user_id: &str,
+    online: bool,
+) {
+    if let Err(err) = set_online(db, org_id, user_id, online).await {
+        tracing::warn!("rbac: could not set online={online} for {user_id} in {org_id}: {err:?}");
+        return;
+    }
+    if let Err(err) = broadcast_roster(messenger, db, org_id).await {
+        tracing::warn!("rbac: could not broadcast roster for org {org_id}: {err:?}");
+    }
+}
+
+/// Carries which org a connection is currently looking at: `{"org_id": ..}`,
+/// or `{"org_id": null}` for none. Sent by the frontend whenever the
+/// selected org changes -- see the module doc for why "online" follows this
+/// rather than plain membership.
+pub const ACTIVE_CHANNEL: web_messenger::Channel = "org_active";
+
+/// Wire `org_users.online` to the messenger: [`CONNECTION`](web_messenger::CONNECTION)
+/// for a clean disconnect, [`ACTIVE_CHANNEL`] for which org a live
+/// connection currently means. Meant to be called once, at startup.
 pub fn register(messenger: &Messenger, db: Db) {
-    messenger.on_message(web_messenger::CONNECTION, move |_messenger, user_id, message| {
+    // `user_id` -> the one org its connection last reported as active. Keyed
+    // by user rather than by connection: good enough for one tab per user,
+    // which is as far as this proof of concept goes.
+    let active_org: Arc<RwLock<HashMap<String, String>>> = Arc::new(RwLock::new(HashMap::new()));
+
+    {
         let db = db.clone();
+        let active_org = active_org.clone();
+        messenger.on_message(
+            web_messenger::CONNECTION,
+            move |messenger, user_id, message| {
+                let db = db.clone();
+                let active_org = active_org.clone();
+                async move {
+                    if message.as_str() != Some(web_messenger::DISCONNECTED) {
+                        // CONNECTED alone names no org yet -- that arrives
+                        // separately on `ACTIVE_CHANNEL`, once the frontend knows.
+                        return;
+                    }
+                    let org_id = active_org
+                        .write()
+                        .unwrap_or_else(|err| err.into_inner())
+                        .remove(&user_id);
+                    if let Some(org_id) = org_id {
+                        set_online_and_broadcast(&messenger, &db, &org_id, &user_id, false).await;
+                    }
+                }
+            },
+        );
+    }
+
+    messenger.on_message(ACTIVE_CHANNEL, move |messenger, user_id, message| {
+        let db = db.clone();
+        let active_org = active_org.clone();
         async move {
-            let online = message.as_str() == Some(web_messenger::CONNECTED);
-            if let Err(err) = set_online(&db, &user_id, online).await {
-                tracing::warn!("rbac: could not set online={online} for {user_id}: {err:?}");
+            let new_org = message
+                .get("org_id")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            let previous = {
+                let mut active_org = active_org.write().unwrap_or_else(|err| err.into_inner());
+                match &new_org {
+                    Some(org_id) => active_org.insert(user_id.clone(), org_id.clone()),
+                    None => active_org.remove(&user_id),
+                }
+            };
+            if previous == new_org {
+                return;
+            }
+            if let Some(previous) = previous {
+                set_online_and_broadcast(&messenger, &db, &previous, &user_id, false).await;
+            }
+            if let Some(new_org) = new_org {
+                set_online_and_broadcast(&messenger, &db, &new_org, &user_id, true).await;
             }
         }
     });
@@ -667,7 +804,9 @@ async fn me_route(
     Extension(db): Extension<Db>,
     Extension(claims): Extension<Claims>,
 ) -> Result<Json<serde_json::Value>, RbacError> {
-    let user = get_user(&db, &claims.sub).await?.ok_or(RbacError::Forbidden)?;
+    let user = get_user(&db, &claims.sub)
+        .await?
+        .ok_or(RbacError::Forbidden)?;
     Ok(Json(json!(user)))
 }
 
@@ -730,10 +869,13 @@ async fn list_members_route(
 
 async fn leave_org_route(
     Extension(db): Extension<Db>,
+    Extension(messenger): Extension<Messenger>,
     Extension(claims): Extension<Claims>,
     Path(org_id): Path<String>,
 ) -> Result<Json<serde_json::Value>, RbacError> {
     leave_org(&db, &org_id, &claims.sub).await?;
+    notify_removed(&messenger, &org_id, &claims.sub).await;
+    broadcast_roster(&messenger, &db, &org_id).await?;
     Ok(Json(json!({ "org_id": org_id, "left_by": claims.sub })))
 }
 
@@ -743,22 +885,27 @@ async fn leave_org_route(
 /// last admin, whoever asks.
 async fn remove_member_route(
     Extension(db): Extension<Db>,
+    Extension(messenger): Extension<Messenger>,
     Extension(claims): Extension<Claims>,
     Path((org_id, user_id)): Path<(String, String)>,
 ) -> Result<Json<serde_json::Value>, RbacError> {
     require_role(&db, &org_id, &claims.sub, roles::TEAM_MANAGEMENT).await?;
     leave_org(&db, &org_id, &user_id).await?;
+    notify_removed(&messenger, &org_id, &user_id).await;
+    broadcast_roster(&messenger, &db, &org_id).await?;
     Ok(Json(json!({ "org_id": org_id, "removed": user_id })))
 }
 
 async fn assign_role_route(
     Extension(db): Extension<Db>,
+    Extension(messenger): Extension<Messenger>,
     Extension(claims): Extension<Claims>,
     Path(org_id): Path<String>,
     Json(body): Json<RoleBody>,
 ) -> Result<Json<serde_json::Value>, RbacError> {
     require_role(&db, &org_id, &claims.sub, roles::TEAM_MANAGEMENT).await?;
     assign_role(&db, &org_id, &body.user_id, &body.role).await?;
+    broadcast_roster(&messenger, &db, &org_id).await?;
     Ok(Json(
         json!({ "org_id": org_id, "user_id": body.user_id, "role": body.role }),
     ))
@@ -766,12 +913,14 @@ async fn assign_role_route(
 
 async fn revoke_role_route(
     Extension(db): Extension<Db>,
+    Extension(messenger): Extension<Messenger>,
     Extension(claims): Extension<Claims>,
     Path(org_id): Path<String>,
     Json(body): Json<RoleBody>,
 ) -> Result<Json<serde_json::Value>, RbacError> {
     require_role(&db, &org_id, &claims.sub, roles::TEAM_MANAGEMENT).await?;
     revoke_role(&db, &org_id, &body.user_id, &body.role).await?;
+    broadcast_roster(&messenger, &db, &org_id).await?;
     Ok(Json(
         json!({ "org_id": org_id, "user_id": body.user_id, "role": body.role }),
     ))
@@ -823,9 +972,11 @@ async fn invite_preview_route(
 /// whatever the invite itself names, not necessarily the caller's own.
 async fn accept_invite_route(
     Extension(db): Extension<Db>,
+    Extension(messenger): Extension<Messenger>,
     Path(invite_id): Path<String>,
 ) -> Result<Json<serde_json::Value>, RbacError> {
     let invite = accept_invite(&db, &invite_id).await?;
+    broadcast_roster(&messenger, &db, &invite.org_id).await?;
     Ok(Json(json!({ "invite": invite })))
 }
 
@@ -849,7 +1000,10 @@ pub fn routes() -> Router {
         .route("/orgs/{org_id}/name", put(rename_org_route))
         .route("/orgs/{org_id}/members", get(list_members_route))
         .route("/orgs/{org_id}/members/me", delete(leave_org_route))
-        .route("/orgs/{org_id}/members/{user_id}", delete(remove_member_route))
+        .route(
+            "/orgs/{org_id}/members/{user_id}",
+            delete(remove_member_route),
+        )
         .route(
             "/orgs/{org_id}/roles",
             post(assign_role_route).delete(revoke_role_route),
@@ -893,7 +1047,10 @@ mod tests {
 
     #[test]
     fn display_name_falls_back_to_email() {
-        assert_eq!(display_name(&None, &None, &some("a@b.com"), "u1"), "a@b.com");
+        assert_eq!(
+            display_name(&None, &None, &some("a@b.com"), "u1"),
+            "a@b.com"
+        );
     }
 
     #[test]
