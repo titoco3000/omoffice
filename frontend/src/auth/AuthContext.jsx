@@ -45,6 +45,7 @@ export function AuthProvider({ children }) {
 
   const logout = (redirectTo = "/") => {
     localStorage.removeItem(STORAGE_KEY);
+    localStorage.removeItem("omoffice_current_org");
     messenger.disconnect();
     setToken(null);
     navigate(redirectTo);

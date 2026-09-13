@@ -28,10 +28,17 @@ class Messenger {
   /// Open (or, if already open for this user, reuse) the one connection for
   /// `token`. Safe to call from every component that wants the messenger up
   /// -- only the first call for a given user actually connects.
+  ///
+  /// Closes any stale transport directly rather than through `disconnect`,
+  /// which would wipe `pending` -- a component mounted below `AuthProvider`
+  /// (e.g. `Panels`' own `org_active` send) can queue a frame before this
+  /// ever runs (child effects fire before parent ones), and that frame is
+  /// still meant for the connection about to open, not a leftover from one
+  /// this call is tearing down.
   connect(token) {
     const userId = decodeJwt(token)?.sub;
     if (!userId || this.userId === userId) return;
-    this.disconnect();
+    this.transport?.close();
     this.userId = userId;
     const transport = new WebSocket(transportUrl(userId));
     transport.onopen = () => {

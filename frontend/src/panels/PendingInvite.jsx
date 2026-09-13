@@ -20,6 +20,7 @@ export default function PendingInvite({ token, onAccepted, onDeclined }) {
   const [invite, setInvite] = useState(null);
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [dismissed, setDismissed] = useState(false);
 
   useEffect(() => {
     if (!inviteId) return;
@@ -28,13 +29,14 @@ export default function PendingInvite({ token, onAccepted, onDeclined }) {
       .catch((err) => setError(err.message));
   }, [token, inviteId]);
 
-  if (!inviteId) return null;
+  if (!inviteId || dismissed) return null;
 
   const accept = async () => {
     setBusy(true);
     try {
       await acceptInvite(token, inviteId);
       clearInviteParam();
+      setDismissed(true);
       onAccepted(invite.org_id);
     } catch (err) {
       setError(err.message);
@@ -47,6 +49,7 @@ export default function PendingInvite({ token, onAccepted, onDeclined }) {
     try {
       await declineInvite(token, inviteId);
       clearInviteParam();
+      setDismissed(true);
       onDeclined();
     } catch (err) {
       setError(err.message);
