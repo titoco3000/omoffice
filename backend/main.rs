@@ -1,8 +1,10 @@
 //! Entry point: `migrate <status|up|down|generate>` runs the migration
 //! tool; anything else builds the shared state, wires each feature's
-//! channels and events, and serves `router::app` -- over a local TCP
-//! listener normally, or straight to `lambda_http::run` when
-//! `AWS_LAMBDA_RUNTIME_API` says the process is running in Lambda. This file
+//! channels and events, and hands `router::app` to [`serve`]. Which of the
+//! two ways `serve` runs it -- a local TCP listener, or `lambda_http::run`
+//! -- is chosen at compile time by the `lambda` feature, the same one that
+//! picks `core::communication::web_messenger`'s transport; see that
+//! module's doc for why this is a `#[cfg]`, not a runtime check. This file
 //! is deliberately thin -- argument parsing and wiring only, calling
 //! straight into the `omoffice_api` library crate under `lib/` for
 //! everything else.
@@ -14,7 +16,7 @@ use omoffice_api::core::data::orm::migrate;
 use omoffice_api::{core, features, router};
 
 #[tokio::main]
-async fn main() -> Result<(), lambda_http::Error> {
+async fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let migrating = args.first().is_some_and(|arg| arg == "migrate");
 
@@ -32,7 +34,7 @@ async fn main() -> Result<(), lambda_http::Error> {
             eprintln!("error: {message}");
             std::process::exit(1);
         }
-        return Ok(());
+        return;
     }
 
     let db = Db::from_env().await;
@@ -46,22 +48,26 @@ async fn main() -> Result<(), lambda_http::Error> {
     features::meetings::rooms::register(db.clone(), &chime);
     features::meetings::chat::register(&messenger, db.clone());
 
-    let app = router::app(db, chime, messenger.clone());
+    let app = router::app(db, chime, messenger);
+    serve(app).await;
+}
 
-    // AWS_LAMBDA_RUNTIME_API is only set by the Lambda execution environment.
-    if std::env::var("AWS_LAMBDA_RUNTIME_API").is_ok() {
-        return lambda_http::run(app).await;
+/// Code that runs on lambda
+#[cfg(feature = "lambda")]
+async fn serve(app: axum::Router) {
+    if let Err(err) = lambda_http::run(app).await {
+        eprintln!("lambda runtime error: {err}");
+        std::process::exit(1);
     }
+}
 
-    // Sockets from an earlier local run cannot outlive its process, but
-    // their `ws_connections` rows can -- see `Messenger::clear_local_connections`.
-    messenger.clear_local_connections().await;
-
+/// Code that runs locally
+#[cfg(not(feature = "lambda"))]
+async fn serve(app: axum::Router) {
     let port = std::env::var("PORT").unwrap_or_else(|_| "8000".to_string());
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}"))
         .await
         .expect("port is free");
     tracing::info!("listening on http://localhost:{port}");
     axum::serve(listener, app).await.expect("server crashed");
-    Ok(())
 }

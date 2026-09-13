@@ -96,7 +96,7 @@ run:
 .PHONY: build
 build:
 	$(REQUIRE_ENV)
-	cargo lambda build --release --$(ARCH) --output-format zip
+	cargo lambda build --release --$(ARCH) --output-format zip --features lambda
 
 .PHONY: deploy
 deploy: build

@@ -15,6 +15,16 @@ path = "lib/lib.rs"
 name = "omoffice-api"
 path = "main.rs"
 
+# `make run`/`cargo run` builds with no features: `core::communication::
+# web_messenger::local_web_socket` is the whole websocket story, and neither
+# `lambda_http` nor `aws-sdk-apigatewaymanagement` are even compiled in, let
+# alone linked. `cargo lambda build --features lambda` (what `make build`/
+# `make deploy` pass) swaps that for `web_socket` instead. Exactly one of
+# the two transport modules exists in a given binary -- see the module doc
+# on `core::communication::web_messenger`.
+[features]
+lambda = ["dep:lambda_http", "dep:aws-sdk-apigatewaymanagement"]
+
 [dependencies]
 # TLS pinned to rustls/ring: aws-lc-rs (the default) needs cmake and a C
 # toolchain that the eventual Lambda cross-build won't have.
@@ -24,7 +34,7 @@ aws-config = { version = "1", default-features = false, features = [
   "credentials-process",
   "sso",
 ] }
-aws-sdk-apigatewaymanagement = { version = "1", default-features = false, features = [
+aws-sdk-apigatewaymanagement = { version = "1", optional = true, default-features = false, features = [
   "behavior-version-latest",
   "rt-tokio",
   "rustls",
@@ -45,8 +55,9 @@ futures-util = "0.3"
 # rust_crypto is a provider feature: without it jsonwebtoken has no signer.
 jsonwebtoken = { version = "11", default-features = false, features = ["rust_crypto"] }
 # Lambda entry point: `main.rs` hands `router::app` straight to
-# `lambda_http::run` when AWS_LAMBDA_RUNTIME_API says it's running in Lambda.
-lambda_http = "1"
+# `lambda_http::run` when the `lambda` feature is on. `optional`, not a
+# plain dependency: a local build has no use for it at all.
+lambda_http = { version = "1", optional = true }
 # Lets `schema.rs` register each table into `orm::TABLES` at its own
 # declaration, in a linker section `orm::generate` reads -- no separate list
 # to keep in sync by hand.

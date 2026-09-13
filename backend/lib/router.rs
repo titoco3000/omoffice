@@ -1,15 +1,18 @@
 //! Top-level route table: mounts each module's own routes under its prefix.
 //! `/auth/*` is public; `/rbac/*` and `/meeting/*` require a bearer token
-//! (see [`core::auth::require_bearer`]). `/ws` is the one route outside
-//! those three prefixes: a handshake carries no header to check, so the
-//! token rides as `?token=...` instead and the socket authenticates itself
-//! on connect -- see [`web_messenger::upgrade_route`]. The fallback exists
-//! only for a deployed Lambda: `infra/chat.tf`'s WebSocket API delivers
-//! `$connect`/`$default`/`$disconnect` events to this same lambda, and they
+//! (see [`core::auth::require_bearer`]). The websocket route depends on
+//! which transport this build compiled (see the module doc on
+//! `core::communication::web_messenger`): a local build adds `GET /ws` --
+//! a handshake carries no header to check, so the token rides as
+//! `?token=...` instead and the socket authenticates itself on connect,
+//! see [`web_messenger::local_web_socket::upgrade_route`] -- while a
+//! `lambda`-featured build adds a fallback instead, since
+//! `infra/messenger.tf`'s WebSocket API delivers
+//! `$connect`/`$default`/`$disconnect` events to this same lambda and they
 //! claim no route here a real HTTP request ever would -- see
-//! [`web_messenger::lambda_entry`].
+//! [`web_messenger::web_socket::lambda_entry`].
 
-use axum::{middleware, routing::get, Extension, Router};
+use axum::{middleware, Extension, Router};
 use tower_http::cors::{Any, CorsLayer};
 
 use crate::core::auth;
@@ -21,7 +24,7 @@ use crate::core::rbac;
 use crate::features::meetings;
 
 pub fn app(db: Db, chime: ChimeState, messenger: Messenger) -> Router {
-    Router::new()
+    let router = Router::new()
         .nest("/auth", auth::routes())
         .nest(
             "/rbac",
@@ -30,9 +33,17 @@ pub fn app(db: Db, chime: ChimeState, messenger: Messenger) -> Router {
         .nest(
             "/meeting",
             meetings::routes().layer(middleware::from_fn(auth::require_bearer)),
-        )
-        .route("/ws", get(web_messenger::upgrade_route))
-        .fallback(web_messenger::lambda_entry)
+        );
+
+    #[cfg(not(feature = "lambda"))]
+    let router = router.route(
+        "/ws",
+        axum::routing::get(web_messenger::local_web_socket::upgrade_route),
+    );
+    #[cfg(feature = "lambda")]
+    let router = router.fallback(web_messenger::web_socket::lambda_entry);
+
+    router
         .layer(Extension(db))
         .layer(Extension(chime))
         .layer(Extension(messenger))
