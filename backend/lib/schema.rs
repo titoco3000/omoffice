@@ -157,6 +157,22 @@ static MEETING_ATTENDEES: Table = Table::new(
 )
 .primary_key(&["meeting_id", "user_id"]);
 
+// core::communication::web_messenger
+
+#[distributed_slice(orm::TABLES)]
+static WS_CONNECTIONS: Table = Table::new(
+    "ws_connections",
+    &[
+        Column::new("id", "text").primary_key(),
+        Column::new("user_id", "text")
+            .not_null()
+            .references("users", "id"),
+        Column::new("connected_at", "timestamptz")
+            .not_null()
+            .default("now()"),
+    ],
+);
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -180,6 +196,7 @@ mod tests {
                 "org_users",
                 "organizations",
                 "users",
+                "ws_connections",
             ]
         );
     }

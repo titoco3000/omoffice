@@ -29,9 +29,6 @@
 pub mod org_invites;
 pub use org_invites::*;
 
-use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
-
 use axum::extract::{Extension, Path};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -695,6 +692,23 @@ async fn set_online(db: &Db, org_id: &str, user_id: &str, online: bool) -> Resul
     Ok(())
 }
 
+/// The org `user_id`'s connection currently reports as active, if any --
+/// read straight off `org_users.online` rather than kept a second time in
+/// some in-process place. [`register`] only ever flips one org's flag on
+/// after flipping the previous one off, so at most one row is ever `online`
+/// for a given user, and this is exact even across separate Lambda
+/// invocations sharing no memory with each other.
+async fn active_org(db: &Db, user_id: &str) -> Result<Option<String>, RbacError> {
+    let pool = db.pool().await?;
+    let org_id: Option<String> = sqlx::query_scalar(
+        "SELECT org_id FROM org_users WHERE user_id = $1 AND online = true LIMIT 1",
+    )
+    .bind(user_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(org_id)
+}
+
 /// [`set_online`] then [`broadcast_roster`], logging rather than failing --
 /// there is no request here to hand a `RbacError` back to.
 async fn set_online_and_broadcast(
@@ -721,33 +735,35 @@ pub const ACTIVE_CHANNEL: web_messenger::Channel = "org_active";
 
 /// Wire `org_users.online` to the messenger: [`CONNECTION`](web_messenger::CONNECTION)
 /// for a clean disconnect, [`ACTIVE_CHANNEL`] for which org a live
-/// connection currently means. Meant to be called once, at startup.
+/// connection currently means. Both handlers read the current active org
+/// straight off `org_users.online` (via [`active_org`]) rather than keeping
+/// a second, in-process copy of it -- that copy would be per Lambda
+/// invocation, not per user, and so would not survive past the invocation
+/// that set it. Meant to be called once, at startup.
 pub fn register(messenger: &Messenger, db: Db) {
-    // `user_id` -> the one org its connection last reported as active. Keyed
-    // by user rather than by connection: good enough for one tab per user,
-    // which is as far as this proof of concept goes.
-    let active_org: Arc<RwLock<HashMap<String, String>>> = Arc::new(RwLock::new(HashMap::new()));
-
     {
         let db = db.clone();
-        let active_org = active_org.clone();
         messenger.on_message(
             web_messenger::CONNECTION,
             move |messenger, user_id, message| {
                 let db = db.clone();
-                let active_org = active_org.clone();
                 async move {
                     if message.as_str() != Some(web_messenger::DISCONNECTED) {
                         // CONNECTED alone names no org yet -- that arrives
                         // separately on `ACTIVE_CHANNEL`, once the frontend knows.
                         return;
                     }
-                    let org_id = active_org
-                        .write()
-                        .unwrap_or_else(|err| err.into_inner())
-                        .remove(&user_id);
-                    if let Some(org_id) = org_id {
-                        set_online_and_broadcast(&messenger, &db, &org_id, &user_id, false).await;
+                    match active_org(&db, &user_id).await {
+                        Ok(Some(org_id)) => {
+                            set_online_and_broadcast(&messenger, &db, &org_id, &user_id, false)
+                                .await;
+                        }
+                        Ok(None) => {}
+                        Err(err) => {
+                            tracing::warn!(
+                                "rbac: could not look up {user_id}'s active org: {err:?}"
+                            )
+                        }
                     }
                 }
             },
@@ -756,17 +772,16 @@ pub fn register(messenger: &Messenger, db: Db) {
 
     messenger.on_message(ACTIVE_CHANNEL, move |messenger, user_id, message| {
         let db = db.clone();
-        let active_org = active_org.clone();
         async move {
             let new_org = message
                 .get("org_id")
                 .and_then(Value::as_str)
                 .map(str::to_string);
-            let previous = {
-                let mut active_org = active_org.write().unwrap_or_else(|err| err.into_inner());
-                match &new_org {
-                    Some(org_id) => active_org.insert(user_id.clone(), org_id.clone()),
-                    None => active_org.remove(&user_id),
+            let previous = match active_org(&db, &user_id).await {
+                Ok(previous) => previous,
+                Err(err) => {
+                    tracing::warn!("rbac: could not look up {user_id}'s active org: {err:?}");
+                    return;
                 }
             };
             if previous == new_org {

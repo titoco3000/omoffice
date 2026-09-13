@@ -427,5 +427,38 @@
       "org_id",
       "user_id"
     ]
+  },
+  {
+    "name": "ws_connections",
+    "columns": [
+      {
+        "name": "id",
+        "sql_type": "text",
+        "not_null": false,
+        "primary_key": true,
+        "default": null,
+        "foreign_key": null
+      },
+      {
+        "name": "user_id",
+        "sql_type": "text",
+        "not_null": true,
+        "primary_key": false,
+        "default": null,
+        "foreign_key": [
+          "users",
+          "id"
+        ]
+      },
+      {
+        "name": "connected_at",
+        "sql_type": "timestamptz",
+        "not_null": true,
+        "primary_key": false,
+        "default": "now()",
+        "foreign_key": null
+      }
+    ],
+    "primary_key": []
   }
 ]

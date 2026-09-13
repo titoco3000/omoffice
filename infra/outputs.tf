@@ -43,14 +43,14 @@ output "database_endpoint" {
   value       = local.db_endpoint
 }
 
-output "chat_ws_url" {
+output "messenger_ws_url" {
   description = "Browser-facing wss:// URL for the messenger's WebSocket API (?token=...)."
-  value       = local.chat_ws_url
+  value       = local.messenger_ws_url
 }
 
-output "chat_management_endpoint" {
-  description = "https:// endpoint the lambda posts chat messages back through."
-  value       = local.chat_management_endpoint
+output "messenger_management_endpoint" {
+  description = "https:// endpoint the lambda posts messenger messages back through."
+  value       = local.messenger_management_endpoint
 }
 
 output "backend_env_file" {
@@ -60,7 +60,7 @@ output "backend_env_file" {
     API_URL=${aws_apigatewayv2_stage.default.invoke_url}
     JWT_SECRET_ID=${aws_secretsmanager_secret.jwt.name}
     DATABASE_ENDPOINT=${local.db_endpoint}
-    CHAT_MANAGEMENT_ENDPOINT=${local.chat_management_endpoint}
+    MESSENGER_MANAGEMENT_ENDPOINT=${local.messenger_management_endpoint}
   EOT
 }
 
@@ -86,6 +86,6 @@ output "frontend_env_file" {
     FRONTEND_BUCKET=${aws_s3_bucket.frontend.bucket}
     FRONTEND_DISTRIBUTION_ID=${aws_cloudfront_distribution.frontend.id}
     FRONTEND_URL=https://${aws_cloudfront_distribution.frontend.domain_name}
-    CHAT_WS_URL=${local.chat_ws_url}
+    MESSENGER_WS_URL=${local.messenger_ws_url}
   EOT
 }

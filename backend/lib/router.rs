@@ -2,8 +2,12 @@
 //! `/auth/*` is public; `/rbac/*` and `/meeting/*` require a bearer token
 //! (see [`core::auth::require_bearer`]). `/ws` is the one route outside
 //! those three prefixes: a handshake carries no header to check, so the
-//! socket authenticates itself once connected instead -- see
-//! [`web_messenger::upgrade_route`].
+//! token rides as `?token=...` instead and the socket authenticates itself
+//! on connect -- see [`web_messenger::upgrade_route`]. The fallback exists
+//! only for a deployed Lambda: `infra/chat.tf`'s WebSocket API delivers
+//! `$connect`/`$default`/`$disconnect` events to this same lambda, and they
+//! claim no route here a real HTTP request ever would -- see
+//! [`web_messenger::lambda_entry`].
 
 use axum::{middleware, routing::get, Extension, Router};
 use tower_http::cors::{Any, CorsLayer};
@@ -27,7 +31,8 @@ pub fn app(db: Db, chime: ChimeState, messenger: Messenger) -> Router {
             "/meeting",
             meetings::routes().layer(middleware::from_fn(auth::require_bearer)),
         )
-        .route("/ws/{user_id}", get(web_messenger::upgrade_route))
+        .route("/ws", get(web_messenger::upgrade_route))
+        .fallback(web_messenger::lambda_entry)
         .layer(Extension(db))
         .layer(Extension(chime))
         .layer(Extension(messenger))

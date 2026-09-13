@@ -1,12 +1,14 @@
-//! Messaging, as one interface with two directions.
+//! Messaging, as one interface with two directions, over either of two
+//! transports.
 //!
 //! **Out**: [`Messenger::send`] takes a channel name, a JSON message and a
 //! list of recipients (user ids); it resolves each id to whichever socket(s)
-//! it currently has open. **In**: [`Messenger::on_message`] registers a
-//! handler on a channel, called once per frame a client sends on it -- every
-//! handler registered on that channel runs, not just the first or the last,
-//! so two features can both care about the same channel without one
-//! silently displacing the other's handler.
+//! it currently has open, from [`connections`]. **In**:
+//! [`Messenger::on_message`] registers a handler on a channel, called once
+//! per frame a client sends on it -- every handler registered on that
+//! channel runs, not just the first or the last, so two features can both
+//! care about the same channel without one silently displacing the other's
+//! handler.
 //!
 //! Connecting and disconnecting is itself a channel -- [`CONNECTION`] --
 //! rather than a separate presence table: anything that cares who is online
@@ -18,20 +20,49 @@
 //!
 //! Nothing above this module knows a socket exists. The wire frame is
 //! `{"channel": ..., "message": ...}` in both directions, so one socket
-//! carries every channel a client cares about; see [`web_sockets::Hub`] for
-//! the registry underneath.
+//! carries every channel a client cares about.
+//!
+//! **Two transports, one roster.** A local run (`make run`) holds the
+//! socket itself: [`web_sockets::Hub`] is a plain in-process registry, and
+//! [`upgrade_route`] is a normal axum WebSocket upgrade. A deployed Lambda
+//! never holds a socket at all -- `infra/messenger.tf`'s WebSocket API
+//! does, and each `$connect`/`$default`/`$disconnect` event is its own,
+//! independent invocation with no memory shared with the one before it.
+//! [`lambda_entry`] is the router's fallback that catches those events
+//! (told apart from a genuine unmatched HTTP path by the [`lambda_http`]
+//! `RequestContext` extension), and pushes outbound frames through
+//! [`apigw_management::ApiGatewayManagement`] instead of the in-process hub
+//! -- private to this module, since nothing outside it needs to know that
+//! transport exists. [`connections`] (the `ws_connections` table) is what
+//! makes the two transports interchangeable to everything above this
+//! module: "which sockets does user X have open" is one query, regardless
+//! of which invocation opened them, and which of the two transports a given
+//! id is actually on is answered at delivery time (try the hub, fall back
+//! to the Management API) rather than stored.
 
+mod apigw_management;
+pub mod connections;
 pub mod web_sockets;
 
 use std::collections::HashMap;
 use std::future::Future;
 use std::sync::{Arc, RwLock};
 
+use axum::body::to_bytes;
 use axum::extract::ws::WebSocketUpgrade;
-use axum::extract::{Extension, Path};
-use axum::response::Response;
+use axum::extract::{Extension, Query, Request};
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
 use futures_util::future::BoxFuture;
+use lambda_http::aws_lambda_events::apigw::ApiGatewayWebsocketProxyRequestContext;
+use lambda_http::request::RequestContext;
+use serde::Deserialize;
 use serde_json::Value;
+use uuid::Uuid;
+
+use crate::core::auth;
+use crate::core::data::db::Db;
+use apigw_management::{ApiGatewayManagement, ApiGatewayManagementError};
 
 /// A channel name both the browser and backend agree on, e.g. `"chat"` or
 /// `"meeting_chat"`. A feature owns one: it registers a handler for messages
@@ -41,7 +72,7 @@ pub type Channel = &'static str;
 /// Not a message a client ever sends -- fired locally when a socket opens or
 /// closes, carrying [`CONNECTED`]/[`DISCONNECTED`] as its message. Subscribe
 /// to it the same way as any other channel to learn who just came online or
-/// went away, without touching [`web_sockets::Hub`] directly.
+/// went away, without touching the socket registry directly.
 pub const CONNECTION: Channel = "connection";
 pub const CONNECTED: &str = "connected";
 pub const DISCONNECTED: &str = "disconnected";
@@ -52,30 +83,64 @@ type Handler = Arc<dyn Fn(Messenger, String, Value) -> BoxFuture<'static, ()> + 
 /// clone, same as [`crate::core::data::db::Db`].
 #[derive(Clone)]
 pub struct Messenger {
+    db: Db,
+    management: ApiGatewayManagement,
     hub: web_sockets::Hub,
     handlers: Arc<RwLock<HashMap<Channel, Vec<Handler>>>>,
 }
 
 impl Messenger {
-    pub fn new() -> Self {
+    /// `ApiGatewayManagement` is built here, from the environment, rather
+    /// than handed in -- a caller (`main.rs`) has no reason to know that
+    /// transport exists at all, let alone construct it.
+    pub async fn new(db: Db) -> Self {
         Self {
+            db,
+            management: ApiGatewayManagement::from_env().await,
             hub: web_sockets::Hub::default(),
             handlers: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
-    /// Send `message` on `channel` to each of `to` (user ids). Best effort:
-    /// a recipient with no open socket simply misses it.
-    pub async fn send(&self, channel: Channel, to: &[String], message: Value) {
-        let frame = serde_json::json!({ "channel": channel, "message": message });
-        for user_id in to {
-            self.hub.send(user_id, &frame).await;
+    /// Drop every local socket row left over from an earlier run. Local-run
+    /// startup only; a Lambda never calls this. See [`connections::clear_local`].
+    pub async fn clear_local_connections(&self) {
+        if let Err(err) = connections::clear_local(&self.db).await {
+            tracing::warn!("messenger: could not clear stale local connections: {err:?}");
         }
     }
 
-    /// True if `user_id` has at least one open socket right now.
+    /// Send `message` on `channel` to each of `to` (user ids), over
+    /// whichever transport each of their sockets is actually on. Best
+    /// effort: a recipient with no open socket simply misses it.
+    pub async fn send(&self, channel: Channel, to: &[String], message: Value) {
+        let frame = serde_json::json!({ "channel": channel, "message": message });
+        let Ok(bytes) = serde_json::to_vec(&frame) else {
+            return;
+        };
+        for user_id in to {
+            let ids = match connections::for_user(&self.db, user_id).await {
+                Ok(ids) => ids,
+                Err(err) => {
+                    tracing::warn!("messenger: cannot list {user_id}'s sockets: {err:?}");
+                    continue;
+                }
+            };
+            for id in ids {
+                self.deliver(&id, &frame, &bytes).await;
+            }
+        }
+    }
+
+    /// True if `user_id` has at least one open socket right now, on either
+    /// transport.
     pub async fn is_connected(&self, user_id: &str) -> bool {
-        self.hub.is_connected(user_id).await
+        connections::is_connected(&self.db, user_id)
+            .await
+            .unwrap_or_else(|err| {
+                tracing::warn!("messenger: could not check {user_id}'s connections: {err:?}");
+                false
+            })
     }
 
     /// Register `handler` on `channel`. Additive: a second registration on
@@ -119,6 +184,16 @@ impl Messenger {
         }
     }
 
+    /// Look the sender up by connection id, then dispatch -- what both
+    /// [`upgrade_route`] and [`lambda_entry`]'s `message` handler reduce to,
+    /// once each has its own way of finding a connection id.
+    async fn dispatch_from_connection(&self, id: &str, frame: Value) {
+        let Ok(Some(user_id)) = connections::by_id(&self.db, id).await else {
+            return;
+        };
+        self.dispatch(&user_id, frame).await;
+    }
+
     async fn notify_connection(&self, user_id: &str, state: &str) {
         self.dispatch(
             user_id,
@@ -126,37 +201,164 @@ impl Messenger {
         )
         .await;
     }
-}
 
-impl Default for Messenger {
-    fn default() -> Self {
-        Self::new()
+    /// One frame down one socket. Tries the in-process hub first; not
+    /// registered there means it must be an `apigw` connection instead, so
+    /// this falls back to the Management API -- see the module doc on why
+    /// nothing stores which of the two a connection is actually on. A
+    /// `Gone` reply means the client vanished without a `$disconnect`, so
+    /// the row is dropped rather than left to fail every future push; any
+    /// other error is logged and otherwise ignored.
+    async fn deliver(&self, id: &str, frame: &Value, bytes: &[u8]) {
+        if self.hub.send(id, frame).await {
+            return;
+        }
+        match self.management.post(id, bytes).await {
+            Ok(()) => {}
+            Err(ApiGatewayManagementError::Gone) => self.forget(id).await,
+            Err(err) => tracing::warn!("messenger: could not push to a connection: {err}"),
+        }
+    }
+
+    /// Forget a socket -- the one place [`connections::remove`] is ever
+    /// called, so whichever of the three paths finds a connection gone
+    /// (`$disconnect`, a closed local socket, a `Gone` reply while pushing
+    /// to it) notices exactly once, the same way, and fires
+    /// [`DISCONNECTED`].
+    async fn forget(&self, id: &str) {
+        match connections::remove(&self.db, id).await {
+            Ok(Some(user_id)) => self.notify_connection(&user_id, DISCONNECTED).await,
+            Ok(None) => {}
+            Err(err) => tracing::warn!("messenger: could not forget a connection: {err:?}"),
+        }
     }
 }
 
-/// `GET /ws/{user_id}` -- placeholder auth: a real version reads a bearer
-/// token the same way [`crate::core::auth::require_bearer`] does, since a
-/// handshake carries no header to check. One socket per browser tab,
-/// carrying every channel.
+/// Query string on a socket's URL: a handshake carries no header, so the
+/// bearer token rides as `?token=...` instead.
+#[derive(Debug, Deserialize)]
+pub struct WsAuth {
+    pub token: String,
+}
+
+/// `GET /ws?token=...` -- the local-dev socket, one per browser tab,
+/// carrying every channel; this process holds it open itself.
 pub async fn upgrade_route(
     Extension(messenger): Extension<Messenger>,
-    Path(user_id): Path<String>,
+    Query(params): Query<WsAuth>,
     ws: WebSocketUpgrade,
 ) -> Response {
-    use axum::response::IntoResponse;
+    let claims = match auth::verify(&params.token).await {
+        Ok(claims) => claims,
+        Err(err) => return err.into_response(),
+    };
+
     ws.on_upgrade(move |socket| async move {
-        messenger.notify_connection(&user_id, CONNECTED).await;
+        // Prefixed so `connections::clear_local` can find it again at the
+        // next local startup -- see that function's doc.
+        let id = format!("local-{}", Uuid::new_v4());
+        if let Err(err) = connections::record(&messenger.db, &id, &claims.sub).await {
+            tracing::warn!("messenger: cannot record a local connection: {err:?}");
+            return;
+        }
+        messenger.notify_connection(&claims.sub, CONNECTED).await;
+
         let inbound = messenger.clone();
-        let id = user_id.clone();
+        let bound_id = id.clone();
         messenger
             .hub
-            .bind(socket, user_id.clone(), move |frame| {
+            .bind(socket, id.clone(), move |frame| {
                 let messenger = inbound.clone();
-                let id = id.clone();
-                async move { messenger.dispatch(&id, frame).await }
+                let id = bound_id.clone();
+                async move { messenger.dispatch_from_connection(&id, frame).await }
             })
             .await;
-        messenger.notify_connection(&user_id, DISCONNECTED).await;
+
+        messenger.forget(&id).await;
     })
     .into_response()
+}
+
+/// The router's fallback: catches every WebSocket-API event, told apart
+/// from a genuine unmatched HTTP path by the [`RequestContext::WebSocket`]
+/// extension. `infra/messenger.tf` points that API at this same lambda.
+pub async fn lambda_entry(
+    Extension(messenger): Extension<Messenger>,
+    request: Request,
+) -> Response {
+    let Some(RequestContext::WebSocket(ctx)) =
+        request.extensions().get::<RequestContext>().cloned()
+    else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+
+    match ctx.event_type.as_deref() {
+        Some("CONNECT") => connect(&messenger, request.uri(), &ctx).await,
+        Some("DISCONNECT") => disconnect(&messenger, &ctx).await,
+        // Only one route ($default), so anything else is a message.
+        _ => message(&messenger, &ctx, request.into_body()).await,
+    }
+}
+
+/// `$connect`: verify the token and record the connection. A non-2xx here
+/// rejects the handshake outright.
+async fn connect(
+    messenger: &Messenger,
+    uri: &axum::http::Uri,
+    ctx: &ApiGatewayWebsocketProxyRequestContext,
+) -> Response {
+    let Some(connection_id) = ctx.connection_id.clone() else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    let params = match Query::<WsAuth>::try_from_uri(uri) {
+        Ok(Query(params)) => params,
+        Err(err) => return err.into_response(),
+    };
+    let claims = match auth::verify(&params.token).await {
+        Ok(claims) => claims,
+        Err(err) => return err.into_response(),
+    };
+
+    match connections::record(&messenger.db, &connection_id, &claims.sub).await {
+        Ok(()) => {
+            messenger.notify_connection(&claims.sub, CONNECTED).await;
+            StatusCode::OK.into_response()
+        }
+        Err(err) => err.into_response(),
+    }
+}
+
+/// `$disconnect`: forget the connection. Always 200 -- nothing left to
+/// reject once the client is already gone.
+async fn disconnect(
+    messenger: &Messenger,
+    ctx: &ApiGatewayWebsocketProxyRequestContext,
+) -> Response {
+    if let Some(connection_id) = &ctx.connection_id {
+        messenger.forget(connection_id).await;
+    }
+    StatusCode::OK.into_response()
+}
+
+/// A frame on the deployed socket. Always answers 200: the sender is told
+/// nothing about delivery either way.
+async fn message(
+    messenger: &Messenger,
+    ctx: &ApiGatewayWebsocketProxyRequestContext,
+    body: axum::body::Body,
+) -> Response {
+    let ok = StatusCode::OK.into_response();
+    let Some(connection_id) = ctx.connection_id.clone() else {
+        return ok;
+    };
+    let Ok(bytes) = to_bytes(body, 64 * 1024).await else {
+        return ok;
+    };
+    let Ok(frame) = serde_json::from_slice::<Value>(&bytes) else {
+        return ok;
+    };
+    messenger
+        .dispatch_from_connection(&connection_id, frame)
+        .await;
+    ok
 }

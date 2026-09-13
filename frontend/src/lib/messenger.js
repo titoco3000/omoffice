@@ -7,10 +7,22 @@
 
 import { decodeJwt } from "./jwt";
 
-const BASE_URL = import.meta.env.VITE_API_URL ?? "";
+// `dev`/`prod` talk to `infra/messenger.tf`'s own WebSocket API -- the HTTP
+// API `VITE_API_URL` points at cannot proxy a WebSocket handshake at all.
+// `local` has no such API (`make run` never gets a WebSocket-API event), so
+// there `/ws` is just another route on the one local server `VITE_API_URL`
+// already points at.
+const WS_URL =
+  import.meta.env.VITE_MESSENGER_WS_URL ||
+  `${(import.meta.env.VITE_API_URL ?? "").replace(/\/+$/, "")}/ws`.replace(
+    /^http/,
+    "ws",
+  );
 
-function transportUrl(userId) {
-  return `${BASE_URL}/ws/${encodeURIComponent(userId)}`.replace(/^http/, "ws");
+// A handshake carries no header to check, so the bearer token rides as
+// `?token=...` instead -- see `core::communication::web_messenger::WsAuth`.
+function transportUrl(token) {
+  return `${WS_URL}?token=${encodeURIComponent(token)}`;
 }
 
 class Messenger {
@@ -40,7 +52,7 @@ class Messenger {
     if (!userId || this.userId === userId) return;
     this.transport?.close();
     this.userId = userId;
-    const transport = new WebSocket(transportUrl(userId));
+    const transport = new WebSocket(transportUrl(token));
     transport.onopen = () => {
       this.pending.forEach((frame) => transport.send(frame));
       this.pending = [];

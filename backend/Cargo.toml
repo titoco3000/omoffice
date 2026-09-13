@@ -24,6 +24,11 @@ aws-config = { version = "1", default-features = false, features = [
   "credentials-process",
   "sso",
 ] }
+aws-sdk-apigatewaymanagement = { version = "1", default-features = false, features = [
+  "behavior-version-latest",
+  "rt-tokio",
+  "rustls",
+] }
 aws-sdk-chimesdkmeetings = { version = "1", default-features = false, features = [
   "behavior-version-latest",
   "rt-tokio",
@@ -39,6 +44,9 @@ chrono = { version = "0.4", default-features = false, features = ["serde"] }
 futures-util = "0.3"
 # rust_crypto is a provider feature: without it jsonwebtoken has no signer.
 jsonwebtoken = { version = "11", default-features = false, features = ["rust_crypto"] }
+# Lambda entry point: `main.rs` hands `router::app` straight to
+# `lambda_http::run` when AWS_LAMBDA_RUNTIME_API says it's running in Lambda.
+lambda_http = "1"
 # Lets `schema.rs` register each table into `orm::TABLES` at its own
 # declaration, in a linker section `orm::generate` reads -- no separate list
 # to keep in sync by hand.

@@ -1,8 +1,8 @@
-//! Live browser sockets held by this process. Registered under a fresh
-//! connection id (one user may have several tabs open, each its own
-//! connection) but addressed by user id, so [`Hub::send`] fans out to every
-//! tab at once without exposing a connection id at all. Knows nothing about
-//! channels, chat or invites -- only that sockets exist and belong to users.
+//! Live browser sockets held by *this* process -- the local-dev half of
+//! delivery. Keyed by connection id, the same id `connections` stores, so
+//! [`super::Messenger`] resolves a roster once (from the database) and
+//! delivers to whichever half actually holds the socket without a second
+//! lookup here. Knows nothing about channels, chat or invites.
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -12,83 +12,53 @@ use axum::extract::ws::{Message, WebSocket};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::Value;
 use tokio::sync::{mpsc, RwLock};
-use uuid::Uuid;
 
+/// The outbound half of one registered socket; [`Hub::bind`] owns the
+/// receiving half.
 type Outbox = mpsc::UnboundedSender<Value>;
 
-#[derive(Default)]
-struct Sockets {
-    /// One entry per open tab.
-    by_connection: HashMap<String, Outbox>,
-    /// Which connections belong to which user, so `send` need not scan
-    /// every open socket to find one user's tabs.
-    by_user: HashMap<String, Vec<String>>,
-}
-
-/// Registry of open sockets. Cheap to clone -- an `Arc` inside.
+/// Registry of open sockets, keyed by connection id. Cheap to clone -- an
+/// `Arc` inside, same as [`crate::core::data::db::Db`].
 #[derive(Clone, Default)]
 pub struct Hub {
-    sockets: Arc<RwLock<Sockets>>,
+    sockets: Arc<RwLock<HashMap<String, Outbox>>>,
 }
 
 impl Hub {
-    async fn register(&self, user_id: &str) -> (String, mpsc::UnboundedReceiver<Value>) {
-        let connection_id = Uuid::new_v4().to_string();
+    async fn register(&self, connection_id: &str) -> mpsc::UnboundedReceiver<Value> {
         let (tx, rx) = mpsc::unbounded_channel();
-        let mut sockets = self.sockets.write().await;
-        sockets.by_connection.insert(connection_id.clone(), tx);
-        sockets
-            .by_user
-            .entry(user_id.to_string())
-            .or_default()
-            .push(connection_id.clone());
-        (connection_id, rx)
-    }
-
-    async fn unregister(&self, user_id: &str, connection_id: &str) {
-        let mut sockets = self.sockets.write().await;
-        sockets.by_connection.remove(connection_id);
-        if let Some(connections) = sockets.by_user.get_mut(user_id) {
-            connections.retain(|id| id != connection_id);
-            if connections.is_empty() {
-                sockets.by_user.remove(user_id);
-            }
-        }
-    }
-
-    /// Push `frame` to every tab `user_id` has open. Nobody registered under
-    /// that id is a no-op, not an error -- nobody is listening, so nobody
-    /// can be told.
-    pub async fn send(&self, user_id: &str, frame: &Value) {
-        let sockets = self.sockets.read().await;
-        let Some(connections) = sockets.by_user.get(user_id) else {
-            return;
-        };
-        for connection_id in connections {
-            if let Some(tx) = sockets.by_connection.get(connection_id) {
-                let _ = tx.send(frame.clone());
-            }
-        }
-    }
-
-    pub async fn is_connected(&self, user_id: &str) -> bool {
         self.sockets
-            .read()
+            .write()
             .await
-            .by_user
-            .get(user_id)
-            .is_some_and(|connections| !connections.is_empty())
+            .insert(connection_id.to_string(), tx);
+        rx
+    }
+
+    async fn unregister(&self, connection_id: &str) {
+        self.sockets.write().await.remove(connection_id);
+    }
+
+    /// Push `frame` down one socket, if this process holds it. Returns
+    /// whether it does -- that is also how [`super::Messenger`] tells a
+    /// local connection apart from an `apigw` one without a stored label:
+    /// not registered here means it must be reached through the Management
+    /// API instead.
+    pub async fn send(&self, connection_id: &str, frame: &Value) -> bool {
+        let Some(tx) = self.sockets.read().await.get(connection_id).cloned() else {
+            return false;
+        };
+        tx.send(frame.clone()).is_ok()
     }
 
     /// Drive one accepted socket end to end until it closes, then
     /// unregisters itself -- callers never call [`unregister`](Self::unregister)
     /// directly. `on_message` runs once per JSON frame the client sends.
-    pub async fn bind<F, Fut>(&self, socket: WebSocket, user_id: String, on_message: F)
+    pub async fn bind<F, Fut>(&self, socket: WebSocket, connection_id: String, on_message: F)
     where
         F: Fn(Value) -> Fut + Send + 'static,
         Fut: Future<Output = ()> + Send,
     {
-        let (connection_id, mut rx) = self.register(&user_id).await;
+        let mut rx = self.register(&connection_id).await;
         let (mut sink, mut stream) = socket.split();
 
         let outbound = tokio::spawn(async move {
@@ -111,6 +81,58 @@ impl Hub {
         }
 
         outbound.abort();
-        self.unregister(&user_id, &connection_id).await;
+        self.unregister(&connection_id).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// `bind` needs a real `WebSocket`, so these exercise the registry directly.
+    #[tokio::test]
+    async fn a_registered_socket_receives_what_is_sent_to_its_connection_id() {
+        let hub = Hub::default();
+        let mut rx = hub.register("conn-1").await;
+
+        hub.send("conn-1", &json!({ "text": "hi" })).await;
+
+        assert_eq!(rx.recv().await, Some(json!({ "text": "hi" })));
+    }
+
+    #[tokio::test]
+    async fn sending_to_an_unregistered_connection_is_a_no_op() {
+        let hub = Hub::default();
+        // Would panic on a missing key if this indexed instead of `get`-ing.
+        hub.send("conn-nobody", &json!({ "text": "hi" })).await;
+    }
+
+    #[tokio::test]
+    async fn a_second_tab_is_its_own_connection() {
+        let hub = Hub::default();
+        let mut rx_a = hub.register("conn-a").await;
+        let mut rx_b = hub.register("conn-b").await;
+
+        hub.send("conn-a", &json!({ "text": "hi" })).await;
+
+        assert_eq!(rx_a.recv().await, Some(json!({ "text": "hi" })));
+        assert!(rx_b.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn unregistering_stops_delivery_without_disturbing_another_tab() {
+        let hub = Hub::default();
+        let mut rx_a = hub.register("conn-a").await;
+        let mut rx_b = hub.register("conn-b").await;
+
+        hub.unregister("conn-a").await;
+        hub.send("conn-a", &json!({ "text": "hi" })).await;
+        hub.send("conn-b", &json!({ "text": "hi" })).await;
+
+        // The channel is dropped along with the registration, so the sender
+        // half is gone too and `recv` reports the channel closed.
+        assert_eq!(rx_a.recv().await, None);
+        assert_eq!(rx_b.recv().await, Some(json!({ "text": "hi" })));
     }
 }

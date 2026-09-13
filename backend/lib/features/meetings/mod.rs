@@ -848,7 +848,9 @@ async fn create_invite_route(
     Path(meeting_id): Path<String>,
     Json(body): Json<CreateInviteBody>,
 ) -> Result<Json<Value>, MeetingError> {
-    find(&db, &meeting_id).await?.ok_or(MeetingError::NotFound)?;
+    find(&db, &meeting_id)
+        .await?
+        .ok_or(MeetingError::NotFound)?;
     if !attendee_ids(&db, &meeting_id).await?.contains(&claims.sub) {
         return Err(MeetingError::Forbidden);
     }
@@ -871,7 +873,9 @@ async fn revoke_invite_route(
     Extension(claims): Extension<Claims>,
     Path((meeting_id, invite_id)): Path<(String, String)>,
 ) -> Result<Json<Value>, MeetingError> {
-    find(&db, &meeting_id).await?.ok_or(MeetingError::NotFound)?;
+    find(&db, &meeting_id)
+        .await?
+        .ok_or(MeetingError::NotFound)?;
     if !attendee_ids(&db, &meeting_id).await?.contains(&claims.sub) {
         return Err(MeetingError::Forbidden);
     }
