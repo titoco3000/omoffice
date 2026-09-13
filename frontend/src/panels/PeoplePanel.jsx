@@ -1,0 +1,130 @@
+import { useEffect, useState } from "react";
+import { decodeJwt } from "../lib/jwt";
+import { messenger } from "../lib/messenger";
+import { ORG_ROSTER_CHANNEL, listMembers } from "../lib/rbac";
+
+// Everyone online in this org, grouped by whichever meeting (if any) they're
+// currently in -- crossing `core::rbac`'s roster (backend/lib/core/rbac/mod.rs)
+// with `session.meetings`' own attendee lists
+// (`features::meetings::MeetingWithAttendees`, backend/lib/features/meetings/mod.rs).
+// Clicking a member reveals the one action that applies to them: join their
+// meeting, or invite them to one (starting the viewer's own if they don't
+// have one yet).
+export default function PeoplePanel({ token, org, session }) {
+  const myId = decodeJwt(token)?.sub;
+  const { meetings, myMeetingId, join, inviteUser } = session;
+  const [members, setMembers] = useState([]);
+  const [selected, setSelected] = useState(null);
+  const [error, setError] = useState(null);
+
+  const reloadMembers = () =>
+    listMembers(token, org.id)
+      .then((data) => setMembers(data.members ?? []))
+      .catch((err) => setError(err.message));
+
+  useEffect(() => {
+    reloadMembers();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token, org.id]);
+
+  useEffect(
+    () =>
+      messenger.on(ORG_ROSTER_CHANNEL, (message) => {
+        if (message.org_id === org.id && message.members)
+          setMembers(message.members);
+      }),
+    [org.id],
+  );
+
+  const meetingIdByUser = {};
+  for (const meeting of meetings) {
+    for (const userId of meeting.attendees ?? []) {
+      meetingIdByUser[userId] = meeting.id;
+    }
+  }
+
+  const online = members.filter(
+    (member) => member.online && member.user_id !== myId,
+  );
+  const groups = new Map(); // meeting_id -> [member, ...]
+  const alone = [];
+  for (const member of online) {
+    const meetingId = meetingIdByUser[member.user_id];
+    if (meetingId) {
+      if (!groups.has(meetingId)) groups.set(meetingId, []);
+      groups.get(meetingId).push(member);
+    } else {
+      alone.push(member);
+    }
+  }
+
+  const toggle = (userId) =>
+    setSelected((current) => (current === userId ? null : userId));
+
+  const renderMember = (member, meetingId) => (
+    <li key={member.user_id} className="rounded-card border px-3 py-2">
+      <button
+        onClick={() => toggle(member.user_id)}
+        className="w-full text-left text-ink"
+      >
+        {member.display_name}
+      </button>
+      {selected === member.user_id && (
+        <div className="mt-2">
+          {meetingId ? (
+            <button
+              onClick={() => join(meetingId)}
+              disabled={!!myMeetingId}
+              className="rounded-card bg-brand px-3 py-1 text-sm text-on-brand hover:bg-brand-strong disabled:opacity-50"
+            >
+              Join their meeting
+            </button>
+          ) : (
+            <button
+              onClick={() => inviteUser(member.user_id)}
+              className="rounded-card bg-brand px-3 py-1 text-sm text-on-brand hover:bg-brand-strong"
+            >
+              Invite to a meeting
+            </button>
+          )}
+        </div>
+      )}
+    </li>
+  );
+
+  return (
+    <section className="rounded-card border bg-surface p-5">
+      <h2 className="text-lg font-semibold text-ink">People</h2>
+
+      {online.length === 0 && (
+        <p className="mt-3 text-sm text-ink-muted">No one else is online.</p>
+      )}
+
+      {[...groups.entries()].map(([meetingId, group]) => (
+        <div key={meetingId} className="mt-4">
+          <h3 className="text-xs font-medium uppercase text-ink-muted">
+            In a meeting
+          </h3>
+          <ul className="mt-1.5 space-y-1.5 text-sm">
+            {group.map((member) => renderMember(member, meetingId))}
+          </ul>
+        </div>
+      ))}
+
+      {alone.length > 0 && (
+        <div className="mt-4">
+          {groups.size > 0 && (
+            <h3 className="text-xs font-medium uppercase text-ink-muted">
+              Online
+            </h3>
+          )}
+          <ul className="mt-1.5 space-y-1.5 text-sm">
+            {alone.map((member) => renderMember(member, null))}
+          </ul>
+        </div>
+      )}
+
+      {error && <p className="mt-3 text-sm text-danger">{error}</p>}
+    </section>
+  );
+}

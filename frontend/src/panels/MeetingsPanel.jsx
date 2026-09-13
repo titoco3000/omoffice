@@ -1,0 +1,155 @@
+import { decodeJwt } from "../lib/jwt";
+import * as chime from "../lib/chime";
+
+export default function MeetingsPanel({ token, session }) {
+  const myId = decodeJwt(token)?.sub;
+  const {
+    audioRef,
+    selfVideoRef,
+    meetings,
+    myMeetingId,
+    roomStatus,
+    cameraOn,
+    micMuted,
+    sharingScreen,
+    remoteTiles,
+    error,
+    create,
+    join,
+    leave,
+    toggleCamera,
+    toggleMic,
+    toggleScreenShare,
+  } = session;
+
+  return (
+    <section className="rounded-card border bg-surface p-5">
+      {/* Chime's audio output -- never rendered as a control, just a sink. */}
+      <audio ref={audioRef} autoPlay hidden />
+
+      <div className="flex items-center justify-between">
+        <h2 className="text-lg font-semibold text-ink">Meetings</h2>
+        <button
+          onClick={() => create()}
+          disabled={!!myMeetingId}
+          className="rounded-card bg-brand px-3 py-1.5 text-sm font-medium text-on-brand hover:bg-brand-strong disabled:opacity-50"
+        >
+          New meeting
+        </button>
+      </div>
+
+      {myMeetingId && (
+        <div className="mt-3 rounded-card border bg-bg p-3">
+          <div className="flex flex-wrap gap-2">
+            {/* Own preview -- a chimeless meeting still shows this, see
+                `setCameraOn` in lib/chime.js. Mirrored and muted: it's a
+                mirror of yourself, not a source of sound. */}
+            <video
+              ref={selfVideoRef}
+              autoPlay
+              muted
+              playsInline
+              className="aspect-video w-40 -scale-x-100 rounded-card bg-black object-cover"
+            />
+            {remoteTiles.map((tile) => (
+              <video
+                key={tile.tileId}
+                ref={(element) => chime.bindRemoteVideo(tile.tileId, element)}
+                autoPlay
+                playsInline
+                className={`aspect-video rounded-card bg-black object-cover ${
+                  tile.isContent ? "w-full sm:w-80" : "w-40"
+                }`}
+              />
+            ))}
+          </div>
+
+          <div className="mt-3 flex flex-wrap gap-2 text-sm">
+            <button
+              onClick={toggleCamera}
+              className={`rounded-card border px-3 py-1.5 ${cameraOn ? "text-ink" : "text-ink-muted"}`}
+            >
+              {cameraOn ? "Turn camera off" : "Turn camera on"}
+            </button>
+            <button
+              onClick={toggleMic}
+              className={`rounded-card border px-3 py-1.5 ${micMuted ? "text-ink-muted" : "text-ink"}`}
+            >
+              {micMuted ? "Unmute" : "Mute"}
+            </button>
+            <button
+              onClick={toggleScreenShare}
+              disabled={roomStatus !== "connected"}
+              className={`rounded-card border px-3 py-1.5 disabled:opacity-50 ${sharingScreen ? "text-ink" : "text-ink-muted"}`}
+            >
+              {sharingScreen ? "Stop sharing screen" : "Share screen"}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {meetings.length === 0 && (
+        <p className="mt-3 text-sm text-ink-muted">No meetings right now.</p>
+      )}
+
+      <ul className="mt-3 space-y-1.5 text-sm">
+        {meetings.map((meeting) => {
+          const mine = meeting.id === myMeetingId;
+          return (
+            <li
+              key={meeting.id}
+              className="flex items-center justify-between rounded-card border px-3 py-2"
+            >
+              <span className="text-ink">
+                {mine && (
+                  // Debug aid: whether this tab actually has a live Chime
+                  // session for its own meeting, or is just sitting in the
+                  // app-level "waiting" state with no audio connected.
+                  <span
+                    className={`mr-1.5 inline-block ${roomStatus === "connected" ? "text-success" : "text-ink-muted/40"}`}
+                    title={
+                      roomStatus === "connected"
+                        ? "connected to chime"
+                        : "not connected to chime"
+                    }
+                  >
+                    ●
+                  </span>
+                )}
+                {meeting.created_by === myId ? "Your meeting" : "Meeting"}{" "}
+                <span className="text-ink-muted">{meeting.id.slice(0, 8)}</span>
+                {meeting.attendees?.length > 0 && (
+                  <span className="ml-2 text-xs text-ink-muted">
+                    {meeting.attendees.length} in it
+                  </span>
+                )}
+                {mine && (
+                  <span className="ml-2 text-xs text-ink-muted">
+                    {roomStatus === "connected"
+                      ? "-- connected"
+                      : "-- waiting for others"}
+                  </span>
+                )}
+              </span>
+              {mine ? (
+                <button onClick={leave} className="text-danger hover:underline">
+                  Leave
+                </button>
+              ) : (
+                <button
+                  onClick={() => join(meeting.id)}
+                  disabled={!!myMeetingId}
+                  className="text-brand hover:underline disabled:opacity-50"
+                >
+                  Join
+                </button>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+
+      {error && <p className="mt-3 text-sm text-danger">{error}</p>}
+    </section>
+  );
+}

@@ -54,7 +54,7 @@ help:
 	@echo "make build [stage]   production build into $(DIST)/"
 	@echo "make deploy [stage]  build + sync to S3 + invalidate CloudFront"
 	@echo "make preview [stage] serve the built $(DIST)/ locally"
-	@echo "make lint | clean"
+	@echo "make fmt | lint | clean"
 	@echo "stages: local (backend on localhost:8000), dev, prod"
 
 .PHONY: init
@@ -109,6 +109,12 @@ deploy:
 	    --distribution-id "$$FRONTEND_DISTRIBUTION_ID" --paths '/*' \
 	    --query 'Invalidation.Status' --output text; \
 	  echo "deployed $(STAGE): $$FRONTEND_URL"
+
+.PHONY: fmt
+fmt:
+	$(REQUIRE_ENV)
+	$(REQUIRE_MODULES)
+	$(NPM) run format
 
 .PHONY: lint
 lint:

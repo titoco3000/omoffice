@@ -3,22 +3,26 @@ name = "omoffice-api"
 version = "0.1.0"
 edition = "2021"
 
+# No src/ directory in this layout: main.rs sits directly in backend/, and
+# everything else -- core/, features/, router.rs, schema.rs -- is the library
+# crate under lib/, so it's exercisable headless (`cargo test --lib`)
+# independently of the binary that wires it up.
+[lib]
+name = "omoffice_api"
+path = "lib/lib.rs"
+
+[[bin]]
+name = "omoffice-api"
+path = "main.rs"
+
 [dependencies]
-# TLS is pinned to the rustls/ring backend: aws-lc-rs (the default) needs cmake
-# and a C toolchain, which the zig cross-build for Lambda does not have.
+# TLS pinned to rustls/ring: aws-lc-rs (the default) needs cmake and a C
+# toolchain that the eventual Lambda cross-build won't have.
 aws-config = { version = "1", default-features = false, features = [
   "behavior-version-latest",
   "rt-tokio",
   "credentials-process",
   "sso",
-  "legacy-client",
-] }
-# Pushes a chat message to one browser's open connection on the deployed
-# stages -- see `core::apigw_management`.
-aws-sdk-apigatewaymanagement = { version = "1", default-features = false, features = [
-  "behavior-version-latest",
-  "rt-tokio",
-  "rustls",
 ] }
 aws-sdk-chimesdkmeetings = { version = "1", default-features = false, features = [
   "behavior-version-latest",
@@ -30,22 +34,17 @@ aws-sdk-dsql = { version = "1", default-features = false, features = [
   "rt-tokio",
   "rustls",
 ] }
-aws-sdk-secretsmanager = { version = "1", default-features = false, features = [
-  "behavior-version-latest",
-  "rt-tokio",
-  "rustls",
-] }
-# "ws" is the messenger's browser-socket channel (`messenger::websocket`).
 axum = { version = "0.8", features = ["ws"] }
 chrono = { version = "0.4", default-features = false, features = ["serde"] }
-# `messenger::websocket::Hub::bind` splits and drives a `WebSocket` with this.
 futures-util = "0.3"
 # rust_crypto is a provider feature: without it jsonwebtoken has no signer.
 jsonwebtoken = { version = "11", default-features = false, features = ["rust_crypto"] }
-lambda_http = "1"
+# Lets `schema.rs` register each table into `orm::TABLES` at its own
+# declaration, in a linker section `orm::generate` reads -- no separate list
+# to keep in sync by hand.
+linkme = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-# Same rustls/ring pin as the AWS SDKs above, for the same reason.
 sqlx = { version = "0.9", default-features = false, features = [
   "runtime-tokio",
   "tls-rustls-ring",
@@ -54,15 +53,10 @@ sqlx = { version = "0.9", default-features = false, features = [
   "chrono",
 ] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "sync"] }
-# The browser frontend calls the API cross-origin; this supplies the preflight.
 tower-http = { version = "0.6", default-features = false, features = ["cors"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 uuid = { version = "1", features = ["v4"] }
-
-[dev-dependencies]
-http-body-util = "0.1"
-tower = { version = "0.5", features = ["util"] }
 
 [profile.release]
 opt-level = "z"

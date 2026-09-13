@@ -1,0 +1,498 @@
+[
+  {
+    "name": "users",
+    "columns": [
+      {
+        "name": "email",
+        "sql_type": "text",
+        "not_null": false,
+        "primary_key": true,
+        "default": null,
+        "foreign_key": null,
+        "renamed_from": null
+      },
+      {
+        "name": "last_meeting",
+        "sql_type": "text",
+        "not_null": false,
+        "primary_key": false,
+        "default": null,
+        "foreign_key": [
+          "meetings",
+          "id"
+        ],
+        "renamed_from": null
+      },
+      {
+        "name": "created_at",
+        "sql_type": "timestamptz",
+        "not_null": true,
+        "primary_key": false,
+        "default": "now()",
+        "foreign_key": null,
+        "renamed_from": null
+      }
+    ],
+    "primary_key": []
+  },
+  {
+    "name": "meetings",
+    "columns": [
+      {
+        "name": "id",
+        "sql_type": "text",
+        "not_null": false,
+        "primary_key": true,
+        "default": null,
+        "foreign_key": null,
+        "renamed_from": "code"
+      },
+      {
+        "name": "created_by",
+        "sql_type": "text",
+        "not_null": true,
+        "primary_key": false,
+        "default": null,
+        "foreign_key": [
+          "users",
+          "email"
+        ],
+        "renamed_from": null
+      },
+      {
+        "name": "created_at",
+        "sql_type": "timestamptz",
+        "not_null": true,
+        "primary_key": false,
+        "default": "now()",
+        "foreign_key": null,
+        "renamed_from": null
+      },
+      {
+        "name": "org_id",
+        "sql_type": "text",
+        "not_null": false,
+        "primary_key": false,
+        "default": null,
+        "foreign_key": [
+          "organizations",
+          "id"
+        ],
+        "renamed_from": null
+      }
+    ],
+    "primary_key": []
+  },
+  {
+    "name": "chime_meeting_pool",
+    "columns": [
+      {
+        "name": "id",
+        "sql_type": "text",
+        "not_null": false,
+        "primary_key": true,
+        "default": null,
+        "foreign_key": null,
+        "renamed_from": null
+      },
+      {
+        "name": "assigned_to",
+        "sql_type": "text",
+        "not_null": false,
+        "primary_key": false,
+        "default": null,
+        "foreign_key": [
+          "meetings",
+          "id"
+        ],
+        "renamed_from": null
+      },
+      {
+        "name": "idle_since",
+        "sql_type": "timestamptz",
+        "not_null": false,
+        "primary_key": false,
+        "default": null,
+        "foreign_key": null,
+        "renamed_from": null
+      },
+      {
+        "name": "created_at",
+        "sql_type": "timestamptz",
+        "not_null": true,
+        "primary_key": false,
+        "default": "now()",
+        "foreign_key": null,
+        "renamed_from": null
+      }
+    ],
+    "primary_key": []
+  },
+  {
+    "name": "meeting_attendees",
+    "columns": [
+      {
+        "name": "code",
+        "sql_type": "text",
+        "not_null": true,
+        "primary_key": false,
+        "default": null,
+        "foreign_key": [
+          "meetings",
+          "id"
+        ],
+        "renamed_from": null
+      },
+      {
+        "name": "user_email",
+        "sql_type": "text",
+        "not_null": true,
+        "primary_key": false,
+        "default": null,
+        "foreign_key": [
+          "users",
+          "email"
+        ],
+        "renamed_from": null
+      },
+      {
+        "name": "joined_at",
+        "sql_type": "timestamptz",
+        "not_null": true,
+        "primary_key": false,
+        "default": "now()",
+        "foreign_key": null,
+        "renamed_from": null
+      }
+    ],
+    "primary_key": [
+      "code",
+      "user_email"
+    ]
+  },
+  {
+    "name": "organizations",
+    "columns": [
+      {
+        "name": "id",
+        "sql_type": "text",
+        "not_null": false,
+        "primary_key": true,
+        "default": null,
+        "foreign_key": null,
+        "renamed_from": null
+      },
+      {
+        "name": "name",
+        "sql_type": "text",
+        "not_null": true,
+        "primary_key": false,
+        "default": null,
+        "foreign_key": null,
+        "renamed_from": null
+      },
+      {
+        "name": "created_by",
+        "sql_type": "text",
+        "not_null": true,
+        "primary_key": false,
+        "default": null,
+        "foreign_key": [
+          "users",
+          "email"
+        ],
+        "renamed_from": null
+      },
+      {
+        "name": "created_at",
+        "sql_type": "timestamptz",
+        "not_null": true,
+        "primary_key": false,
+        "default": "now()",
+        "foreign_key": null,
+        "renamed_from": null
+      }
+    ],
+    "primary_key": []
+  },
+  {
+    "name": "org_roles",
+    "columns": [
+      {
+        "name": "org_id",
+        "sql_type": "text",
+        "not_null": true,
+        "primary_key": false,
+        "default": null,
+        "foreign_key": [
+          "organizations",
+          "id"
+        ],
+        "renamed_from": null
+      },
+      {
+        "name": "user_email",
+        "sql_type": "text",
+        "not_null": true,
+        "primary_key": false,
+        "default": null,
+        "foreign_key": [
+          "users",
+          "email"
+        ],
+        "renamed_from": null
+      },
+      {
+        "name": "role",
+        "sql_type": "text",
+        "not_null": true,
+        "primary_key": false,
+        "default": null,
+        "foreign_key": null,
+        "renamed_from": null
+      }
+    ],
+    "primary_key": [
+      "org_id",
+      "user_email",
+      "role"
+    ]
+  },
+  {
+    "name": "active_users",
+    "columns": [
+      {
+        "name": "connection_id",
+        "sql_type": "text",
+        "not_null": false,
+        "primary_key": true,
+        "default": null,
+        "foreign_key": null,
+        "renamed_from": null
+      },
+      {
+        "name": "user_email",
+        "sql_type": "text",
+        "not_null": true,
+        "primary_key": false,
+        "default": null,
+        "foreign_key": [
+          "users",
+          "email"
+        ],
+        "renamed_from": null
+      },
+      {
+        "name": "transport",
+        "sql_type": "text",
+        "not_null": true,
+        "primary_key": false,
+        "default": null,
+        "foreign_key": null,
+        "renamed_from": null
+      },
+      {
+        "name": "org_id",
+        "sql_type": "text",
+        "not_null": false,
+        "primary_key": false,
+        "default": null,
+        "foreign_key": [
+          "organizations",
+          "id"
+        ],
+        "renamed_from": null
+      },
+      {
+        "name": "meeting",
+        "sql_type": "text",
+        "not_null": false,
+        "primary_key": false,
+        "default": null,
+        "foreign_key": [
+          "meetings",
+          "id"
+        ],
+        "renamed_from": null
+      },
+      {
+        "name": "connected_at",
+        "sql_type": "timestamptz",
+        "not_null": true,
+        "primary_key": false,
+        "default": "now()",
+        "foreign_key": null,
+        "renamed_from": null
+      },
+      {
+        "name": "last_seen_at",
+        "sql_type": "timestamptz",
+        "not_null": false,
+        "primary_key": false,
+        "default": null,
+        "foreign_key": null,
+        "renamed_from": null
+      }
+    ],
+    "primary_key": []
+  },
+  {
+    "name": "org_invites",
+    "columns": [
+      {
+        "name": "id",
+        "sql_type": "text",
+        "not_null": false,
+        "primary_key": true,
+        "default": null,
+        "foreign_key": null,
+        "renamed_from": null
+      },
+      {
+        "name": "org_id",
+        "sql_type": "text",
+        "not_null": true,
+        "primary_key": false,
+        "default": null,
+        "foreign_key": [
+          "organizations",
+          "id"
+        ],
+        "renamed_from": null
+      },
+      {
+        "name": "email",
+        "sql_type": "text",
+        "not_null": true,
+        "primary_key": false,
+        "default": null,
+        "foreign_key": null,
+        "renamed_from": null
+      },
+      {
+        "name": "roles",
+        "sql_type": "text",
+        "not_null": true,
+        "primary_key": false,
+        "default": "''",
+        "foreign_key": null,
+        "renamed_from": null
+      },
+      {
+        "name": "invited_by",
+        "sql_type": "text",
+        "not_null": true,
+        "primary_key": false,
+        "default": null,
+        "foreign_key": [
+          "users",
+          "email"
+        ],
+        "renamed_from": null
+      },
+      {
+        "name": "status",
+        "sql_type": "text",
+        "not_null": true,
+        "primary_key": false,
+        "default": "'pending'",
+        "foreign_key": null,
+        "renamed_from": null
+      },
+      {
+        "name": "created_at",
+        "sql_type": "timestamptz",
+        "not_null": true,
+        "primary_key": false,
+        "default": "now()",
+        "foreign_key": null,
+        "renamed_from": null
+      },
+      {
+        "name": "accepted_at",
+        "sql_type": "timestamptz",
+        "not_null": false,
+        "primary_key": false,
+        "default": null,
+        "foreign_key": null,
+        "renamed_from": null
+      }
+    ],
+    "primary_key": []
+  },
+  {
+    "name": "meeting_invites",
+    "columns": [
+      {
+        "name": "id",
+        "sql_type": "text",
+        "not_null": false,
+        "primary_key": true,
+        "default": null,
+        "foreign_key": null,
+        "renamed_from": null
+      },
+      {
+        "name": "code",
+        "sql_type": "text",
+        "not_null": true,
+        "primary_key": false,
+        "default": null,
+        "foreign_key": [
+          "meetings",
+          "id"
+        ],
+        "renamed_from": null
+      },
+      {
+        "name": "email",
+        "sql_type": "text",
+        "not_null": true,
+        "primary_key": false,
+        "default": null,
+        "foreign_key": null,
+        "renamed_from": null
+      },
+      {
+        "name": "invited_by",
+        "sql_type": "text",
+        "not_null": true,
+        "primary_key": false,
+        "default": null,
+        "foreign_key": [
+          "users",
+          "email"
+        ],
+        "renamed_from": null
+      },
+      {
+        "name": "status",
+        "sql_type": "text",
+        "not_null": true,
+        "primary_key": false,
+        "default": "'pending'",
+        "foreign_key": null,
+        "renamed_from": null
+      },
+      {
+        "name": "created_at",
+        "sql_type": "timestamptz",
+        "not_null": true,
+        "primary_key": false,
+        "default": "now()",
+        "foreign_key": null,
+        "renamed_from": null
+      },
+      {
+        "name": "accepted_at",
+        "sql_type": "timestamptz",
+        "not_null": false,
+        "primary_key": false,
+        "default": null,
+        "foreign_key": null,
+        "renamed_from": null
+      }
+    ],
+    "primary_key": []
+  }
+]

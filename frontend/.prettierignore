@@ -1,0 +1,6 @@
+node_modules/
+dist/
+
+# Claude Code's own per-directory files, not project source.
+.claude/
+.mcp.json

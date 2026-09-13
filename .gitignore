@@ -1,5 +1,6 @@
 # rust
 backend/target/
+old-backend/target/
 
 # terraform
 infra/.terraform/
@@ -10,3 +11,18 @@ infra/terraform.tfstate.d/
 infra/crash.log
 infra/placeholder/*.zip
 infra/rotator.zip
+
+# AI bullshit
+.claude
+,idea
+.bash_profile
+.bashrc
+.gitconfig
+.gitmodules
+.idea
+.mcp.json
+.profile
+.ripgreprc
+.vscode
+.zprofile
+.zshrc
