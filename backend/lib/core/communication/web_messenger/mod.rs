@@ -2,13 +2,19 @@
 //!
 //! **Out**: [`Messenger::send`] takes a channel name, a JSON message and a
 //! list of recipients (user ids); it resolves each id to whichever socket(s)
-//! it currently has open. **In**: [`Messenger::on_message`] registers one
-//! handler per channel, called once per frame a client sends on it.
+//! it currently has open. **In**: [`Messenger::on_message`] registers a
+//! handler on a channel, called once per frame a client sends on it -- every
+//! handler registered on that channel runs, not just the first or the last,
+//! so two features can both care about the same channel without one
+//! silently displacing the other's handler.
 //!
 //! Connecting and disconnecting is itself a channel -- [`CONNECTION`] --
 //! rather than a separate presence table: anything that cares who is online
 //! subscribes to it, without a second thing (a presence table, an idle
-//! sweep) to keep in sync with the socket registry underneath.
+//! sweep) to keep in sync with the socket registry underneath. This is the
+//! one channel routinely shared by more than one subscriber (`core::rbac`
+//! for "online", `features::meetings` for dropping a meeting's attendee row
+//! on a hard disconnect) -- see [`on_message`](Messenger::on_message).
 //!
 //! Nothing above this module knows a socket exists. The wire frame is
 //! `{"channel": ..., "message": ...}` in both directions, so one socket
@@ -47,7 +53,7 @@ type Handler = Arc<dyn Fn(Messenger, String, Value) -> BoxFuture<'static, ()> + 
 #[derive(Clone)]
 pub struct Messenger {
     hub: web_sockets::Hub,
-    handlers: Arc<RwLock<HashMap<Channel, Handler>>>,
+    handlers: Arc<RwLock<HashMap<Channel, Vec<Handler>>>>,
 }
 
 impl Messenger {
@@ -72,10 +78,12 @@ impl Messenger {
         self.hub.is_connected(user_id).await
     }
 
-    /// Register `handler` for `channel`. One handler per channel; a second
-    /// registration replaces the first. The handler is handed a fresh clone
-    /// of the `Messenger` rather than capturing one, so answering by sending
-    /// does not close a reference cycle back into the `Arc` it lives in.
+    /// Register `handler` on `channel`. Additive: a second registration on
+    /// the same channel runs alongside the first, not instead of it -- see
+    /// the module doc on [`CONNECTION`], the one channel more than one
+    /// feature actually shares. The handler is handed a fresh clone of the
+    /// `Messenger` rather than capturing one, so answering by sending does
+    /// not close a reference cycle back into the `Arc` it lives in.
     pub fn on_message<F, Fut>(&self, channel: Channel, handler: F)
     where
         F: Fn(Messenger, String, Value) -> Fut + Send + Sync + 'static,
@@ -86,26 +94,29 @@ impl Messenger {
         self.handlers
             .write()
             .unwrap_or_else(|err| err.into_inner())
-            .insert(channel, handler);
+            .entry(channel)
+            .or_default()
+            .push(handler);
     }
 
-    /// One incoming frame: look up its channel's handler and hand it the
-    /// message plus who sent it. Also where [`CONNECTION`] itself fires.
+    /// One incoming frame: run every handler registered on its channel, in
+    /// registration order, each with the message plus who sent it. Also
+    /// where [`CONNECTION`] itself fires.
     async fn dispatch(&self, from: &str, frame: Value) {
         let Some(channel) = frame.get("channel").and_then(Value::as_str) else {
             return;
         };
-        let handler = self
+        let handlers = self
             .handlers
             .read()
             .unwrap_or_else(|err| err.into_inner())
             .get(channel)
-            .cloned();
-        let Some(handler) = handler else {
-            return;
-        };
+            .cloned()
+            .unwrap_or_default();
         let message = frame.get("message").cloned().unwrap_or(Value::Null);
-        handler(self.clone(), from.to_string(), message).await;
+        for handler in handlers {
+            handler(self.clone(), from.to_string(), message.clone()).await;
+        }
     }
 
     async fn notify_connection(&self, user_id: &str, state: &str) {

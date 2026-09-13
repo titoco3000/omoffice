@@ -20,6 +20,12 @@
 //! was asked for before deciding whether to let the caller in. The
 //! frontend is trusted to do the same thing from its side: once it notices
 //! it's been alone past the same window, it just calls `leave` on itself.
+//! That trust ends the moment the tab is simply closed rather than
+//! navigated away from -- no request, no unmount, nothing to call `leave`.
+//! [`register`] is the backstop: it shares [`web_messenger::CONNECTION`]
+//! with `core::rbac`'s own subscriber (see that module's doc) and calls
+//! `leave` on a user's behalf, for every meeting it finds them still an
+//! attendee of, the moment their socket actually drops.
 //!
 //! [`ROOM_CHANNEL`] is how a room reaches someone who didn't just call
 //! `join` themselves: whoever else is already in a meeting when [`join`]
@@ -244,6 +250,19 @@ async fn attendee_ids(db: &Db, meeting_id: &str) -> Result<Vec<String>, DbError>
     let pool = db.pool().await?;
     let ids = sqlx::query_scalar("SELECT user_id FROM meeting_attendees WHERE meeting_id = $1")
         .bind(meeting_id)
+        .fetch_all(pool)
+        .await?;
+    Ok(ids)
+}
+
+/// Every meeting `user_id` is currently an attendee of -- for [`register`],
+/// which needs to leave them out of all of them on a hard disconnect. In
+/// practice the frontend keeps one tab in at most one meeting at a time, so
+/// this is normally zero or one row, not a scan worth indexing further.
+async fn attendee_meeting_ids(db: &Db, user_id: &str) -> Result<Vec<String>, DbError> {
+    let pool = db.pool().await?;
+    let ids = sqlx::query_scalar("SELECT meeting_id FROM meeting_attendees WHERE user_id = $1")
+        .bind(user_id)
         .fetch_all(pool)
         .await?;
     Ok(ids)
@@ -531,6 +550,39 @@ pub async fn leave(
         broadcast_list(messenger, db, org_id).await;
     }
     Ok(())
+}
+
+/// Wire a hard disconnect to [`leave`] -- see the module doc. Shares
+/// [`web_messenger::CONNECTION`] with `core::rbac`'s own subscriber (that
+/// channel now runs every handler registered on it, not just one, see
+/// [`Messenger::on_message`](web_messenger::Messenger::on_message)); meant
+/// to be called once, at startup, same as `rbac::register` and
+/// `rooms::register`.
+pub fn register(messenger: &Messenger, db: Db) {
+    messenger.on_message(web_messenger::CONNECTION, move |messenger, user_id, message| {
+        let db = db.clone();
+        async move {
+            if message.as_str() != Some(web_messenger::DISCONNECTED) {
+                return;
+            }
+            let meeting_ids = match attendee_meeting_ids(&db, &user_id).await {
+                Ok(ids) => ids,
+                Err(err) => {
+                    tracing::warn!(
+                        "meetings: could not list meetings for disconnected user {user_id}: {err:?}"
+                    );
+                    return;
+                }
+            };
+            for meeting_id in meeting_ids {
+                if let Err(err) = leave(&db, &messenger, &meeting_id, &user_id).await {
+                    tracing::warn!(
+                        "meetings: could not leave {meeting_id} for disconnected user {user_id}: {err:?}"
+                    );
+                }
+            }
+        }
+    });
 }
 
 /// Tear a meeting down for good: tell whatever attendees are still on
