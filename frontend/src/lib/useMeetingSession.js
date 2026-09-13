@@ -18,12 +18,14 @@ import { messenger } from "./messenger";
 import * as chime from "./chime";
 import {
   IDLE_AFTER_SECONDS,
+  MEETING_FORCE_CHANNEL,
   MEETING_INVITES_CHANNEL,
   MEETING_LIST_CHANNEL,
   MEETING_ROOM_CHANNEL,
   acceptMeetingInvite,
   createMeeting,
   declineMeetingInvite,
+  forceJoinMeeting,
   inviteToMeeting,
   joinMeeting,
   leaveMeeting,
@@ -241,6 +243,36 @@ export function useMeetingSession(token, orgId) {
     }
   };
 
+  // Forced straight into someone else's meeting, no invite or accept -- see
+  // `features::meetings::force_join` (backend/lib/features/meetings/mod.rs).
+  // Leaves whatever meeting this tab was already in first (same as
+  // switching org does), then connects immediately, always muted and with
+  // the camera off regardless of whatever this tab's own preference was.
+  useEffect(
+    () =>
+      messenger.on(MEETING_FORCE_CHANNEL, async (message) => {
+        if (
+          myMeetingIdRef.current &&
+          myMeetingIdRef.current !== message.meeting_id
+        ) {
+          await leave();
+        }
+        setMyMeetingId(message.meeting_id);
+        await chime.setCameraOn(false);
+        await chime.setMicMuted(true);
+        try {
+          await chime.connect(message.Meeting, message.Attendee);
+          setCameraOnState(false);
+          setMicMutedState(true);
+          setRoomStatus("connected");
+        } catch (err) {
+          setError(err.message);
+        }
+      }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  );
+
   // `orgId`'s previous value, so the effect below can tell an actual switch
   // apart from this hook's own first render (where there's nothing to have
   // left yet).
@@ -285,6 +317,21 @@ export function useMeetingSession(token, orgId) {
       const meetingId = myMeetingId ?? (await create());
       if (!meetingId) return;
       await inviteToMeeting(token, meetingId, userId);
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  // Force `userId` straight into a meeting, no invite or accept -- starting
+  // one under `orgId` first if this tab isn't already in one, same as
+  // `inviteUser`. Only meaningful as the meeting's creator, since the
+  // backend gates `force` on that -- see `features::meetings::force_join`.
+  const forceUser = async (userId) => {
+    setError(null);
+    try {
+      const meetingId = myMeetingId ?? (await create());
+      if (!meetingId) return;
+      await forceJoinMeeting(token, meetingId, userId);
     } catch (err) {
       setError(err.message);
     }
@@ -358,6 +405,7 @@ export function useMeetingSession(token, orgId) {
     acceptInvite,
     declineInvite,
     inviteUser,
+    forceUser,
     toggleCamera,
     toggleMic,
     toggleScreenShare,

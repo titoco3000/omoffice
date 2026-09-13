@@ -4,6 +4,7 @@ export const MEETING_LIST_CHANNEL = "meeting_list";
 export const IDLE_AFTER_SECONDS = 55;
 export const MEETING_ROOM_CHANNEL = "meeting_room";
 export const MEETING_INVITES_CHANNEL = "meeting_invites";
+export const MEETING_FORCE_CHANNEL = "meeting_force";
 
 export const listMeetings = (token, orgId) =>
   apiFetch(`/meeting?org_id=${encodeURIComponent(orgId)}`, { token });
@@ -38,6 +39,13 @@ export const revokeMeetingInvite = (token, meetingId, inviteId) =>
 
 export const acceptMeetingInvite = (token, inviteId) =>
   apiFetch(`/meeting/invites/${inviteId}/accept`, { method: "POST", token });
+
+export const forceJoinMeeting = (token, meetingId, userId) =>
+  apiFetch(`/meeting/${meetingId}/force`, {
+    method: "POST",
+    token,
+    body: { user_id: userId },
+  });
 
 export const declineMeetingInvite = (token, inviteId) =>
   apiFetch(`/meeting/invites/${inviteId}/decline`, { method: "POST", token });

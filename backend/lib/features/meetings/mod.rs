@@ -69,6 +69,13 @@ pub const LIST_CHANNEL: web_messenger::Channel = "meeting_list";
 /// cleared, but the meeting itself continues), or `{"meeting_id", "ended": true}`.
 pub const ROOM_CHANNEL: web_messenger::Channel = "meeting_room";
 
+/// Pushes a forced join straight to one user, outside whatever HTTP call
+/// triggered it -- see [`force_join`]. Frame shape:
+/// `{"meeting_id", "Meeting", "Attendee"}`. Unlike [`ROOM_CHANNEL`], there is
+/// no accept step behind this: the frontend answers by connecting
+/// immediately, muted and with the camera off.
+pub const FORCE_CHANNEL: web_messenger::Channel = "meeting_force";
+
 /// One row of `meetings`.
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
 pub struct Meeting {
@@ -366,6 +373,51 @@ pub async fn join(
     meeting_id: &str,
     user_id: &str,
 ) -> Result<Value, MeetingError> {
+    join_inner(db, chime, messenger, meeting_id, user_id, false).await
+}
+
+/// Force `target_user_id` straight into `meeting_id`, on `caller`'s say-so
+/// alone -- no invite, no accept. Only the meeting's creator may (this is
+/// "start a meeting with someone", not "drag anyone into any meeting");
+/// [`MeetingError::Forbidden`] otherwise. Pushed to the target over
+/// [`FORCE_CHANNEL`] rather than returned, since nothing the target did
+/// triggered this -- the frontend answers by connecting immediately, muted
+/// and with the camera off.
+pub async fn force_join(
+    db: &Db,
+    chime: &ChimeState,
+    messenger: &Messenger,
+    meeting_id: &str,
+    caller: &str,
+    target_user_id: &str,
+) -> Result<(), MeetingError> {
+    let meeting = find(db, meeting_id).await?.ok_or(MeetingError::NotFound)?;
+    if meeting.created_by != caller {
+        return Err(MeetingError::Forbidden);
+    }
+
+    let response = join_inner(db, chime, messenger, meeting_id, target_user_id, true).await?;
+    messenger
+        .send(FORCE_CHANNEL, &[target_user_id.to_string()], response)
+        .await;
+    Ok(())
+}
+
+/// Shared body of [`join`] and [`force_join`]: record `user_id` as an
+/// attendee, and -- once that makes two or more -- claim the meeting's room
+/// and mint a Chime attendee in it, reconnecting anyone else already in it
+/// whose room turned out to be a fresh one. `bypass_invite_check` is what
+/// tells the two callers apart: [`force_join`] has already checked its own
+/// permission (the caller is the meeting's creator), so `join`'s
+/// invite-only gate does not apply on top of it.
+async fn join_inner(
+    db: &Db,
+    chime: &ChimeState,
+    messenger: &Messenger,
+    meeting_id: &str,
+    user_id: &str,
+    bypass_invite_check: bool,
+) -> Result<Value, MeetingError> {
     let meeting = find(db, meeting_id).await?.ok_or(MeetingError::NotFound)?;
     if meeting.idle_expired() {
         // Nobody has swept this one yet -- do it now rather than leave it
@@ -376,7 +428,8 @@ pub async fn join(
         }
         return Err(MeetingError::NotFound);
     }
-    if meeting.invite_only
+    if !bypass_invite_check
+        && meeting.invite_only
         && user_id != meeting.created_by
         && !meeting_invites::has_pending_invite(db, meeting_id, user_id).await?
     {
@@ -684,6 +737,36 @@ async fn join_route(
     Ok(Json(response))
 }
 
+#[derive(Debug, Deserialize)]
+struct ForceJoinBody {
+    user_id: String,
+}
+
+/// `POST /meeting/{meeting_id}/force` -- force `user_id` straight into the
+/// meeting, no invite or accept. Only the meeting's creator may; see
+/// [`force_join`].
+async fn force_join_route(
+    Extension(db): Extension<Db>,
+    Extension(chime): Extension<ChimeState>,
+    Extension(messenger): Extension<Messenger>,
+    Extension(claims): Extension<Claims>,
+    Path(meeting_id): Path<String>,
+    Json(body): Json<ForceJoinBody>,
+) -> Result<Json<Value>, MeetingError> {
+    force_join(
+        &db,
+        &chime,
+        &messenger,
+        &meeting_id,
+        &claims.sub,
+        &body.user_id,
+    )
+    .await?;
+    Ok(Json(
+        json!({ "meeting_id": meeting_id, "forced": body.user_id }),
+    ))
+}
+
 async fn leave_route(
     Extension(db): Extension<Db>,
     Extension(messenger): Extension<Messenger>,
@@ -790,6 +873,7 @@ pub fn routes() -> Router {
         .route("/invites/{invite_id}/accept", post(accept_invite_route))
         .route("/invites/{invite_id}/decline", post(decline_invite_route))
         .route("/{meeting_id}/join", post(join_route))
+        .route("/{meeting_id}/force", post(force_join_route))
         .route("/{meeting_id}/leave", post(leave_route))
         .route("/{meeting_id}/invites", post(create_invite_route))
         .route(

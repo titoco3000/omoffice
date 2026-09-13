@@ -12,7 +12,7 @@ import { ORG_ROSTER_CHANNEL, listMembers } from "../lib/rbac";
 // have one yet).
 export default function PeoplePanel({ token, org, session }) {
   const myId = decodeJwt(token)?.sub;
-  const { meetings, myMeetingId, join, inviteUser } = session;
+  const { meetings, myMeetingId, join, inviteUser, forceUser } = session;
   const [members, setMembers] = useState([]);
   const [selected, setSelected] = useState(null);
   const [error, setError] = useState(null);
@@ -70,7 +70,7 @@ export default function PeoplePanel({ token, org, session }) {
         {member.display_name}
       </button>
       {selected === member.user_id && (
-        <div className="mt-2">
+        <div className="mt-2 flex flex-wrap gap-2">
           {meetingId ? (
             <button
               onClick={() => join(meetingId)}
@@ -87,6 +87,16 @@ export default function PeoplePanel({ token, org, session }) {
               Invite to a meeting
             </button>
           )}
+          {/* No accept step behind this -- see `features::meetings::force_join`
+              (backend/lib/features/meetings/mod.rs). Only works if this tab
+              ends up the meeting's creator (a fresh one, or one it already
+              created), which the backend itself enforces regardless. */}
+          <button
+            onClick={() => forceUser(member.user_id)}
+            className="rounded-card border border-brand px-3 py-1 text-sm text-brand hover:bg-brand/10"
+          >
+            Force into meeting
+          </button>
         </div>
       )}
     </li>
