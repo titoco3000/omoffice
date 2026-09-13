@@ -12,6 +12,7 @@ use crate::core::auth;
 use crate::core::chime::ChimeState;
 use crate::core::communication::web_messenger::{self, Messenger};
 use crate::core::data::db::Db;
+use crate::core::debug;
 use crate::core::rbac;
 use crate::features::meetings;
 
@@ -30,14 +31,12 @@ pub fn app(db: Db, chime: ChimeState, messenger: Messenger) -> Router {
         .layer(Extension(db))
         .layer(Extension(chime))
         .layer(Extension(messenger))
-        // Any origin: the API is bearer-token authenticated, not
-        // cookie-based, so there is no session for a third-party origin to
-        // ride along on. Outermost layer so it also answers the browser's
-        // OPTIONS preflight before a request ever reaches `require_bearer`.
+        // Disable CORS
         .layer(
             CorsLayer::new()
                 .allow_origin(Any)
                 .allow_methods(Any)
                 .allow_headers(Any),
         )
+        .layer(middleware::from_fn(debug::log_requests))
 }
