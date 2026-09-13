@@ -2,9 +2,12 @@ import { useEffect, useState } from "react";
 import { useAuth } from "../auth/AuthContext";
 import { ORG_ACTIVE_CHANNEL, ORG_ROSTER_CHANNEL, listOrgs } from "../lib/rbac";
 import { messenger } from "../lib/messenger";
+import { useMeetingSession } from "../lib/useMeetingSession";
 import UserPanel from "../panels/UserPanel";
 import OrgPanel from "../panels/OrgPanel";
 import MeetingsPanel from "../panels/MeetingsPanel";
+import InvitesPanel from "../panels/InvitesPanel";
+import PeoplePanel from "../panels/PeoplePanel";
 import PendingInvite from "../panels/PendingInvite";
 
 const CURRENT_ORG_KEY = "omoffice_current_org";
@@ -60,6 +63,14 @@ export default function Panels() {
 
   const currentOrg = orgs.find((org) => org.id === orgId) ?? null;
 
+  // One meeting session for the whole page rather than one per org panel
+  // -- see the module doc on `useMeetingSession`: `InvitesPanel` and
+  // `PeoplePanel` need to land in the same `myMeetingId` a `MeetingsPanel`
+  // join would. It still reacts to `orgId` switching (leaving whatever
+  // meeting this tab was in, narrowing which invites show), just not by
+  // being torn down and rebuilt.
+  const session = useMeetingSession(token, currentOrg?.id ?? null);
+
   return (
     <main className="mx-auto flex max-w-4xl flex-col gap-6 px-6 py-10">
       {error && <p className="text-sm text-danger">{error}</p>}
@@ -71,6 +82,7 @@ export default function Panels() {
         }}
         onDeclined={reloadOrgs}
       />
+      <InvitesPanel session={session} />
       <UserPanel
         token={token}
         orgs={orgs}
@@ -89,10 +101,18 @@ export default function Panels() {
         />
       )}
       {currentOrg && (
+        <PeoplePanel
+          key={`people-${currentOrg.id}`}
+          token={token}
+          org={currentOrg}
+          session={session}
+        />
+      )}
+      {currentOrg && (
         <MeetingsPanel
           key={`meetings-${currentOrg.id}`}
           token={token}
-          org={currentOrg}
+          session={session}
         />
       )}
     </main>

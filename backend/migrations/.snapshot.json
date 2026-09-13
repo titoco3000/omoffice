@@ -200,12 +200,15 @@
         ]
       },
       {
-        "name": "email",
+        "name": "invited_user_id",
         "sql_type": "text",
         "not_null": true,
         "primary_key": false,
         "default": null,
-        "foreign_key": null
+        "foreign_key": [
+          "users",
+          "id"
+        ]
       },
       {
         "name": "invited_by",
@@ -219,23 +222,7 @@
         ]
       },
       {
-        "name": "status",
-        "sql_type": "text",
-        "not_null": true,
-        "primary_key": false,
-        "default": "'pending'",
-        "foreign_key": null
-      },
-      {
         "name": "created_at",
-        "sql_type": "timestamptz",
-        "not_null": true,
-        "primary_key": false,
-        "default": "now()",
-        "foreign_key": null
-      },
-      {
-        "name": "last_status_change",
         "sql_type": "timestamptz",
         "not_null": true,
         "primary_key": false,

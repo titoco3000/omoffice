@@ -128,18 +128,13 @@ static MEETING_INVITES: Table = Table::new(
         Column::new("meeting_id", "text")
             .not_null()
             .references("meetings", "id"),
-        Column::new("email", "text").not_null(),
+        Column::new("invited_user_id", "text")
+            .not_null()
+            .references("users", "id"),
         Column::new("invited_by", "text")
             .not_null()
             .references("users", "id"),
-        // pending | accepted | revoked | declined
-        Column::new("status", "text")
-            .not_null()
-            .default("'pending'"),
         Column::new("created_at", "timestamptz")
-            .not_null()
-            .default("now()"),
-        Column::new("last_status_change", "timestamptz")
             .not_null()
             .default("now()"),
     ],

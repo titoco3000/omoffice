@@ -26,8 +26,10 @@
 //! claims a *new* room for it (as opposed to reusing one still live) gets
 //! reconnected over it, and [`leave`]/[`sweep_idle`] use it the other way,
 //! to say a room was cleared or the meeting ended. [`LIST_CHANNEL`] is
-//! separate -- an org-wide feed of which meetings currently exist at all,
-//! pushed whenever one is created or terminated.
+//! separate -- an org-wide feed of which meetings currently exist and who
+//! is in each, pushed whenever one is created, terminated, joined or left.
+//! [`meeting_invites::CHANNEL`] is separate again: a feed of one user's own
+//! pending invites, not scoped to an org at all.
 
 pub mod chat;
 pub mod meeting_invites;
@@ -37,7 +39,7 @@ pub use meeting_invites::*;
 use axum::extract::{Extension, Path, Query};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
@@ -55,8 +57,9 @@ use rooms::RoomError;
 /// thing to touch it terminates it
 const IDLE_AFTER_SECONDS: i64 = 60;
 
-/// Pushes `{"org_id", "meetings": [Meeting, ...]}` to every online member of
-/// an org whenever a meeting is created or terminated
+/// Pushes `{"org_id", "meetings": [MeetingWithAttendees, ...]}` to every
+/// online member of an org whenever a meeting is created, terminated,
+/// joined or left.
 pub const LIST_CHANNEL: web_messenger::Channel = "meeting_list";
 
 /// Pushes a room reconnect/disconnect to one meeting's attendees directly,
@@ -86,6 +89,24 @@ impl Meeting {
     }
 }
 
+/// A [`Meeting`] plus who's currently in it -- what [`list`] actually hands
+/// out, so a roster elsewhere in the org can tell "in a meeting" from
+/// "which one".
+#[derive(Debug, Clone, Serialize)]
+pub struct MeetingWithAttendees {
+    #[serde(flatten)]
+    pub meeting: Meeting,
+    pub attendees: Vec<String>,
+    /// Whether this meeting currently has any outstanding invite -- see
+    /// [`meeting_invites::create_invite`], which pauses `idle_since` while
+    /// this is true so the backend itself never sweeps a solo meeting out
+    /// from under a sent invite. Surfaced here too so the frontend's own
+    /// local idle-leave timer (`useMeetingSession.js`, a proactive mirror
+    /// of the same rule) can skip itself the same way, rather than
+    /// dropping the tab out of a meeting the backend still considers live.
+    pub pending_invites: bool,
+}
+
 #[derive(Debug)]
 pub enum MeetingError {
     Chime(ChimeError),
@@ -94,8 +115,9 @@ pub enum MeetingError {
     Room(RoomError),
     /// No `meetings` row for that id, or one so idle it's treated the same.
     NotFound,
-    /// Caller isn't the meeting's creator, or the meeting is invite-only and
-    /// they hold no accepted invite to it.
+    /// Caller isn't the meeting's creator (creating/revoking an invite,
+    /// joining an invite-only meeting with no pending invite of their own)
+    /// or isn't who an invite was addressed to (declining someone else's).
     Forbidden,
     InviteNotFound,
     InviteNotPending,
@@ -150,7 +172,7 @@ impl IntoResponse for MeetingError {
                 StatusCode::FORBIDDEN,
                 Json(json!({
                     "error": "meeting_forbidden",
-                    "message": "you may not join this meeting",
+                    "message": "you may not do that with this meeting or invite",
                 })),
             )
                 .into_response(),
@@ -184,7 +206,7 @@ async fn find(db: &Db, meeting_id: &str) -> Result<Option<Meeting>, DbError> {
     Ok(row)
 }
 
-async fn set_idle_since(
+pub(crate) async fn set_idle_since(
     db: &Db,
     meeting_id: &str,
     value: Option<DateTime<Utc>>,
@@ -201,7 +223,7 @@ async fn set_idle_since(
     .await
 }
 
-async fn attendee_count(db: &Db, meeting_id: &str) -> Result<i64, DbError> {
+pub(crate) async fn attendee_count(db: &Db, meeting_id: &str) -> Result<i64, DbError> {
     let pool = db.pool().await?;
     let count: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM meeting_attendees WHERE meeting_id = $1")
@@ -253,20 +275,6 @@ async fn delete_attendees(db: &Db, meeting_id: &str) -> Result<(), DbError> {
     let pool = db.pool().await?;
     retry_on_conflict(|| async move {
         sqlx::query("DELETE FROM meeting_attendees WHERE meeting_id = $1")
-            .bind(meeting_id)
-            .execute(pool)
-            .await
-            .map(|_| ())
-    })
-    .await
-}
-
-/// Best-effort cleanup so a meeting that never had a `meeting_invites` route
-/// wired to it still deletes cleanly if one was ever inserted directly.
-async fn delete_pending_invites(db: &Db, meeting_id: &str) -> Result<(), DbError> {
-    let pool = db.pool().await?;
-    retry_on_conflict(|| async move {
-        sqlx::query("DELETE FROM meeting_invites WHERE meeting_id = $1")
             .bind(meeting_id)
             .execute(pool)
             .await
@@ -368,14 +376,19 @@ pub async fn join(
         }
         return Err(MeetingError::NotFound);
     }
-    if meeting.invite_only && user_id != meeting.created_by {
-        // Meeting invites aren't wired up yet (see `meeting_invites`) -- for
-        // now an invite-only meeting is only ever joinable by its creator.
+    if meeting.invite_only
+        && user_id != meeting.created_by
+        && !meeting_invites::has_pending_invite(db, meeting_id, user_id).await?
+    {
         return Err(MeetingError::Forbidden);
     }
 
     upsert_attendee(db, meeting_id, user_id).await?;
     let count = attendee_count(db, meeting_id).await?;
+
+    if let Some(org_id) = &meeting.org_id {
+        broadcast_list(messenger, db, org_id).await;
+    }
 
     if count < 2 {
         set_idle_since(db, meeting_id, Some(Utc::now())).await?;
@@ -441,8 +454,13 @@ pub async fn leave(
     let count = attendee_count(db, meeting_id).await?;
 
     if count == 0 {
+        // `terminate` broadcasts the org's list itself -- nothing further
+        // to do here.
         terminate(db, messenger, &meeting).await?;
-    } else if count == 1 {
+        return Ok(());
+    }
+
+    if count == 1 {
         rooms::release(db, meeting_id).await?;
         set_idle_since(db, meeting_id, Some(Utc::now())).await?;
         for remaining in attendee_ids(db, meeting_id).await? {
@@ -456,6 +474,9 @@ pub async fn leave(
         }
     }
 
+    if let Some(org_id) = &meeting.org_id {
+        broadcast_list(messenger, db, org_id).await;
+    }
     Ok(())
 }
 
@@ -481,7 +502,7 @@ async fn terminate(db: &Db, messenger: &Messenger, meeting: &Meeting) -> Result<
 
     rooms::release(db, &meeting.id).await?;
     delete_attendees(db, &meeting.id).await?;
-    delete_pending_invites(db, &meeting.id).await?;
+    meeting_invites::drop_invites_for_meeting(db, messenger, &meeting.id).await?;
     delete_meeting_row(db, &meeting.id).await?;
 
     if let Some(org_id) = &meeting.org_id {
@@ -516,34 +537,76 @@ async fn sweep_idle(db: &Db, messenger: &Messenger, org_id: &str) {
     }
 }
 
-/// Every meeting in `org_id`, newest first -- any member sees and can
-/// rejoin any of them, not just their own. Excludes anything already idle
-/// past [`IDLE_AFTER_SECONDS`] as a defensive filter -- [`list_route`]
-/// should already have swept those away before calling this, but nobody
-/// should be able to join one in the meantime regardless, so there is no
-/// reason to show it either.
-pub async fn list(db: &Db, org_id: &str) -> Result<Vec<Meeting>, MeetingError> {
+#[derive(sqlx::FromRow)]
+struct MeetingAttendeeRow {
+    id: String,
+    created_by: String,
+    created_at: DateTime<Utc>,
+    org_id: Option<String>,
+    invite_only: bool,
+    idle_since: Option<DateTime<Utc>>,
+    attendee_id: Option<String>,
+    pending_invites: bool,
+}
+
+/// Every meeting in `org_id`, newest first, each with who's currently in it
+/// -- any member sees and can rejoin any of them, not just their own.
+/// Excludes anything already idle past [`IDLE_AFTER_SECONDS`] as a
+/// defensive filter -- [`list_route`] should already have swept those away
+/// before calling this, but nobody should be able to join one in the
+/// meantime regardless, so there is no reason to show it either.
+pub async fn list(db: &Db, org_id: &str) -> Result<Vec<MeetingWithAttendees>, MeetingError> {
     let pool = db.pool().await?;
-    let rows = sqlx::query_as::<_, Meeting>(
-        "SELECT id, created_by, created_at, org_id, invite_only, idle_since
-         FROM meetings
-         WHERE org_id = $1
-           AND (idle_since IS NULL OR idle_since > now() - ($2 * interval '1 second'))
-         ORDER BY created_at DESC
-         LIMIT 100",
+    let rows: Vec<MeetingAttendeeRow> = sqlx::query_as(
+        "SELECT m.id, m.created_by, m.created_at, m.org_id, m.invite_only, m.idle_since,
+                a.user_id AS attendee_id,
+                EXISTS(SELECT 1 FROM meeting_invites mi WHERE mi.meeting_id = m.id) AS pending_invites
+         FROM meetings m
+         LEFT JOIN meeting_attendees a ON a.meeting_id = m.id
+         WHERE m.id IN (
+             SELECT id FROM meetings
+             WHERE org_id = $1
+               AND (idle_since IS NULL OR idle_since > now() - ($2 * interval '1 second'))
+             ORDER BY created_at DESC
+             LIMIT 100
+         )
+         ORDER BY m.created_at DESC, m.id",
     )
     .bind(org_id)
     .bind(IDLE_AFTER_SECONDS)
     .fetch_all(pool)
     .await?;
-    Ok(rows)
+
+    let mut result: Vec<MeetingWithAttendees> = Vec::new();
+    for row in rows {
+        match result.last_mut() {
+            Some(last) if last.meeting.id == row.id => {
+                if let Some(attendee_id) = row.attendee_id {
+                    last.attendees.push(attendee_id);
+                }
+            }
+            _ => result.push(MeetingWithAttendees {
+                meeting: Meeting {
+                    id: row.id,
+                    created_by: row.created_by,
+                    created_at: row.created_at,
+                    org_id: row.org_id,
+                    invite_only: row.invite_only,
+                    idle_since: row.idle_since,
+                },
+                attendees: row.attendee_id.into_iter().collect(),
+                pending_invites: row.pending_invites,
+            }),
+        }
+    }
+    Ok(result)
 }
 
 /// Push `org_id`'s current meeting list to every member of it who is
 /// currently online, on [`LIST_CHANNEL`] -- best effort, logging rather
 /// than failing, since callers have nothing left to hand a `MeetingError`
 /// back to by the time a meeting was already created or torn down.
-async fn broadcast_list(messenger: &Messenger, db: &Db, org_id: &str) {
+pub(crate) async fn broadcast_list(messenger: &Messenger, db: &Db, org_id: &str) {
     let meetings = match list(db, org_id).await {
         Ok(meetings) => meetings,
         Err(err) => {
@@ -633,11 +696,104 @@ async fn leave_route(
     ))
 }
 
-/// `/meeting/*` -- create/join/leave/list, plus chat, invites and room
+#[derive(Debug, Deserialize)]
+struct CreateInviteBody {
+    invited_user_id: String,
+}
+
+/// `POST /meeting/{meeting_id}/invites` -- invite someone to a meeting. Any
+/// current attendee may, not just whoever created it -- the meeting keeps
+/// going after its creator leaves (see `leave`), and whoever's left in it
+/// should still be able to bring someone else in rather than being stuck
+/// once the original creator is gone.
+async fn create_invite_route(
+    Extension(db): Extension<Db>,
+    Extension(messenger): Extension<Messenger>,
+    Extension(claims): Extension<Claims>,
+    Path(meeting_id): Path<String>,
+    Json(body): Json<CreateInviteBody>,
+) -> Result<Json<Value>, MeetingError> {
+    find(&db, &meeting_id).await?.ok_or(MeetingError::NotFound)?;
+    if !attendee_ids(&db, &meeting_id).await?.contains(&claims.sub) {
+        return Err(MeetingError::Forbidden);
+    }
+    let invite = meeting_invites::create_invite(
+        &db,
+        &messenger,
+        &meeting_id,
+        &body.invited_user_id,
+        &claims.sub,
+    )
+    .await?;
+    Ok(Json(json!({ "invite": invite })))
+}
+
+/// `DELETE /meeting/{meeting_id}/invites/{invite_id}` -- revoke. Any current
+/// attendee may, same as sending one -- see `create_invite_route`.
+async fn revoke_invite_route(
+    Extension(db): Extension<Db>,
+    Extension(messenger): Extension<Messenger>,
+    Extension(claims): Extension<Claims>,
+    Path((meeting_id, invite_id)): Path<(String, String)>,
+) -> Result<Json<Value>, MeetingError> {
+    find(&db, &meeting_id).await?.ok_or(MeetingError::NotFound)?;
+    if !attendee_ids(&db, &meeting_id).await?.contains(&claims.sub) {
+        return Err(MeetingError::Forbidden);
+    }
+    meeting_invites::revoke_invite(&db, &messenger, &meeting_id, &invite_id).await?;
+    Ok(Json(json!({ "revoked": invite_id })))
+}
+
+/// `GET /meeting/invites` -- every pending invite addressed to the caller,
+/// across every org.
+async fn list_invites_route(
+    Extension(db): Extension<Db>,
+    Extension(claims): Extension<Claims>,
+) -> Result<Json<Value>, MeetingError> {
+    let invites = meeting_invites::invites_for_user(&db, &claims.sub).await?;
+    Ok(Json(json!({ "invites": invites })))
+}
+
+/// `POST /meeting/invites/{invite_id}/accept` -- join the invite's meeting
+/// and drop it. No further check beyond the invite being addressed to the
+/// caller.
+async fn accept_invite_route(
+    Extension(db): Extension<Db>,
+    Extension(chime): Extension<ChimeState>,
+    Extension(messenger): Extension<Messenger>,
+    Extension(claims): Extension<Claims>,
+    Path(invite_id): Path<String>,
+) -> Result<Json<Value>, MeetingError> {
+    let response =
+        meeting_invites::accept_invite(&db, &chime, &messenger, &invite_id, &claims.sub).await?;
+    Ok(Json(response))
+}
+
+/// `POST /meeting/invites/{invite_id}/decline` -- the invited side's "no
+/// thanks".
+async fn decline_invite_route(
+    Extension(db): Extension<Db>,
+    Extension(messenger): Extension<Messenger>,
+    Extension(claims): Extension<Claims>,
+    Path(invite_id): Path<String>,
+) -> Result<Json<Value>, MeetingError> {
+    meeting_invites::decline_invite(&db, &messenger, &invite_id, &claims.sub).await?;
+    Ok(Json(json!({ "declined": invite_id })))
+}
+
+/// `/meeting/*` -- create/join/leave/list, invites, plus chat and room
 /// status nested in from the sibling modules.
 pub fn routes() -> Router {
     Router::new()
         .route("/", get(list_route).post(create_route))
+        .route("/invites", get(list_invites_route))
+        .route("/invites/{invite_id}/accept", post(accept_invite_route))
+        .route("/invites/{invite_id}/decline", post(decline_invite_route))
         .route("/{meeting_id}/join", post(join_route))
         .route("/{meeting_id}/leave", post(leave_route))
+        .route("/{meeting_id}/invites", post(create_invite_route))
+        .route(
+            "/{meeting_id}/invites/{invite_id}",
+            delete(revoke_invite_route),
+        )
 }

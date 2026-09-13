@@ -94,9 +94,6 @@ export default function UserPanel({
 
       {orgId && (
         <div className="mt-4 rounded-card border border-danger/40 p-3">
-          <p className="text-sm text-ink-muted">
-            Leaving removes you from this org.
-          </p>
           <button
             onClick={leave}
             className="mt-2 text-sm font-medium text-danger hover:underline"
