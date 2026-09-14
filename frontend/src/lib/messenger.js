@@ -61,6 +61,8 @@ class Messenger {
       let frame;
       try {
         frame = JSON.parse(event.data);
+
+        console.log(frame);
       } catch {
         return;
       }

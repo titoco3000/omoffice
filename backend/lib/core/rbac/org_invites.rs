@@ -120,6 +120,38 @@ pub async fn preview_invite(db: &Db, invite_id: &str) -> Result<InvitePreview, R
     })
 }
 
+/// Every pending invite addressed to `user_id`'s email, across every org --
+/// newest first. Matched on email rather than a foreign key to `users`,
+/// same as [`accept_invite`]/[`preview_invite`], so this also surfaces
+/// invites issued before this user's account existed or while they were
+/// never online to receive a push -- the row itself is the only record,
+/// nothing depends on having been live at invite time.
+pub async fn invites_for_user(db: &Db, user_id: &str) -> Result<Vec<InvitePreview>, RbacError> {
+    let pool = db.pool().await?;
+    let rows: Vec<InvitePreviewRow> = sqlx::query_as(
+        "SELECT i.id, i.org_id, o.name AS org_name, i.email, i.roles, i.status
+         FROM org_invites i
+         JOIN organizations o ON o.id = i.org_id
+         JOIN users u ON u.email = i.email
+         WHERE u.id = $1 AND i.status = 'pending'
+         ORDER BY i.created_at DESC",
+    )
+    .bind(user_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|row| InvitePreview {
+            id: row.id,
+            org_id: row.org_id,
+            org_name: row.org_name,
+            email: row.email,
+            roles: split_roles(&row.roles),
+            status: row.status,
+        })
+        .collect())
+}
+
 /// Create a pending invite and email it. Reuses an existing pending row for
 /// the same `(org_id, email)` rather than piling up duplicates.
 pub async fn create_invite(

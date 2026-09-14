@@ -71,6 +71,11 @@ export const revokeInvite = (token, orgId, inviteId) =>
     token,
   });
 
+// Every pending org invite addressed to the caller's own email, across
+// every org -- covers invites issued while offline or before signup, not
+// just the one riding along on the magic link that logged this tab in.
+export const listMyInvites = (token) => apiFetch("/rbac/invites", { token });
+
 export const getInvite = (token, inviteId) =>
   apiFetch(`/rbac/invites/${inviteId}`, { token });
 export const acceptInvite = (token, inviteId) =>

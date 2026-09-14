@@ -1024,6 +1024,17 @@ async fn revoke_invite_route(
     Ok(Json(json!({ "revoked": invite_id })))
 }
 
+/// `GET /invites` -- every pending org invite addressed to the caller's own
+/// email, across every org, regardless of whether they were online when it
+/// was issued or even had an account yet.
+async fn list_my_invites_route(
+    Extension(db): Extension<Db>,
+    Extension(claims): Extension<Claims>,
+) -> Result<Json<serde_json::Value>, RbacError> {
+    let invites = invites_for_user(&db, &claims.sub).await?;
+    Ok(Json(json!({ "invites": invites })))
+}
+
 /// No further check beyond a valid bearer token -- same as accept/decline,
 /// the invite id itself (only reachable from the magic link) is what gates
 /// this, not the caller's own identity.
@@ -1083,6 +1094,7 @@ pub fn routes() -> Router {
             "/orgs/{org_id}/invites/{invite_id}",
             delete(revoke_invite_route),
         )
+        .route("/invites", get(list_my_invites_route))
         .route("/invites/{invite_id}", get(invite_preview_route))
         .route("/invites/{invite_id}/accept", post(accept_invite_route))
         .route("/invites/{invite_id}/decline", post(decline_invite_route))
