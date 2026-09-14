@@ -118,6 +118,10 @@ async fn request_key(
         "Your sign-in link",
         &magic_link,
     );
+
+    if email::is_stub() {
+        return Ok(Json(json!({ "sent_to": email_addr, "token": token })));
+    }
     Ok(Json(json!({ "sent_to": email_addr })))
 }
 

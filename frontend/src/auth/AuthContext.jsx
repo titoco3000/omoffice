@@ -43,6 +43,18 @@ export function AuthProvider({ children }) {
     );
   }, []);
 
+  // Same as landing on a `?login=` link, but handed a token directly rather
+  // than reading one off the URL
+  const applyToken = (nextToken) => {
+    try {
+      localStorage.setItem(STORAGE_KEY, nextToken);
+    } catch {
+      // Same best-effort as `readStoredToken` -- a session that can't
+      // persist still gets to use the token for as long as this tab lives.
+    }
+    setToken(nextToken);
+  };
+
   const logout = (redirectTo = "/") => {
     localStorage.removeItem(STORAGE_KEY);
     localStorage.removeItem("omoffice_current_org");
@@ -69,7 +81,7 @@ export function AuthProvider({ children }) {
   }, []);
 
   return (
-    <AuthContext.Provider value={{ token, logout }}>
+    <AuthContext.Provider value={{ token, logout, applyToken }}>
       {children}
     </AuthContext.Provider>
   );
