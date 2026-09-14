@@ -316,13 +316,65 @@ pub async fn create_org(db: &Db, name: &str, creator: &str) -> Result<Org, RbacE
     Ok(org)
 }
 
-/// Delete an org: its `org_roles` and `org_users` rows first (DSQL has no
-/// cascading deletes), then the `organizations` row itself.
+/// Delete an org: everything with a foreign key into `organizations` (and,
+/// transitively, into its `meetings`) first (DSQL has no cascading deletes),
+/// then the `organizations` row itself.
 pub async fn delete_org(db: &Db, org_id: &str) -> Result<(), RbacError> {
     if !org_exists(db, org_id).await? {
         return Err(RbacError::OrgNotFound);
     }
     let pool = db.pool().await?;
+    // meeting_rooms.assigned_to only ever references a meeting, never an
+    // org -- unassign rather than delete so pooled rooms stay reusable.
+    retry_on_conflict(|| async move {
+        sqlx::query(
+            "UPDATE meeting_rooms SET assigned_to = NULL \
+             WHERE assigned_to IN (SELECT id FROM meetings WHERE org_id = $1)",
+        )
+        .bind(org_id)
+        .execute(pool)
+        .await
+        .map(|_| ())
+    })
+    .await?;
+    retry_on_conflict(|| async move {
+        sqlx::query(
+            "DELETE FROM meeting_attendees \
+             WHERE meeting_id IN (SELECT id FROM meetings WHERE org_id = $1)",
+        )
+        .bind(org_id)
+        .execute(pool)
+        .await
+        .map(|_| ())
+    })
+    .await?;
+    retry_on_conflict(|| async move {
+        sqlx::query(
+            "DELETE FROM meeting_invites \
+             WHERE meeting_id IN (SELECT id FROM meetings WHERE org_id = $1)",
+        )
+        .bind(org_id)
+        .execute(pool)
+        .await
+        .map(|_| ())
+    })
+    .await?;
+    retry_on_conflict(|| async move {
+        sqlx::query("DELETE FROM meetings WHERE org_id = $1")
+            .bind(org_id)
+            .execute(pool)
+            .await
+            .map(|_| ())
+    })
+    .await?;
+    retry_on_conflict(|| async move {
+        sqlx::query("DELETE FROM org_invites WHERE org_id = $1")
+            .bind(org_id)
+            .execute(pool)
+            .await
+            .map(|_| ())
+    })
+    .await?;
     retry_on_conflict(|| async move {
         sqlx::query("DELETE FROM org_roles WHERE org_id = $1")
             .bind(org_id)
