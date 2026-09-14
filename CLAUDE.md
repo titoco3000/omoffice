@@ -87,7 +87,12 @@ make plan|deploy|output|destroy [stage]
 - `lib/api.js` -- fetch wrapper: attaches the bearer token, turns non-2xx into `ApiError{status, code}` from the backend's `{error, message}` body. A 401 fires `UNAUTHORIZED_EVENT` (`AuthContext` listens and bounces to `/login`) rather than each caller handling it; a 403 (wrong role) is left for the caller.
 - `lib/messenger.js` -- browser side of `core::communication::web_messenger`.
 - `lib/useMeetingSession.js` -- mirrors the backend's idle-meeting rule locally (see `pending_invites` on a listed meeting) so a lone tab leaves proactively instead of waiting to be swept.
-- `pages/` top-level routes, `panels/` the dashboard's panel components, `auth/AuthContext.jsx` the JWT/session context.
+- `pages/` top-level routes (`/`, `/login`, `/in`, `/profile`, `/org`, `/org/new`); `auth/AuthContext.jsx` the JWT/session context.
+- `theme/ThemeContext.jsx` -- system/light/dark, toggled by a `.dark` class on `<html>`; the whole palette lives in `index.css` as CSS variables, so components only ever use semantic Tailwind utilities (`bg-surface`, `text-ink-muted`), never a raw color.
+- `org/OrgSessionContext.jsx` -- which org is "current" plus everything scoped to it (roster, meeting session); shared by every authenticated page and by `NavContainer`'s sidebar rather than each fetching its own copy.
+- `layout/NavContainer.jsx` -- persistent chrome for every authenticated page: a collapsible sidebar (desktop) or bottom/side bar (mobile, via `layout/useViewport.js`).
+- `components/` -- `Inbox` (org + meeting invites), `OrgOnlineView` (roster grouped by meeting/offline), `UsersManagement` (`/org`'s member table + invite form).
+- `meeting/` -- `MeetingDock` (persistent floating/draggable on desktop, half-screen/fullscreen toggle on mobile via `MeetingLayoutContext`) renders `MeetingPanel` (tiles + chat + controls).
 
 ## Other
 

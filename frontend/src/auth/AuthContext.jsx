@@ -36,11 +36,9 @@ export function AuthProvider({ children }) {
     if (!fromLink) return;
     localStorage.setItem(STORAGE_KEY, fromLink);
     // An invite's magic link carries both -- keep `invite` riding along so
-    // `Panels` can still read it off the URL it lands on.
+    // `Inbox` (on `/in`) can still read it off the URL it lands on.
     const invite = new URL(window.location.href).searchParams.get("invite");
-    navigate(
-      invite ? `/panels?invite=${encodeURIComponent(invite)}` : "/panels",
-    );
+    navigate(invite ? `/in?invite=${encodeURIComponent(invite)}` : "/in");
   }, []);
 
   // Same as landing on a `?login=` link, but handed a token directly rather

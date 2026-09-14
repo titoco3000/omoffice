@@ -21,6 +21,12 @@ export const requestKey = (email) =>
 export const me = (token) => apiFetch("/rbac/me", { token });
 export const renameMe = (token, name) =>
   apiFetch("/rbac/me/name", { method: "PUT", token, body: { name } });
+export const renameMeInOrg = (token, orgId, name) =>
+  apiFetch(`/rbac/orgs/${orgId}/members/me/name`, {
+    method: "PUT",
+    token,
+    body: { name },
+  });
 
 export const listOrgs = (token) => apiFetch("/rbac/orgs", { token });
 export const createOrg = (token, name) =>

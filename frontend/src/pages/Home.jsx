@@ -1,6 +1,9 @@
+import { useAuth } from "../auth/AuthContext";
 import { Link } from "../router/Router";
 
 export default function Home() {
+  const { token } = useAuth();
+
   return (
     <main className="mx-auto flex min-h-full max-w-2xl flex-col items-center justify-center gap-6 px-6 text-center">
       <h1 className="text-4xl font-semibold text-ink">omoffice</h1>
@@ -9,10 +12,10 @@ export default function Home() {
         without a separate tool for each.
       </p>
       <Link
-        to="/login"
+        to={token ? "/in" : "/login"}
         className="rounded-card bg-brand px-6 py-2.5 font-medium text-on-brand hover:bg-brand-strong"
       >
-        Log in
+        {token ? "Access my orgs" : "Log in"}
       </Link>
     </main>
   );

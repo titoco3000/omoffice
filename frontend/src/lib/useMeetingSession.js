@@ -1,9 +1,8 @@
 //! Shared meeting/invite state for a whole session -- one Chime session per
-//! tab (see lib/chime.js), so this lives above `MeetingsPanel`, `InvitesPanel`
-//! and `PeoplePanel` rather than inside any one of them: accepting an
-//! invite from `InvitesPanel` or joining someone's meeting from
-//! `PeoplePanel` has to land in the same `myMeetingId`/`roomStatus` state
-//! `MeetingsPanel` renders, not a copy of it.
+//! tab (see lib/chime.js), so this lives in `OrgSessionContext` rather than
+//! inside `MeetingDock`, `Inbox` or `OrgOnlineView`: accepting an invite from
+//! `Inbox` or inviting someone from `OrgOnlineView` has to land in the same
+//! `myMeetingId`/`roomStatus` state `MeetingDock` renders, not a copy of it.
 //!
 //! `orgId` is which org's panels are currently open, not which org a
 //! meeting happens to belong to -- switching it leaves whatever meeting
@@ -50,7 +49,8 @@ export function useMeetingSession(token, orgId) {
   const [cameraOn, setCameraOnState] = useState(false);
   const [micMuted, setMicMutedState] = useState(false);
   const [sharingScreen, setSharingScreen] = useState(false);
-  const [remoteTiles, setRemoteTiles] = useState([]); // [{tileId, attendeeId, isContent}]
+  const [remoteTiles, setRemoteTiles] = useState([]); // [{tileId, attendeeId, externalUserId, isContent}]
+  const [speakingUserIds, setSpeakingUserIds] = useState(new Set());
   // Every pending invite the backend knows about for this user, regardless
   // of org -- narrowed to `orgId` below, before this hook hands anything
   // back.
@@ -76,6 +76,7 @@ export function useMeetingSession(token, orgId) {
   useEffect(() => {
     chime.onRemoteTiles(setRemoteTiles);
     chime.onScreenShareStopped(() => setSharingScreen(false));
+    chime.onSpeakingChange(setSpeakingUserIds);
   }, []);
 
   useEffect(() => {
@@ -99,8 +100,8 @@ export function useMeetingSession(token, orgId) {
       .catch((err) => setError(err.message));
 
   useEffect(() => {
-    // No org selected -- nothing renders `meetings` anyway (`MeetingsPanel`/
-    // `PeoplePanel` only mount once one is), so there's nothing to clear:
+    // No org selected -- nothing renders `meetings` anyway (`MeetingDock`/
+    // `OrgOnlineView` only mount once one is), so there's nothing to clear:
     // the next org actually selected refetches fresh before either mounts.
     if (!orgId) return;
     reloadMeetings();
@@ -494,6 +495,7 @@ export function useMeetingSession(token, orgId) {
     micMuted,
     sharingScreen,
     remoteTiles,
+    speakingUserIds,
     invites,
     error,
     chatMessages,

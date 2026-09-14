@@ -34,14 +34,35 @@ let cameraOn = false;
 let micMuted = false;
 let sharingScreen = false;
 
-const remoteTiles = new Map(); // tileId -> { attendeeId, isContent }
+const remoteTiles = new Map(); // tileId -> { attendeeId, externalUserId, isContent }
+const attendeeExternalIds = new Map(); // chime attendeeId -> ExternalUserId
+const speakingAttendeeIds = new Set();
 let onRemoteTilesChange = () => {};
 let onScreenShareEnded = () => {};
+let onSpeakingIdsChange = () => {};
 
 function notifyRemoteTiles() {
   onRemoteTilesChange(
     Array.from(remoteTiles, ([tileId, tile]) => ({ tileId, ...tile })),
   );
+}
+
+function notifySpeaking() {
+  onSpeakingIdsChange(
+    new Set([...speakingAttendeeIds].map((id) => userIdFor(id))),
+  );
+}
+
+// `ExternalUserId` is `${userId}#${joinSuffix}` (see `chime::external_user_id`,
+// backend/lib/core/chime.rs) -- this is that mapping run backward, against
+// whichever attendeeId presence has reported it for.
+function userIdFor(attendeeId) {
+  return externalToUserId(attendeeExternalIds.get(attendeeId));
+}
+
+/// The app user id a Chime `ExternalUserId` was minted from.
+export function externalToUserId(externalUserId) {
+  return externalUserId ? externalUserId.split("#")[0] : externalUserId;
 }
 
 /// The `<audio>` element Chime's remote audio is bound to.
@@ -77,6 +98,14 @@ export function onRemoteTiles(callback) {
 export function onScreenShareStopped(callback) {
   onScreenShareEnded = callback;
 }
+
+// Called with the current set of user ids whose mic is currently producing
+// sound, any time it changes.
+export function onSpeakingChange(callback) {
+  onSpeakingIdsChange = callback;
+}
+
+const SPEAKING_THRESHOLD = 0.4;
 
 // Re-grabbed fresh on every `connect`, same as the camera in `setCameraOn`
 // -- caching this across the tab's whole life meant one bad first grab (a
@@ -197,6 +226,7 @@ export async function connect(meetingInfo, attendeeInfo) {
       if (tileState.boundAttendeeId == null) return;
       remoteTiles.set(tileState.tileId, {
         attendeeId: tileState.boundAttendeeId,
+        externalUserId: tileState.boundExternalUserId,
         isContent: tileState.isContent,
       });
       notifyRemoteTiles();
@@ -206,6 +236,18 @@ export async function connect(meetingInfo, attendeeInfo) {
       remoteTiles.delete(tileId);
       notifyRemoteTiles();
     },
+    // `stop()` tears the local video tile down asynchronously, well after it
+    // returns (a network round-trip to leave, then `CleanStoppedSessionTask`
+    // clears the tile's bound video element) -- resuming the preview from
+    // `disconnect()` itself races that and reliably loses. `session` is
+    // checked because a fast rejoin may already have replaced this session
+    // by the time its own stop finishes; a stale resume here would stomp on
+    // that new one's already-bound tile instead of the preview.
+    audioVideoDidStop: () => {
+      if (!session && cameraOn && selfVideoElement) {
+        deviceController.startVideoPreviewForVideoInput(selfVideoElement);
+      }
+    },
   });
   nextSession.audioVideo.addContentShareObserver({
     contentShareDidStop: () => {
@@ -213,6 +255,35 @@ export async function connect(meetingInfo, attendeeInfo) {
       onScreenShareEnded();
     },
   });
+
+  // Presence tracks every attendee's `ExternalUserId` (self included, video
+  // tile or not) so a tile-less audio attendee's speaking state can still
+  // resolve to a user id; the volume indicator itself is what actually
+  // drives `speakingAttendeeIds`.
+  nextSession.audioVideo.realtimeSubscribeToAttendeeIdPresence(
+    (attendeeId, present, externalUserId) => {
+      if (!present) {
+        attendeeExternalIds.delete(attendeeId);
+        speakingAttendeeIds.delete(attendeeId);
+        nextSession.audioVideo.realtimeUnsubscribeFromVolumeIndicator(
+          attendeeId,
+        );
+        notifySpeaking();
+        return;
+      }
+      attendeeExternalIds.set(attendeeId, externalUserId);
+      nextSession.audioVideo.realtimeSubscribeToVolumeIndicator(
+        attendeeId,
+        (id, volume, muted) => {
+          const speaking = !muted && (volume ?? 0) > SPEAKING_THRESHOLD;
+          const changed = speaking
+            ? !speakingAttendeeIds.has(id) && speakingAttendeeIds.add(id)
+            : speakingAttendeeIds.delete(id);
+          if (changed) notifySpeaking();
+        },
+      );
+    },
+  );
 
   if (audioElement) nextSession.audioVideo.bindAudioElement(audioElement);
   if (selfVideoElement) {
@@ -241,15 +312,21 @@ export async function disconnect() {
   session = null;
   remoteTiles.clear();
   notifyRemoteTiles();
+  attendeeExternalIds.clear();
+  speakingAttendeeIds.clear();
+  notifySpeaking();
   sharingScreen = false;
   try {
+    // Resuming the preview happens in the `audioVideoDidStop` observer
+    // (registered in `connect`), not here -- see the comment there.
     previous.audioVideo.stop();
   } catch {
     // Already torn down (the room was cleared out from under it, say) --
-    // nothing left to stop.
-  }
-  if (cameraOn && selfVideoElement) {
-    deviceController.startVideoPreviewForVideoInput(selfVideoElement);
+    // nothing left to stop, so `audioVideoDidStop` won't fire either;
+    // resume the preview ourselves.
+    if (cameraOn && selfVideoElement) {
+      deviceController.startVideoPreviewForVideoInput(selfVideoElement);
+    }
   }
 }
 

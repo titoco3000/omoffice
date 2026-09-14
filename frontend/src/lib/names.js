@@ -11,7 +11,6 @@
 
 export function preferredName(userId, members) {
   return (
-    members?.find((member) => member.user_id === userId)?.display_name ??
-    userId
+    members?.find((member) => member.user_id === userId)?.display_name ?? userId
   );
 }

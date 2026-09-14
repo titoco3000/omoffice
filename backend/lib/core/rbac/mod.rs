@@ -75,6 +75,7 @@ pub struct OrgMember {
     /// Org name, else global name, else email, else the id itself -- see
     /// [`display_name`].
     pub display_name: String,
+    pub email: Option<String>,
     pub online: bool,
     pub roles: Vec<String>,
 }
@@ -545,6 +546,7 @@ pub async fn list_members(db: &Db, org_id: &str) -> Result<Vec<OrgMember>, RbacE
                 members.push(OrgMember {
                     user_id: row.user_id,
                     display_name: name,
+                    email: row.email,
                     online: row.online.unwrap_or(false),
                     roles: row.role.into_iter().collect(),
                 })
@@ -877,13 +879,32 @@ async fn me_route(
     Ok(Json(json!(user)))
 }
 
+/// Renaming the account globally moves every org's `display_name` for it
+/// that has no org-specific override -- so every org this user belongs to
+/// gets its roster re-pushed, not just the one (if any) currently open.
 async fn rename_me_route(
     Extension(db): Extension<Db>,
+    Extension(messenger): Extension<Messenger>,
     Extension(claims): Extension<Claims>,
     Json(body): Json<NameBody>,
 ) -> Result<Json<serde_json::Value>, RbacError> {
     rename_globally(&db, &claims.sub, &body.name).await?;
+    for org in list_orgs_for_user(&db, &claims.sub).await? {
+        broadcast_roster(&messenger, &db, &org.id).await?;
+    }
     Ok(Json(json!({ "name": body.name })))
+}
+
+async fn rename_me_in_org_route(
+    Extension(db): Extension<Db>,
+    Extension(messenger): Extension<Messenger>,
+    Extension(claims): Extension<Claims>,
+    Path(org_id): Path<String>,
+    Json(body): Json<NameBody>,
+) -> Result<Json<serde_json::Value>, RbacError> {
+    rename_in_org(&db, &org_id, &claims.sub, &body.name).await?;
+    broadcast_roster(&messenger, &db, &org_id).await?;
+    Ok(Json(json!({ "org_id": org_id, "name": body.name })))
 }
 
 async fn list_orgs_route(
@@ -1078,6 +1099,10 @@ pub fn routes() -> Router {
         .route("/orgs/{org_id}/name", put(rename_org_route))
         .route("/orgs/{org_id}/members", get(list_members_route))
         .route("/orgs/{org_id}/members/me", delete(leave_org_route))
+        .route(
+            "/orgs/{org_id}/members/me/name",
+            put(rename_me_in_org_route),
+        )
         .route(
             "/orgs/{org_id}/members/{user_id}",
             delete(remove_member_route),

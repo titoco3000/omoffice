@@ -1,0 +1,152 @@
+//! Persistent chrome for every authenticated page except `/` and `/login`:
+//! a collapsible sidebar on desktop, a bottom (or side, landscape) bar on
+//! mobile. `OrgOnlineView` lives in the desktop sidebar only, and is hidden
+//! there while already showing on `/in` itself.
+
+import { useState } from "react";
+import { Link, useLocation } from "../router/Router";
+import { useIsMobile, useIsPortrait } from "./useViewport";
+import { useOrgSession } from "../org/OrgSessionContext";
+import { useMeetingLayout } from "../meeting/MeetingLayoutContext";
+import OrgOnlineView from "../components/OrgOnlineView";
+
+const STORAGE_KEY = "omoffice_sidebar_collapsed";
+
+function Logo({ className = "text-lg" }) {
+  return (
+    <span className={`font-semibold text-ink ${className}`}>omoffice</span>
+  );
+}
+
+function DesktopSidebar() {
+  const path = useLocation();
+  const { currentOrg } = useOrgSession();
+  const [collapsed, setCollapsed] = useState(
+    () => localStorage.getItem(STORAGE_KEY) === "true",
+  );
+
+  const toggle = () => {
+    setCollapsed((v) => {
+      localStorage.setItem(STORAGE_KEY, String(!v));
+      return !v;
+    });
+  };
+
+  return (
+    <aside
+      className={`flex h-full shrink-0 flex-col border-r bg-surface transition-[width] duration-150 ${
+        collapsed ? "w-rail" : "w-side"
+      }`}
+    >
+      <div className="flex shrink-0 items-center justify-between border-b p-3">
+        {!collapsed && <Logo />}
+        <button
+          onClick={toggle}
+          title={collapsed ? "Expand" : "Collapse"}
+          className="rounded-card px-2 py-1 text-ink-muted hover:bg-muted hover:text-ink"
+        >
+          {collapsed ? "»" : "«"}
+        </button>
+      </div>
+
+      <div className="min-h-0 flex-1 overflow-y-auto p-2">
+        {currentOrg && path !== "/in" ? (
+          <>
+            <div className="flex flex-1 items-center justify-center">
+              <Link
+                to="/in"
+                title="Home"
+                className="flex size-10 items-center justify-center rounded-card text-xl text-ink-muted hover:bg-muted hover:text-ink"
+              >
+                🏠
+              </Link>
+            </div>
+            <OrgOnlineView />
+          </>
+        ) : (
+          <></>
+        )}
+      </div>
+
+      <Link
+        to="/profile"
+        className="flex shrink-0 items-center gap-2 border-t p-3 hover:bg-muted"
+      >
+        <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-brand text-sm font-semibold text-on-brand">
+          👤
+        </span>
+        {!collapsed && (
+          <span className="truncate text-sm text-ink">Profile</span>
+        )}
+      </Link>
+    </aside>
+  );
+}
+
+function MobileBar() {
+  const isPortrait = useIsPortrait();
+  const { session } = useOrgSession();
+  const { mobileExpanded, toggleMobileExpanded } = useMeetingLayout();
+  const inMeeting = !!session.myMeetingId;
+
+  const barPlacement = isPortrait
+    ? "inset-x-0 bottom-0 h-14 flex-row"
+    : "inset-y-0 right-0 w-14 flex-col";
+
+  return (
+    <nav
+      className={`fixed z-40 flex items-center justify-around border bg-surface ${barPlacement}`}
+    >
+      <Link
+        to="/profile"
+        className="flex flex-col items-center justify-center text-ink-muted"
+      >
+        <span className="text-lg">👤</span>
+      </Link>
+      <button
+        onClick={inMeeting ? toggleMobileExpanded : undefined}
+        className="flex flex-col items-center justify-center text-ink-muted"
+        title={
+          inMeeting
+            ? mobileExpanded
+              ? "Shrink meeting"
+              : "Expand meeting"
+            : undefined
+        }
+      >
+        <Logo className="text-sm" />
+      </button>
+      <Link
+        to="/in"
+        className="flex flex-col items-center justify-center text-ink-muted"
+      >
+        <span className="text-lg">☰</span>
+      </Link>
+    </nav>
+  );
+}
+
+export default function NavContainer({ children }) {
+  const isMobile = useIsMobile();
+  const isPortrait = useIsPortrait();
+
+  if (isMobile) {
+    return (
+      <div className={`flex h-full ${isPortrait ? "flex-col" : "flex-row"}`}>
+        <main
+          className={`min-h-0 flex-1 overflow-y-auto ${isPortrait ? "pb-14" : "pr-14"}`}
+        >
+          {children}
+        </main>
+        <MobileBar />
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex h-full">
+      <DesktopSidebar />
+      <main className="min-h-0 flex-1 overflow-y-auto">{children}</main>
+    </div>
+  );
+}

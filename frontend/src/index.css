@@ -32,6 +32,7 @@
   --om-warning: oklch(70% 0.15 78);
   --om-danger: oklch(56% 0.19 25);
   --om-on-danger: oklch(99% 0 0);
+  --om-speaking: oklch(72% 0.19 145);
 }
 
 .dark {
@@ -54,6 +55,7 @@
   --om-warning: oklch(80% 0.14 80);
   --om-danger: oklch(68% 0.17 25);
   --om-on-danger: oklch(19% 0.02 260);
+  --om-speaking: oklch(80% 0.17 145);
 }
 
 @theme inline {
@@ -74,6 +76,7 @@
   --color-warning: var(--om-warning);
   --color-danger: var(--om-danger);
   --color-on-danger: var(--om-on-danger);
+  --color-speaking: var(--om-speaking);
 
   --font-sans:
     ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
@@ -98,7 +101,15 @@
   }
 
   body {
-    @apply min-h-full bg-bg font-sans text-ink antialiased;
+    @apply h-full bg-bg font-sans text-ink antialiased;
+  }
+
+  /* `#root` has no Tailwind class of its own (it's the one element outside
+     `index.html`'s `<body>` this file doesn't reach via JSX) -- without an
+     explicit height here, `html`/`body`'s own `height: 100%` stops here and
+     every `h-full` below it (the sidebar included) resolves against nothing. */
+  #root {
+    height: 100%;
   }
 
   /* Tailwind v4 defaults `border-*` to currentColor; this makes a bare

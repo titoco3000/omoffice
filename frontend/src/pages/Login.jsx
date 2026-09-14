@@ -20,7 +20,7 @@ function UnsafeLoginNotice({ token }) {
 
   const proceed = () => {
     applyToken(token);
-    navigate("/panels");
+    navigate("/in");
   };
 
   useEffect(() => {

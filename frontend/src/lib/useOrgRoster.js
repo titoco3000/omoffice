@@ -1,8 +1,8 @@
 //! One org's member roster (`core::rbac::list_members`,
 //! backend/lib/core/rbac/mod.rs), shared across every panel that needs it
-//! -- `OrgPanel`, `PeoplePanel`, `MeetingsPanel` and `InvitesPanel` all
-//! want the same `{user_id, display_name, online, roles}` list rather than
-//! each fetching it and subscribing to `ORG_ROSTER_CHANNEL` on its own.
+//! -- `UsersManagement`, `OrgOnlineView`, `MeetingPanel` and `Inbox` all
+//! want the same `{user_id, display_name, email, online, roles}` list rather
+//! than each fetching it and subscribing to `ORG_ROSTER_CHANNEL` on its own.
 //!
 //! `orgId: null` (no org selected) yields an empty roster with nothing
 //! fetched or subscribed.
