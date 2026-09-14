@@ -34,7 +34,6 @@ let cameraOn = false;
 let micMuted = false;
 let sharingScreen = false;
 
-let audioInputReady = null; // promise, so the mic is only ever grabbed once
 const remoteTiles = new Map(); // tileId -> { attendeeId, isContent }
 let onRemoteTilesChange = () => {};
 let onScreenShareEnded = () => {};
@@ -79,14 +78,23 @@ export function onScreenShareStopped(callback) {
   onScreenShareEnded = callback;
 }
 
+// Re-grabbed fresh on every `connect`, same as the camera in `setCameraOn`
+// -- caching this across the tab's whole life meant one bad first grab (a
+// permission prompt still pending, a stream that died with a past session)
+// stuck silently for every meeting after, since nothing ever retried it.
 async function ensureAudioInput() {
-  if (!audioInputReady) {
-    audioInputReady = (async () => {
-      const mics = await deviceController.listAudioInputDevices();
-      if (mics[0]) await deviceController.startAudioInput(mics[0].deviceId);
-    })();
-  }
-  return audioInputReady;
+  const mics = await deviceController.listAudioInputDevices();
+  if (mics[0]) await deviceController.startAudioInput(mics[0].deviceId);
+}
+
+/// Release this tab's microphone hardware -- called on a full leave, same
+/// as `setCameraOn(false)` releases the camera. Without this the mic device
+/// stayed open (browser still shows the tab as using it) even after the
+/// meeting ended, since nothing ever called the matching `stopAudioInput`.
+/// `micMuted` is left alone, same as `cameraOn` is for the camera, so the
+/// next join still respects whatever mute preference was set.
+export async function releaseMic() {
+  await deviceController.stopAudioInput();
 }
 
 /// Turn this tab's own camera on or off -- works the same whether or not a
