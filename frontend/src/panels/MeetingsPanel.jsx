@@ -19,6 +19,8 @@ export default function MeetingsPanel({ token, session, members }) {
     error,
     chatMessages,
     sendChatMessage,
+    muteAttendee,
+    turnOffAttendeeCamera,
     create,
     join,
     leave,
@@ -32,6 +34,14 @@ export default function MeetingsPanel({ token, session, members }) {
     sendChatMessage(chatDraft);
     setChatDraft("");
   };
+
+  // Everyone else currently in this tab's own meeting -- from the meeting
+  // list's own attendee roster (`meeting.attendees`), not `remoteTiles`:
+  // this has to work for muting/camera-off even before Chime has a video
+  // tile for them (audio-only, or still "waiting").
+  const otherAttendees = (
+    meetings.find((m) => m.id === myMeetingId)?.attendees ?? []
+  ).filter((userId) => userId !== myId);
 
   return (
     <section className="rounded-card border bg-surface p-5">
@@ -96,6 +106,40 @@ export default function MeetingsPanel({ token, session, members }) {
               {sharingScreen ? "Stop sharing screen" : "Share screen"}
             </button>
           </div>
+
+          {/* Any attendee may force any other attendee's mic or camera off
+              -- see `features::meetings::controls`
+              (backend/lib/features/meetings/controls.rs). No accept step,
+              and no way to force either back *on* -- only the target's own
+              tab can do that. */}
+          {otherAttendees.length > 0 && (
+            <ul className="mt-3 space-y-1 text-sm">
+              {otherAttendees.map((userId) => (
+                <li
+                  key={userId}
+                  className="flex items-center justify-between rounded-card border px-2 py-1"
+                >
+                  <span className="text-ink">
+                    {preferredName(userId, members)}
+                  </span>
+                  <span className="flex gap-2">
+                    <button
+                      onClick={() => muteAttendee(userId)}
+                      className="text-ink-muted hover:text-ink"
+                    >
+                      Mute
+                    </button>
+                    <button
+                      onClick={() => turnOffAttendeeCamera(userId)}
+                      className="text-ink-muted hover:text-ink"
+                    >
+                      Turn off camera
+                    </button>
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
 
           {/* No history behind this -- see `useMeetingSession`'s
               `chatMessages`: nothing is stored server-side, only what this

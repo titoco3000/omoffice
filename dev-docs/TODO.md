@@ -1,4 +1,4 @@
-- chat
-- mute / close camera from others
+- fullscreen / mini meeting
 - UI
 - map
+- shared drawing

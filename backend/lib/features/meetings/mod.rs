@@ -38,6 +38,7 @@
 //! pending invites, not scoped to an org at all.
 
 pub mod chat;
+pub mod controls;
 pub mod meeting_invites;
 pub mod rooms;
 pub use meeting_invites::*;

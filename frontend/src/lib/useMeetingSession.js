@@ -20,6 +20,7 @@ import * as chime from "./chime";
 import {
   IDLE_AFTER_SECONDS,
   MEETING_CHAT_CHANNEL,
+  MEETING_CONTROL_CHANNEL,
   MEETING_FORCE_CHANNEL,
   MEETING_INVITES_CHANNEL,
   MEETING_LIST_CHANNEL,
@@ -228,6 +229,48 @@ export function useMeetingSession(token, orgId) {
       ...prev,
       { from: myId, text: trimmed, at: Date.now(), self: true },
     ]);
+  };
+
+  // Remote mute/camera-off -- see `features::meetings::controls`
+  // (backend/lib/features/meetings/controls.rs). Any other attendee may
+  // push this at this tab; there is no accept step and no way to force the
+  // mic or camera back *on*, only off. Once applied here, every other
+  // attendee already sees it through Chime's own live audio/video state --
+  // nothing to push back out.
+  useEffect(() => {
+    if (!myMeetingId) return;
+    return messenger.on(MEETING_CONTROL_CHANNEL, async (message) => {
+      if (message.meeting_id !== myMeetingId) return;
+      if (message.action === "mute") {
+        await chime.setMicMuted(true);
+        setMicMutedState(true);
+      } else if (message.action === "camera_off") {
+        await chime.setCameraOn(false);
+        setCameraOnState(false);
+      }
+    });
+  }, [myMeetingId]);
+
+  // Force `userId` (another attendee of this same meeting) muted or
+  // camera-off. Fire-and-forget over the messenger, same as
+  // `sendChatMessage` -- the backend checks both this tab and `userId` are
+  // actually attendees before relaying it on.
+  const muteAttendee = (userId) => {
+    if (!myMeetingId) return;
+    messenger.send(MEETING_CONTROL_CHANNEL, {
+      meeting_id: myMeetingId,
+      target_user_id: userId,
+      action: "mute",
+    });
+  };
+
+  const turnOffAttendeeCamera = (userId) => {
+    if (!myMeetingId) return;
+    messenger.send(MEETING_CONTROL_CHANNEL, {
+      meeting_id: myMeetingId,
+      target_user_id: userId,
+      action: "camera_off",
+    });
   };
 
   // Logging out (this hook's one mount, at the top of `Panels`) shouldn't
@@ -450,6 +493,8 @@ export function useMeetingSession(token, orgId) {
     error,
     chatMessages,
     sendChatMessage,
+    muteAttendee,
+    turnOffAttendeeCamera,
     create,
     join,
     leave,
