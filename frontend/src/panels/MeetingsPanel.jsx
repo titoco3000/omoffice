@@ -1,8 +1,11 @@
+import { useState } from "react";
 import { decodeJwt } from "../lib/jwt";
+import { preferredName } from "../lib/names";
 import * as chime from "../lib/chime";
 
-export default function MeetingsPanel({ token, session }) {
+export default function MeetingsPanel({ token, session, members }) {
   const myId = decodeJwt(token)?.sub;
+  const [chatDraft, setChatDraft] = useState("");
   const {
     audioRef,
     selfVideoRef,
@@ -14,6 +17,8 @@ export default function MeetingsPanel({ token, session }) {
     sharingScreen,
     remoteTiles,
     error,
+    chatMessages,
+    sendChatMessage,
     create,
     join,
     leave,
@@ -21,6 +26,12 @@ export default function MeetingsPanel({ token, session }) {
     toggleMic,
     toggleScreenShare,
   } = session;
+
+  const submitChat = (event) => {
+    event.preventDefault();
+    sendChatMessage(chatDraft);
+    setChatDraft("");
+  };
 
   return (
     <section className="rounded-card border bg-surface p-5">
@@ -84,6 +95,40 @@ export default function MeetingsPanel({ token, session }) {
             >
               {sharingScreen ? "Stop sharing screen" : "Share screen"}
             </button>
+          </div>
+
+          {/* No history behind this -- see `useMeetingSession`'s
+              `chatMessages`: nothing is stored server-side, only what this
+              tab has sent or received since joining. */}
+          <div className="mt-3 rounded-card border bg-surface p-2">
+            <ul className="max-h-40 space-y-1 overflow-y-auto text-sm">
+              {chatMessages.length === 0 && (
+                <li className="text-ink-muted">No messages yet.</li>
+              )}
+              {chatMessages.map((msg, index) => (
+                <li key={index}>
+                  <span className="text-ink-muted">
+                    {msg.self ? "You" : preferredName(msg.from, members)}:
+                  </span>{" "}
+                  <span className="text-ink">{msg.text}</span>
+                </li>
+              ))}
+            </ul>
+            <form onSubmit={submitChat} className="mt-2 flex gap-2">
+              <input
+                value={chatDraft}
+                onChange={(event) => setChatDraft(event.target.value)}
+                placeholder="Message everyone in this meeting"
+                className="flex-1 rounded-card border bg-bg px-2 py-1 text-sm text-ink"
+              />
+              <button
+                type="submit"
+                disabled={!chatDraft.trim()}
+                className="rounded-card border px-3 py-1 text-sm text-brand hover:underline disabled:opacity-50"
+              >
+                Send
+              </button>
+            </form>
           </div>
         </div>
       )}

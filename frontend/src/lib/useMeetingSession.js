@@ -15,9 +15,11 @@
 
 import { useEffect, useRef, useState } from "react";
 import { messenger } from "./messenger";
+import { decodeJwt } from "./jwt";
 import * as chime from "./chime";
 import {
   IDLE_AFTER_SECONDS,
+  MEETING_CHAT_CHANNEL,
   MEETING_FORCE_CHANNEL,
   MEETING_INVITES_CHANNEL,
   MEETING_LIST_CHANNEL,
@@ -53,6 +55,14 @@ export function useMeetingSession(token, orgId) {
   // back.
   const [allInvites, setAllInvites] = useState([]);
   const [error, setError] = useState(null);
+  // In-meeting chat -- frontend state only, the backend never stores a
+  // message, just relays it to whoever else is currently an attendee, so
+  // this array is the only copy that exists anywhere. Reset whenever
+  // `myMeetingId` changes -- a fresh meeting (joined, switched, or this tab
+  // just left) starts with no history, same as anyone else opening it late
+  // would see.
+  const [chatMessages, setChatMessages] = useState([]);
+  const myId = decodeJwt(token)?.sub;
 
   // Mirrors `myMeetingId` for the unmount cleanup below, which is set up
   // once and would otherwise only ever see whatever it was at that moment,
@@ -180,6 +190,45 @@ export function useMeetingSession(token, orgId) {
       }
     });
   }, [myMeetingId]);
+
+  // Chat for whichever meeting this tab is in -- see
+  // `features::meetings::chat::CHANNEL` (backend/lib/features/meetings/chat.rs).
+  // Cleared every time `myMeetingId` changes, not just on leave: a switch
+  // straight into a different meeting (force-join) shouldn't drag the old
+  // one's messages along with it.
+  useEffect(() => {
+    if (!myMeetingId) return;
+    const unsubscribe = messenger.on(MEETING_CHAT_CHANNEL, (message) => {
+      if (message.meeting_id !== myMeetingId) return;
+      setChatMessages((prev) => [
+        ...prev,
+        { from: message.from, text: message.text, at: Date.now() },
+      ]);
+    });
+    return () => {
+      unsubscribe();
+      setChatMessages([]);
+    };
+  }, [myMeetingId]);
+
+  // No HTTP route behind this -- a chat message is nothing but a frame on
+  // the wire, so it goes straight out over the messenger. The backend
+  // relays it to every other attendee but never back to the sender (see
+  // `chat::register`), so it's added here locally, same as it will appear
+  // in everyone else's `chatMessages` once their own copy of this handler
+  // receives it.
+  const sendChatMessage = (text) => {
+    const trimmed = text.trim();
+    if (!trimmed || !myMeetingId) return;
+    messenger.send(MEETING_CHAT_CHANNEL, {
+      meeting_id: myMeetingId,
+      text: trimmed,
+    });
+    setChatMessages((prev) => [
+      ...prev,
+      { from: myId, text: trimmed, at: Date.now(), self: true },
+    ]);
+  };
 
   // Logging out (this hook's one mount, at the top of `Panels`) shouldn't
   // leave a ghost attendee behind, or the camera running.
@@ -399,6 +448,8 @@ export function useMeetingSession(token, orgId) {
     remoteTiles,
     invites,
     error,
+    chatMessages,
+    sendChatMessage,
     create,
     join,
     leave,

@@ -1,10 +1,7 @@
 import { useEffect, useState } from "react";
 import { decodeJwt } from "../lib/jwt";
 import { ROLES } from "../lib/roles";
-import { messenger } from "../lib/messenger";
 import {
-  ORG_ROSTER_CHANNEL,
-  listMembers,
   removeMember,
   renameOrg,
   deleteOrg,
@@ -15,9 +12,15 @@ import {
   revokeRole,
 } from "../lib/rbac";
 
-export default function OrgPanel({ token, org, onOrgChanged, onOrgDeleted }) {
+export default function OrgPanel({
+  token,
+  org,
+  roster,
+  onOrgChanged,
+  onOrgDeleted,
+}) {
   const myId = decodeJwt(token)?.sub;
-  const [members, setMembers] = useState([]);
+  const { members, reload: reloadMembers, error: rosterError } = roster;
   const [invites, setInvites] = useState([]);
   const [name, setName] = useState(org.name);
   const [inviteEmail, setInviteEmail] = useState("");
@@ -28,31 +31,6 @@ export default function OrgPanel({ token, org, onOrgChanged, onOrgDeleted }) {
   const isAdmin = me?.roles.includes("admin") ?? false;
   const canManageTeam =
     isAdmin || (me?.roles.includes("team-management") ?? false);
-
-  const reloadMembers = () =>
-    listMembers(token, org.id)
-      .then((data) => setMembers(data.members ?? []))
-      .catch((err) => setError(err.message));
-
-  // `org.id` never changes under one mounted instance -- `Panels` remounts
-  // this component (via `key`) when the selected org switches.
-  useEffect(() => {
-    reloadMembers();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token]);
-
-  // Live updates: a role change, join or removal anywhere in this org lands
-  // here on the messenger -- see `core::rbac::broadcast_roster`
-  // (backend/lib/core/rbac/mod.rs) -- so every tab open on it stays current
-  // without polling.
-  useEffect(
-    () =>
-      messenger.on(ORG_ROSTER_CHANNEL, (message) => {
-        if (message.org_id === org.id && message.members)
-          setMembers(message.members);
-      }),
-    [org.id],
-  );
 
   useEffect(() => {
     if (!canManageTeam) return;
@@ -251,7 +229,9 @@ export default function OrgPanel({ token, org, onOrgChanged, onOrgDeleted }) {
         </div>
       )}
 
-      {error && <p className="mt-3 text-sm text-danger">{error}</p>}
+      {(error || rosterError) && (
+        <p className="mt-3 text-sm text-danger">{error || rosterError}</p>
+      )}
     </section>
   );
 }

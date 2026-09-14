@@ -3,6 +3,7 @@ import { useAuth } from "../auth/AuthContext";
 import { ORG_ACTIVE_CHANNEL, ORG_ROSTER_CHANNEL, listOrgs } from "../lib/rbac";
 import { messenger } from "../lib/messenger";
 import { useMeetingSession } from "../lib/useMeetingSession";
+import { useOrgRoster } from "../lib/useOrgRoster";
 import UserPanel from "../panels/UserPanel";
 import OrgPanel from "../panels/OrgPanel";
 import MeetingsPanel from "../panels/MeetingsPanel";
@@ -71,6 +72,12 @@ export default function Panels() {
   // being torn down and rebuilt.
   const session = useMeetingSession(token, currentOrg?.id ?? null);
 
+  // One roster for the whole page too -- `OrgPanel`, `PeoplePanel`,
+  // `MeetingsPanel` and `InvitesPanel` all want to turn a user id into its
+  // `preferredName` (lib/names.js) against the same list, rather than each
+  // fetching its own copy of it.
+  const roster = useOrgRoster(token, currentOrg?.id ?? null);
+
   return (
     <main className="mx-auto flex max-w-4xl flex-col gap-6 px-6 py-10">
       {error && <p className="text-sm text-danger">{error}</p>}
@@ -82,7 +89,7 @@ export default function Panels() {
         }}
         onDeclined={reloadOrgs}
       />
-      <InvitesPanel session={session} />
+      <InvitesPanel session={session} members={roster.members} />
       <UserPanel
         token={token}
         orgs={orgs}
@@ -96,6 +103,7 @@ export default function Panels() {
           key={`org-${currentOrg.id}`}
           token={token}
           org={currentOrg}
+          roster={roster}
           onOrgChanged={reloadOrgs}
           onOrgDeleted={() => selectOrg(null)}
         />
@@ -104,8 +112,8 @@ export default function Panels() {
         <PeoplePanel
           key={`people-${currentOrg.id}`}
           token={token}
-          org={currentOrg}
           session={session}
+          members={roster.members}
         />
       )}
       {currentOrg && (
@@ -113,6 +121,7 @@ export default function Panels() {
           key={`meetings-${currentOrg.id}`}
           token={token}
           session={session}
+          members={roster.members}
         />
       )}
     </main>

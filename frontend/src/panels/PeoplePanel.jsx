@@ -1,7 +1,5 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { decodeJwt } from "../lib/jwt";
-import { messenger } from "../lib/messenger";
-import { ORG_ROSTER_CHANNEL, listMembers } from "../lib/rbac";
 
 // Everyone online in this org, grouped by whichever meeting (if any) they're
 // currently in -- crossing `core::rbac`'s roster (backend/lib/core/rbac/mod.rs)
@@ -10,31 +8,10 @@ import { ORG_ROSTER_CHANNEL, listMembers } from "../lib/rbac";
 // Clicking a member reveals the one action that applies to them: join their
 // meeting, or invite them to one (starting the viewer's own if they don't
 // have one yet).
-export default function PeoplePanel({ token, org, session }) {
+export default function PeoplePanel({ token, session, members }) {
   const myId = decodeJwt(token)?.sub;
   const { meetings, myMeetingId, join, inviteUser, forceUser } = session;
-  const [members, setMembers] = useState([]);
   const [selected, setSelected] = useState(null);
-  const [error, setError] = useState(null);
-
-  const reloadMembers = () =>
-    listMembers(token, org.id)
-      .then((data) => setMembers(data.members ?? []))
-      .catch((err) => setError(err.message));
-
-  useEffect(() => {
-    reloadMembers();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token, org.id]);
-
-  useEffect(
-    () =>
-      messenger.on(ORG_ROSTER_CHANNEL, (message) => {
-        if (message.org_id === org.id && message.members)
-          setMembers(message.members);
-      }),
-    [org.id],
-  );
 
   const meetingIdByUser = {};
   for (const meeting of meetings) {
@@ -133,8 +110,6 @@ export default function PeoplePanel({ token, org, session }) {
           </ul>
         </div>
       )}
-
-      {error && <p className="mt-3 text-sm text-danger">{error}</p>}
     </section>
   );
 }

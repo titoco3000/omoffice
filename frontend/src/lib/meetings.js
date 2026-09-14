@@ -5,6 +5,7 @@ export const IDLE_AFTER_SECONDS = 55;
 export const MEETING_ROOM_CHANNEL = "meeting_room";
 export const MEETING_INVITES_CHANNEL = "meeting_invites";
 export const MEETING_FORCE_CHANNEL = "meeting_force";
+export const MEETING_CHAT_CHANNEL = "meeting_chat";
 
 export const listMeetings = (token, orgId) =>
   apiFetch(`/meeting?org_id=${encodeURIComponent(orgId)}`, { token });
