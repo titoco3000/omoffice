@@ -7,6 +7,7 @@ import { useOrgRoster } from "../lib/useOrgRoster";
 import UserPanel from "../panels/UserPanel";
 import OrgPanel from "../panels/OrgPanel";
 import MeetingsPanel from "../panels/MeetingsPanel";
+import MeetingsListPanel from "../panels/MeetingsListPanel";
 import InvitesPanel from "../panels/InvitesPanel";
 import PeoplePanel from "../panels/PeoplePanel";
 import PendingInvite from "../panels/PendingInvite";
@@ -117,13 +118,14 @@ export default function Panels() {
         />
       )}
       {currentOrg && (
-        <MeetingsPanel
-          key={`meetings-${currentOrg.id}`}
-          token={token}
+        <MeetingsListPanel
+          key={`meetings-list-${currentOrg.id}`}
           session={session}
-          members={roster.members}
         />
       )}
+      {/* Fixed dock, not part of the page flow above -- see `MeetingsPanel`:
+          it renders nothing until this tab is actually in a meeting. */}
+      <MeetingsPanel token={token} session={session} members={roster.members} />
     </main>
   );
 }

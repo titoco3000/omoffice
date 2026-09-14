@@ -78,17 +78,10 @@ export function useMeetingSession(token, orgId) {
     chime.onScreenShareStopped(() => setSharingScreen(false));
   }, []);
 
-  // The `<audio>` sink only exists in the DOM while `MeetingsPanel` is
-  // mounted, which is gated (and remounted, via its own `key`) on `orgId`
-  // -- wiring this up once on this hook's own mount, before any org is
-  // selected, would have grabbed `null` forever, same bug `selfVideoRef`
-  // avoids by re-running on `myMeetingId`. Re-running here whenever `orgId`
-  // changes catches it each time `MeetingsPanel` (re)mounts, and clears it
-  // when the panel goes away so no stale detached element lingers.
   useEffect(() => {
     chime.setAudioElement(audioRef.current);
     return () => chime.setAudioElement(null);
-  }, [orgId]);
+  }, [myMeetingId]);
 
   // The self-preview `<video>` only exists in the DOM while `myMeetingId`
   // is set -- wiring this up once on mount would have grabbed `null`
