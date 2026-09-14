@@ -5,7 +5,6 @@ import { RouterProvider, useLocation, navigate } from "./router/Router";
 import { OrgSessionProvider } from "./org/OrgSessionContext";
 import { MeetingLayoutProvider } from "./meeting/MeetingLayoutContext";
 import NavContainer from "./layout/NavContainer";
-import MeetingDock from "./meeting/MeetingDock";
 import Home from "./pages/Home";
 import Login from "./pages/Login";
 import InPage from "./pages/InPage";
@@ -31,7 +30,6 @@ function AuthenticatedApp({ path }) {
     <OrgSessionProvider>
       <MeetingLayoutProvider>
         <NavContainer>{Page ? <Page /> : <RedirectTo to="/in" />}</NavContainer>
-        <MeetingDock />
       </MeetingLayoutProvider>
     </OrgSessionProvider>
   );

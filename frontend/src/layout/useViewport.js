@@ -1,8 +1,11 @@
-//! Mobile layout is a width breakpoint, not a user-agent sniff -- matches
-//! Tailwind's own `sm` breakpoint so the same cutoff governs both.
+//! Mobile layout is a breakpoint, not a user-agent sniff -- matches
+//! Tailwind's own `sm` breakpoint so the same cutoff governs both. Checked
+//! against both dimensions (comma = OR in a media query list), not just
+//! width: a phone rotated to landscape has plenty of width but is still a
+//! phone, and a width-only check would hand it the desktop sidebar.
 import { useEffect, useState } from "react";
 
-const MOBILE_QUERY = "(max-width: 639px)";
+const MOBILE_QUERY = "(max-width: 15cm), (max-height: 15cm)";
 const PORTRAIT_QUERY = "(orientation: portrait)";
 
 function useMediaQuery(query) {

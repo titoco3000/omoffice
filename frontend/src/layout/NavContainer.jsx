@@ -8,6 +8,7 @@ import { Link, useLocation } from "../router/Router";
 import { useIsMobile, useIsPortrait } from "./useViewport";
 import { useOrgSession } from "../org/OrgSessionContext";
 import { useMeetingLayout } from "../meeting/MeetingLayoutContext";
+import MeetingDock from "../meeting/MeetingDock";
 import OrgOnlineView from "../components/OrgOnlineView";
 
 const STORAGE_KEY = "omoffice_sidebar_collapsed";
@@ -51,20 +52,17 @@ function DesktopSidebar() {
 
       <div className="min-h-0 flex-1 overflow-y-auto p-2">
         {currentOrg && path !== "/in" ? (
-          <>
-            <div className="flex flex-1 items-center justify-center">
-              <Link
-                to="/in"
-                title="Home"
-                className="flex size-10 items-center justify-center rounded-card text-xl text-ink-muted hover:bg-muted hover:text-ink"
-              >
-                🏠
-              </Link>
-            </div>
-            <OrgOnlineView />
-          </>
+          <OrgOnlineView />
         ) : (
-          <></>
+          <div className="flex h-full items-center justify-center">
+            <Link
+              to="/in"
+              title="Home"
+              className="flex size-10 items-center justify-center rounded-card text-xl text-ink-muted hover:bg-muted hover:text-ink"
+            >
+              🏠
+            </Link>
+          </div>
         )}
       </div>
 
@@ -89,13 +87,11 @@ function MobileBar() {
   const { mobileExpanded, toggleMobileExpanded } = useMeetingLayout();
   const inMeeting = !!session.myMeetingId;
 
-  const barPlacement = isPortrait
-    ? "inset-x-0 bottom-0 h-14 flex-row"
-    : "inset-y-0 right-0 w-14 flex-col";
-
   return (
     <nav
-      className={`fixed z-40 flex items-center justify-around border bg-surface ${barPlacement}`}
+      className={`flex shrink-0 items-center justify-around border bg-surface ${
+        isPortrait ? "h-14 flex-row" : "w-14 flex-col"
+      }`}
     >
       <Link
         to="/profile"
@@ -129,15 +125,44 @@ function MobileBar() {
 export default function NavContainer({ children }) {
   const isMobile = useIsMobile();
   const isPortrait = useIsPortrait();
+  const { session } = useOrgSession();
+  const { mobileExpanded } = useMeetingLayout();
+  const inMeeting = !!session.myMeetingId;
 
   if (isMobile) {
+    // Hidden (not unmounted) rather than removed, so expanding the dock
+    // doesn't lose whatever state the page underneath was holding.
+    const main = (
+      <main
+        className={`min-h-0 min-w-0 flex-1 overflow-y-auto ${
+          inMeeting && mobileExpanded ? "hidden" : ""
+        }`}
+      >
+        {children}
+      </main>
+    );
+    const dock = inMeeting ? <MeetingDock /> : null;
+
     return (
       <div className={`flex h-full ${isPortrait ? "flex-col" : "flex-row"}`}>
-        <main
-          className={`min-h-0 flex-1 overflow-y-auto ${isPortrait ? "pb-14" : "pr-14"}`}
+        <div
+          className={`flex min-h-0 flex-1 ${isPortrait ? "flex-col" : "flex-row"}`}
         >
-          {children}
-        </main>
+          {/* Portrait: dock on top, page below -- landscape: page on the
+              left, dock on the right. Plain source order, no `fixed`/`order`
+              needed, since this is normal flex flow, not an overlay. */}
+          {isPortrait ? (
+            <>
+              {dock}
+              {main}
+            </>
+          ) : (
+            <>
+              {main}
+              {dock}
+            </>
+          )}
+        </div>
         <MobileBar />
       </div>
     );
@@ -147,6 +172,7 @@ export default function NavContainer({ children }) {
     <div className="flex h-full">
       <DesktopSidebar />
       <main className="min-h-0 flex-1 overflow-y-auto">{children}</main>
+      <MeetingDock />
     </div>
   );
 }

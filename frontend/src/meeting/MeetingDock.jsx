@@ -1,15 +1,16 @@
 //! Persistent across pages -- floats free and draggable on desktop (as
-//! before), toggles between a half-screen dock and fullscreen on mobile
-//! (toggled from `NavContainer`'s bottom bar, see `MeetingLayoutContext`).
-//! Renders nothing while this tab isn't in a meeting.
+//! before). On mobile it's a plain flex sibling instead (see `NavContainer`,
+//! which places and sizes it -- half or fullscreen, per `MeetingLayoutContext`
+//! -- by allotting it flex space rather than overlaying it); this component
+//! only renders its content there. Renders nothing while this tab isn't in
+//! a meeting.
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useAuth } from "../auth/AuthContext";
 import { decodeJwt } from "../lib/jwt";
-import { useIsMobile, useIsPortrait } from "../layout/useViewport";
+import { useIsMobile } from "../layout/useViewport";
 import { useOrgSession } from "../org/OrgSessionContext";
 import { nearestSlot, slotPosition } from "./dockGeometry";
-import { useMeetingLayout } from "./MeetingLayoutContext";
 import MeetingPanel from "./MeetingPanel";
 
 export default function MeetingDock() {
@@ -18,8 +19,6 @@ export default function MeetingDock() {
   const { session, roster } = useOrgSession();
   const { myMeetingId } = session;
   const isMobile = useIsMobile();
-  const isPortrait = useIsPortrait();
-  const { mobileExpanded } = useMeetingLayout();
 
   const [fullScreen, setFullScreen] = useState(false);
   const [position, setPosition] = useState("bot-right"); // last dropped slot, mini mode only
@@ -87,19 +86,8 @@ export default function MeetingDock() {
   if (!myMeetingId) return null;
 
   if (isMobile) {
-    // Both sizes leave room for `NavContainer`'s bottom bar (portrait) or
-    // side bar (landscape) rather than covering it -- that bar is where the
-    // toggle back out of fullscreen lives.
-    const barGutter = isPortrait ? "bottom-14" : "right-14";
-    const placement = mobileExpanded
-      ? `inset-0 ${barGutter}`
-      : isPortrait
-        ? `top-0 ${barGutter} right-0 w-1/2`
-        : `top-0 left-0 ${barGutter} h-1/2`;
     return (
-      <section
-        className={`fixed z-40 flex flex-col border bg-surface shadow-xl ${placement}`}
-      >
+      <section className="flex min-h-0 min-w-0 flex-1 flex-col border bg-surface">
         <MeetingPanel
           session={session}
           members={roster.members}
