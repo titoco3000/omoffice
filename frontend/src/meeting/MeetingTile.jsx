@@ -7,13 +7,7 @@
 //! small size used for the sidebar list of unpinned tiles once something
 //! is pinned -- see `MeetingPanel`.
 
-import {
-  FiMapPin,
-  FiMaximize,
-  FiMicOff,
-  FiMinimize,
-  FiVideoOff,
-} from "react-icons/fi";
+import { FiMaximize, FiMicOff, FiMinimize, FiVideoOff } from "react-icons/fi";
 import { useIsTouch } from "../layout/useViewport";
 
 export default function MeetingTile({
