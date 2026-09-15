@@ -3,7 +3,8 @@
 //! which places and sizes it -- half or fullscreen, per `MeetingLayoutContext`
 //! -- by allotting it flex space rather than overlaying it); this component
 //! only renders its content there. Renders nothing while this tab isn't in
-//! a meeting.
+//! a meeting -- except the instant after "New meeting" is clicked, where it
+//! opens on `creating` alone, before there's an id to be "in" yet.
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useAuth } from "../auth/AuthContext";
@@ -17,8 +18,12 @@ export default function MeetingDock() {
   const { token } = useAuth();
   const myId = decodeJwt(token)?.sub;
   const { session, roster } = useOrgSession();
-  const { myMeetingId } = session;
+  const { myMeetingId, creating } = session;
   const isMobile = useIsMobile();
+  // Shows the dock the instant "New meeting" is clicked, before the
+  // backend hands back a real id -- `MeetingPanel` renders a "Starting
+  // meeting…" placeholder for this window.
+  const open = !!myMeetingId || creating;
 
   const [fullScreen, setFullScreen] = useState(false);
   const [position, setPosition] = useState("bot-right"); // last dropped slot, mini mode only
@@ -27,8 +32,8 @@ export default function MeetingDock() {
   const panelRef = useRef(null);
 
   // See the equivalent effect in the pre-split `panels/MeetingsPanel.jsx`:
-  // keyed on `myMeetingId` since `panelRef` is only attached once a meeting
-  // starts.
+  // keyed on `open` since `panelRef` is only attached once the dock
+  // renders (a meeting joined, or the optimistic "starting" placeholder).
   useLayoutEffect(() => {
     if (isMobile) return;
     const element = panelRef.current;
@@ -46,7 +51,7 @@ export default function MeetingDock() {
     });
     observer.observe(element);
     return () => observer.disconnect();
-  }, [myMeetingId, isMobile]);
+  }, [open, isMobile]);
 
   const [, forceRecompute] = useState(0);
   useEffect(() => {
@@ -83,7 +88,7 @@ export default function MeetingDock() {
     setDrag(null);
   };
 
-  if (!myMeetingId) return null;
+  if (!open) return null;
 
   if (isMobile) {
     return (

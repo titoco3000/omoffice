@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useAuth } from "../auth/AuthContext";
 import { navigate } from "../router/Router";
 import { requestKey } from "../lib/rbac";
+import AsyncButton from "../components/AsyncButton";
 
 // How long the explanation sits on screen before continuing on its own --
 // long enough to actually read it, short enough not to feel stuck.
@@ -55,9 +56,17 @@ export default function Login() {
   const [sent, setSent] = useState(false);
   const [unsafeToken, setUnsafeToken] = useState(null);
   const [error, setError] = useState(null);
+  // Implicit (Enter-key) submission fires the form's `submit` event, not a
+  // click -- routing it through the same button `AsyncButton` renders is
+  // the one way to land on its loading state either way.
+  const buttonRef = useRef(null);
 
-  const submit = async (event) => {
+  const preventImplicitSubmit = (event) => {
     event.preventDefault();
+    buttonRef.current?.click();
+  };
+
+  const submit = async () => {
     setError(null);
     try {
       const data = await requestKey(email.trim());
@@ -80,7 +89,10 @@ export default function Login() {
 
   return (
     <Centered>
-      <form onSubmit={submit} className="flex w-full max-w-sm flex-col gap-3">
+      <form
+        onSubmit={preventImplicitSubmit}
+        className="flex w-full max-w-sm flex-col gap-3"
+      >
         <h1 className="text-2xl font-semibold text-ink">Log in</h1>
         <input
           type="email"
@@ -91,12 +103,13 @@ export default function Login() {
           className="rounded-card border bg-surface px-3 py-2 text-ink"
         />
         {error && <p className="text-sm text-danger">{error}</p>}
-        <button
-          type="submit"
+        <AsyncButton
+          ref={buttonRef}
+          onClick={submit}
           className="rounded-card bg-brand px-4 py-2 font-medium text-on-brand hover:bg-brand-strong"
         >
           Send link
-        </button>
+        </AsyncButton>
       </form>
     </Centered>
   );

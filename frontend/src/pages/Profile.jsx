@@ -4,6 +4,7 @@ import { useOrgSession } from "../org/OrgSessionContext";
 import { Link } from "../router/Router";
 import { me, renameMe, renameMeInOrg, leaveOrg } from "../lib/rbac";
 import ThemeToggle from "../theme/ThemeToggle";
+import AsyncButton from "../components/AsyncButton";
 
 export default function Profile() {
   const { token, logout } = useAuth();
@@ -113,12 +114,12 @@ export default function Profile() {
         </div>
 
         {currentOrg && (
-          <button
+          <AsyncButton
             onClick={leave}
             className="mt-4 text-sm font-medium text-danger hover:underline"
           >
             Leave {currentOrg.name}
-          </button>
+          </AsyncButton>
         )}
       </section>
 

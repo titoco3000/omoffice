@@ -8,6 +8,7 @@
 
 import { useLayoutEffect, useRef, useState } from "react";
 import { useOrgSession } from "../org/OrgSessionContext";
+import AsyncButton from "./AsyncButton";
 
 const COMPACT_BELOW_PX = 176;
 
@@ -35,6 +36,14 @@ function MemberRow({
   const [open, setOpen] = useState(false);
   const interactive = member.online;
 
+  // Dropdown stays open (buttons showing their own spinner/disabled state
+  // via `AsyncButton`) until the action actually finishes, rather than
+  // closing on click and hiding that state.
+  const runAndClose = async (action) => {
+    await action();
+    setOpen(false);
+  };
+
   return (
     <li className="relative">
       <button
@@ -54,36 +63,27 @@ function MemberRow({
       {open && (
         <div className="absolute left-0 z-10 mt-1 flex min-w-max flex-col gap-1 rounded-card border bg-surface p-1.5 shadow-lg">
           {meetingId ? (
-            <button
-              onClick={() => {
-                setOpen(false);
-                onJoin(meetingId);
-              }}
+            <AsyncButton
+              onClick={() => runAndClose(() => onJoin(meetingId))}
               disabled={!!myMeetingId}
               className="whitespace-nowrap rounded-card px-2 py-1 text-left text-sm text-ink hover:bg-muted disabled:opacity-50"
             >
               Join their meeting
-            </button>
+            </AsyncButton>
           ) : (
-            <button
-              onClick={() => {
-                setOpen(false);
-                onInvite();
-              }}
+            <AsyncButton
+              onClick={() => runAndClose(onInvite)}
               className="whitespace-nowrap rounded-card px-2 py-1 text-left text-sm text-ink hover:bg-muted"
             >
               Invite to a meeting
-            </button>
+            </AsyncButton>
           )}
-          <button
-            onClick={() => {
-              setOpen(false);
-              onForce();
-            }}
+          <AsyncButton
+            onClick={() => runAndClose(onForce)}
             className="whitespace-nowrap rounded-card px-2 py-1 text-left text-sm text-ink hover:bg-muted"
           >
             Force into meeting
-          </button>
+          </AsyncButton>
         </div>
       )}
     </li>

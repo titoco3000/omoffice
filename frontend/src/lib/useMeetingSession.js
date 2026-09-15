@@ -45,7 +45,13 @@ export function useMeetingSession(token, orgId) {
   // state a solo attendee sits in -- see `features::meetings::join`
   // (backend/lib/features/meetings/mod.rs).
   const [myMeetingId, setMyMeetingId] = useState(null);
-  const [roomStatus, setRoomStatus] = useState(null); // "waiting" | "connected" | null
+  // "connecting" (Chime handshake in flight, ours or a forced-in one) |
+  // "waiting" (in the meeting, no live room yet) | "connected" | null
+  const [roomStatus, setRoomStatus] = useState(null);
+  // True from the moment `create` is clicked until the backend hands back a
+  // real meeting id -- lets the "New meeting" button and the dock react
+  // before there's anything to key state off yet.
+  const [creating, setCreating] = useState(false);
   const [cameraOn, setCameraOnState] = useState(false);
   const [micMuted, setMicMutedState] = useState(false);
   const [sharingScreen, setSharingScreen] = useState(false);
@@ -190,6 +196,7 @@ export function useMeetingSession(token, orgId) {
         disconnectChime();
         setRoomStatus("waiting");
       } else if (message.connected === true) {
+        setRoomStatus("connecting");
         chime
           .connect(message.Meeting, message.Attendee)
           .then(() => setRoomStatus("connected"))
@@ -292,9 +299,12 @@ export function useMeetingSession(token, orgId) {
 
   // Shared tail of `join`/`acceptInvite`: both hit the same response shape
   // (`features::meetings::join`'s own JSON, backend/lib/features/meetings/mod.rs).
+  // `myMeetingId` is already set by the caller before this runs (optimistic
+  // open) -- this only carries `roomStatus` the rest of the way.
   const applyJoinResponse = async (meetingId, data) => {
     setMyMeetingId(meetingId);
     if (data.connected) {
+      setRoomStatus("connecting");
       await chime.connect(data.Meeting, data.Attendee);
       setRoomStatus("connected");
     } else {
@@ -304,6 +314,7 @@ export function useMeetingSession(token, orgId) {
 
   const create = async (inviteOnly = false) => {
     setError(null);
+    setCreating(true);
     try {
       const { meeting } = await createMeeting(token, orgId, inviteOnly);
       // No room yet -- nobody else is in it. The frontend just shows
@@ -315,16 +326,26 @@ export function useMeetingSession(token, orgId) {
     } catch (err) {
       setError(err.message);
       return null;
+    } finally {
+      setCreating(false);
     }
   };
 
+  // Opens the dock immediately (the meeting id is already known -- it's
+  // just this tab that hasn't joined yet), tagged "connecting" until the
+  // join actually lands, rather than waiting on the round trip to show
+  // anything.
   const join = async (meetingId) => {
     setError(null);
+    setMyMeetingId(meetingId);
+    setRoomStatus("connecting");
     try {
       const data = await joinMeeting(token, meetingId);
       await applyJoinResponse(meetingId, data);
     } catch (err) {
       setError(err.message);
+      setMyMeetingId(null);
+      setRoomStatus(null);
     }
   };
 
@@ -356,6 +377,7 @@ export function useMeetingSession(token, orgId) {
           await leave();
         }
         setMyMeetingId(message.meeting_id);
+        setRoomStatus("connecting");
         await chime.setCameraOn(false);
         await chime.setMicMuted(true);
         try {
@@ -387,14 +409,26 @@ export function useMeetingSession(token, orgId) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [orgId]);
 
+  // Same optimistic open as `join` -- the meeting id is already on the
+  // invite, so there's no need to wait on the accept round trip to show
+  // the dock.
   const acceptInvite = async (inviteId) => {
     setError(null);
+    const invite = invites.find((i) => i.id === inviteId);
+    const meetingId = invite?.meeting_id;
+    if (meetingId) {
+      setMyMeetingId(meetingId);
+      setRoomStatus("connecting");
+    }
     try {
-      const invite = invites.find((i) => i.id === inviteId);
       const data = await acceptMeetingInvite(token, inviteId);
-      await applyJoinResponse(data.meeting_id ?? invite?.meeting_id, data);
+      await applyJoinResponse(data.meeting_id ?? meetingId, data);
     } catch (err) {
       setError(err.message);
+      if (meetingId) {
+        setMyMeetingId(null);
+        setRoomStatus(null);
+      }
     }
   };
 
@@ -491,6 +525,7 @@ export function useMeetingSession(token, orgId) {
     meetings,
     myMeetingId,
     roomStatus,
+    creating,
     cameraOn,
     micMuted,
     sharingScreen,

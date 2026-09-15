@@ -1,18 +1,27 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useAuth } from "../auth/AuthContext";
 import { useOrgSession } from "../org/OrgSessionContext";
 import { navigate } from "../router/Router";
 import { createOrg } from "../lib/rbac";
+import AsyncButton from "../components/AsyncButton";
 
 export default function OrgNew() {
   const { token } = useAuth();
   const { reloadOrgs, selectOrg } = useOrgSession();
   const [name, setName] = useState("");
   const [error, setError] = useState(null);
+  // Enter-to-submit routes through the same button `AsyncButton` renders,
+  // rather than a separate submit path with its own loading state --
+  // implicit form submission fires the form's `submit` event, not a click,
+  // so this is the one way to still land on the button's own handler.
+  const buttonRef = useRef(null);
 
-  const submit = async (event) => {
+  const preventImplicitSubmit = (event) => {
     event.preventDefault();
-    if (!name.trim()) return;
+    if (name.trim()) buttonRef.current?.click();
+  };
+
+  const create = async () => {
     try {
       const { org } = await createOrg(token, name.trim());
       await reloadOrgs();
@@ -28,7 +37,7 @@ export default function OrgNew() {
       <h1 className="text-2xl font-semibold text-ink">
         Create an organization
       </h1>
-      <form onSubmit={submit} className="flex flex-col gap-3">
+      <form onSubmit={preventImplicitSubmit} className="flex flex-col gap-3">
         <input
           value={name}
           onChange={(event) => setName(event.target.value)}
@@ -37,9 +46,14 @@ export default function OrgNew() {
           className="rounded-card border bg-surface px-3 py-2 text-ink"
         />
         {error && <p className="text-sm text-danger">{error}</p>}
-        <button className="rounded-card bg-brand px-4 py-2 font-medium text-on-brand hover:bg-brand-strong">
+        <AsyncButton
+          ref={buttonRef}
+          onClick={create}
+          disabled={!name.trim()}
+          className="justify-center rounded-card bg-brand px-4 py-2 font-medium text-on-brand hover:bg-brand-strong disabled:opacity-50"
+        >
           Create
-        </button>
+        </AsyncButton>
       </form>
     </main>
   );

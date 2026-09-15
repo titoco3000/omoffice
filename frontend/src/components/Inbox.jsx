@@ -7,6 +7,7 @@ import { useEffect, useState } from "react";
 import { useAuth } from "../auth/AuthContext";
 import { useOrgSession } from "../org/OrgSessionContext";
 import { preferredName } from "../lib/names";
+import AsyncButton from "./AsyncButton";
 import {
   getInvite,
   acceptInvite,
@@ -49,20 +50,20 @@ function OrgInviteCard({ invite, busy, onAccept, onDecline }) {
         </p>
       ) : (
         <div className="mt-3 flex gap-2">
-          <button
+          <AsyncButton
             onClick={onAccept}
             disabled={busy}
             className="rounded-card bg-brand px-4 py-1.5 text-sm font-medium text-on-brand hover:bg-brand-strong disabled:opacity-50"
           >
             Accept
-          </button>
-          <button
+          </AsyncButton>
+          <AsyncButton
             onClick={onDecline}
             disabled={busy}
             className="rounded-card border px-4 py-1.5 text-sm text-ink-muted hover:text-ink disabled:opacity-50"
           >
             Decline
-          </button>
+          </AsyncButton>
         </div>
       )}
     </InboxCard>
@@ -80,19 +81,19 @@ function MeetingInviteCard({ invite, members, busy, onAccept, onDecline }) {
           invited you to a meeting
         </span>
         <div className="flex shrink-0 gap-2">
-          <button
+          <AsyncButton
             onClick={onAccept}
             disabled={busy}
             className="rounded-card bg-brand px-3 py-1 text-sm text-on-brand hover:bg-brand-strong disabled:opacity-50"
           >
             Accept
-          </button>
-          <button
+          </AsyncButton>
+          <AsyncButton
             onClick={onDecline}
-            className="rounded-card border px-3 py-1 text-sm text-ink-muted hover:text-ink"
+            className="rounded-card border px-3 py-1 text-sm text-ink-muted hover:text-ink disabled:opacity-50"
           >
             Decline
-          </button>
+          </AsyncButton>
         </div>
       </div>
     </InboxCard>

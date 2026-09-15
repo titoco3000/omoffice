@@ -4,6 +4,7 @@ import { useOrgSession } from "../org/OrgSessionContext";
 import { navigate } from "../router/Router";
 import { renameOrg, deleteOrg } from "../lib/rbac";
 import UsersManagement from "../components/UsersManagement";
+import AsyncButton from "../components/AsyncButton";
 
 export default function Org() {
   const { token } = useAuth();
@@ -33,16 +34,17 @@ export default function Org() {
       .catch((err) => setError(err.message));
   };
 
-  const remove = () => {
+  const remove = async () => {
     if (!window.confirm(`Delete ${currentOrg.name}? This cannot be undone.`))
       return;
-    deleteOrg(token, currentOrg.id)
-      .then(() => {
-        reloadOrgs();
-        selectOrg(null);
-        navigate("/in");
-      })
-      .catch((err) => setError(err.message));
+    try {
+      await deleteOrg(token, currentOrg.id);
+      reloadOrgs();
+      selectOrg(null);
+      navigate("/in");
+    } catch (err) {
+      setError(err.message);
+    }
   };
 
   return (
@@ -65,12 +67,12 @@ export default function Org() {
           <p className="text-sm text-ink-muted">
             Deletes the org for every member. Cannot be undone.
           </p>
-          <button
+          <AsyncButton
             onClick={remove}
             className="mt-2 text-sm font-medium text-danger hover:underline"
           >
             Delete organization
-          </button>
+          </AsyncButton>
         </section>
       )}
 

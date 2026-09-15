@@ -2,10 +2,11 @@
 //! `/org` page's people section. Requires `team-management` (or `admin`,
 //! which implies it), enforced again on the backend regardless.
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useAuth } from "../auth/AuthContext";
 import { useOrgSession } from "../org/OrgSessionContext";
 import { ROLES } from "../lib/roles";
+import AsyncButton from "./AsyncButton";
 import {
   removeMember,
   createInvite,
@@ -23,6 +24,17 @@ export default function UsersManagement() {
   const [inviteEmail, setInviteEmail] = useState("");
   const [inviteRoles, setInviteRoles] = useState([]);
   const [error, setError] = useState(null);
+  // Optimistic role-checkbox state, keyed `${userId}:${role}` -> the value
+  // shown while the backend call (and the reload after it) is in flight --
+  // so a checkbox flips the instant it's clicked rather than waiting on the
+  // round trip. Dropped once the real roster is known to agree with it (on
+  // success, after `reloadMembers` resolves; on failure, immediately, since
+  // nothing changed) -- not sooner, or the checkbox would flash back to the
+  // old value for the gap in between.
+  const [roleOverrides, setRoleOverrides] = useState({});
+  // Enter-to-submit on the invite form routes through the same button
+  // `AsyncButton` renders -- see the same trick in `pages/OrgNew.jsx`.
+  const inviteButtonRef = useRef(null);
 
   useEffect(() => {
     listInvites(token, currentOrg.id)
@@ -31,11 +43,25 @@ export default function UsersManagement() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentOrg.id]);
 
-  const toggleRole = (userId, role, checked) => {
+  const clearRoleOverride = (key) =>
+    setRoleOverrides((current) => {
+      const next = { ...current };
+      delete next[key];
+      return next;
+    });
+
+  const toggleRole = async (userId, role, checked) => {
+    const key = `${userId}:${role}`;
+    setRoleOverrides((current) => ({ ...current, [key]: checked }));
     const call = checked ? assignRole : revokeRole;
-    call(token, currentOrg.id, userId, role)
-      .then(reloadMembers)
-      .catch((err) => setError(err.message));
+    try {
+      await call(token, currentOrg.id, userId, role);
+      await reloadMembers();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      clearRoleOverride(key);
+    }
   };
 
   const toggleInviteRole = (role) =>
@@ -43,8 +69,12 @@ export default function UsersManagement() {
       roles.includes(role) ? roles.filter((r) => r !== role) : [...roles, role],
     );
 
-  const submitInvite = async (event) => {
+  const preventImplicitSubmit = (event) => {
     event.preventDefault();
+    inviteButtonRef.current?.click();
+  };
+
+  const submitInvite = async () => {
     try {
       await createInvite(token, currentOrg.id, inviteEmail.trim(), inviteRoles);
       setInviteEmail("");
@@ -56,19 +86,24 @@ export default function UsersManagement() {
     }
   };
 
-  const revoke = (inviteId) =>
-    revokeInvite(token, currentOrg.id, inviteId)
-      .then(() =>
-        setInvites((list) => list.filter((invite) => invite.id !== inviteId)),
-      )
-      .catch((err) => setError(err.message));
+  const revoke = async (inviteId) => {
+    try {
+      await revokeInvite(token, currentOrg.id, inviteId);
+      setInvites((list) => list.filter((invite) => invite.id !== inviteId));
+    } catch (err) {
+      setError(err.message);
+    }
+  };
 
-  const kick = (userId, displayName) => {
+  const kick = async (userId, displayName) => {
     if (!window.confirm(`Remove ${displayName} from ${currentOrg.name}?`))
       return;
-    removeMember(token, currentOrg.id, userId)
-      .then(reloadMembers)
-      .catch((err) => setError(err.message));
+    try {
+      await removeMember(token, currentOrg.id, userId);
+      await reloadMembers();
+    } catch (err) {
+      setError(err.message);
+    }
   };
 
   return (
@@ -103,7 +138,10 @@ export default function UsersManagement() {
                   >
                     <input
                       type="checkbox"
-                      checked={member.roles.includes(role)}
+                      checked={
+                        roleOverrides[`${member.user_id}:${role}`] ??
+                        member.roles.includes(role)
+                      }
                       onChange={(event) =>
                         toggleRole(member.user_id, role, event.target.checked)
                       }
@@ -114,12 +152,12 @@ export default function UsersManagement() {
               </td>
               <td className="py-1.5 text-right">
                 {member.user_id !== myId && (
-                  <button
+                  <AsyncButton
                     onClick={() => kick(member.user_id, member.display_name)}
                     className="text-danger hover:underline"
                   >
                     remove
-                  </button>
+                  </AsyncButton>
                 )}
               </td>
             </tr>
@@ -128,7 +166,7 @@ export default function UsersManagement() {
       </table>
 
       <form
-        onSubmit={submitInvite}
+        onSubmit={preventImplicitSubmit}
         className="mt-4 flex flex-wrap items-center gap-2"
       >
         <input
@@ -152,9 +190,13 @@ export default function UsersManagement() {
             {role}
           </label>
         ))}
-        <button className="rounded-card bg-brand px-3 py-1.5 text-sm font-medium text-on-brand hover:bg-brand-strong">
+        <AsyncButton
+          ref={inviteButtonRef}
+          onClick={submitInvite}
+          className="rounded-card bg-brand px-3 py-1.5 text-sm font-medium text-on-brand hover:bg-brand-strong"
+        >
           Invite
-        </button>
+        </AsyncButton>
       </form>
 
       {invites.length > 0 && (
@@ -165,12 +207,12 @@ export default function UsersManagement() {
               className="flex items-center justify-between text-ink-muted"
             >
               <span>{invite.email} -- pending</span>
-              <button
+              <AsyncButton
                 onClick={() => revoke(invite.id)}
                 className="text-danger hover:underline"
               >
                 revoke
-              </button>
+              </AsyncButton>
             </li>
           ))}
         </ul>

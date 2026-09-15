@@ -1,4 +1,6 @@
-- fullscreen / mini meeting
-- UI
+- fullscreen meeting should have no gap
+- Immediat UI reactions
+- Meeting panel upgrade
+- create client homepage
 - map
 - shared drawing

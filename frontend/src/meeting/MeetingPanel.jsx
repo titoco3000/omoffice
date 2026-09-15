@@ -6,9 +6,16 @@
 import { useState } from "react";
 import * as chime from "../lib/chime";
 import { preferredName } from "../lib/names";
+import Spinner from "../components/Spinner";
 import MeetingChat from "./MeetingChat";
 import MeetingControls from "./MeetingControls";
 import MeetingTile from "./MeetingTile";
+
+const STATUS_LABEL = {
+  connecting: "Connecting…",
+  waiting: "Waiting for others",
+  connected: "Connected",
+};
 
 export default function MeetingPanel({
   session,
@@ -24,6 +31,7 @@ export default function MeetingPanel({
     meetings,
     myMeetingId,
     roomStatus,
+    creating,
     cameraOn,
     micMuted,
     sharingScreen,
@@ -100,8 +108,11 @@ export default function MeetingPanel({
                 />
               ))}
             </div>
-            <p className="mt-3 text-xs text-ink-muted">
-              {roomStatus === "connected" ? "Connected" : "Waiting for others"}
+            <p className="mt-3 flex items-center gap-1.5 text-xs text-ink-muted">
+              {(creating || roomStatus === "connecting") && <Spinner />}
+              {creating && !myMeetingId
+                ? "Starting meeting…"
+                : (STATUS_LABEL[roomStatus] ?? "Waiting for others")}
             </p>
           </div>
         )}

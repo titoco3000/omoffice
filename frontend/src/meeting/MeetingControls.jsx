@@ -1,6 +1,8 @@
+import AsyncButton from "../components/AsyncButton";
+
 function ControlButton({ active, danger, children, ...props }) {
   return (
-    <button
+    <AsyncButton
       {...props}
       className={`rounded-card border px-3 py-1.5 text-sm disabled:opacity-50 ${
         danger
@@ -11,7 +13,7 @@ function ControlButton({ active, danger, children, ...props }) {
       }`}
     >
       {children}
-    </button>
+    </AsyncButton>
   );
 }
 

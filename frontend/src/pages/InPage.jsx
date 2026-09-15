@@ -2,6 +2,7 @@ import { Link } from "../router/Router";
 import { useOrgSession } from "../org/OrgSessionContext";
 import Inbox from "../components/Inbox";
 import OrgOnlineView from "../components/OrgOnlineView";
+import AsyncButton from "../components/AsyncButton";
 
 export default function InPage() {
   const { orgs, currentOrg, session } = useOrgSession();
@@ -33,13 +34,13 @@ export default function InPage() {
             <h2 className="text-lg font-semibold text-ink">
               {currentOrg.name}
             </h2>
-            <button
+            <AsyncButton
               onClick={() => create()}
               disabled={!!myMeetingId}
               className="rounded-card bg-brand px-3 py-1.5 text-sm font-medium text-on-brand hover:bg-brand-strong disabled:opacity-50"
             >
               New meeting
-            </button>
+            </AsyncButton>
           </div>
           <div className="mt-4">
             <OrgOnlineView />
