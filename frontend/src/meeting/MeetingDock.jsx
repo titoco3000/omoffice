@@ -117,7 +117,7 @@ export default function MeetingDock() {
       className={
         fullScreen
           ? "fixed inset-0 z-50 flex flex-col bg-surface shadow-xl"
-          : `fixed z-50 flex max-w-sm flex-col rounded-card border bg-surface shadow-xl ${
+          : `fixed z-50 flex h-[min(300px,70%)] w-[min(500px,70%)] flex-col rounded-card border bg-surface shadow-xl ${
               drag ? "" : "transition-[top,left] duration-200"
             }`
       }

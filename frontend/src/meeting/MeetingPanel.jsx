@@ -130,8 +130,7 @@ export default function MeetingPanel({
     if (firstContentId != null) setPinnedId(`content:${firstContentId}`);
   }
 
-  const togglePin = (id) =>
-    setPinnedId((prev) => (prev === id ? null : id));
+  const togglePin = (id) => setPinnedId((prev) => (prev === id ? null : id));
 
   const pinnedTile = tiles.find((t) => t.id === pinnedId);
   const sidebarTiles = pinnedTile ? tiles.filter((t) => t.id !== pinnedId) : [];
@@ -146,9 +145,7 @@ export default function MeetingPanel({
 
       <div className="flex min-h-0 flex-1">
         {showTiles && (
-          <div
-            className={`flex min-w-0 flex-1 flex-col p-3 ${compact ? "max-h-[70vh]" : ""}`}
-          >
+          <div className="flex min-h-0 min-w-0 flex-1 flex-col p-3">
             <div className="flex min-h-0 flex-1 gap-2">
               {pinnedTile ? (
                 <>
