@@ -243,13 +243,16 @@ export function useMeetingSession(token, orgId) {
   // requests addressed to the one just left.
   useEffect(() => {
     if (!myMeetingId) return;
-    const unsubscribe = messenger.on(MEETING_ACCESS_REQUEST_CHANNEL, (message) => {
-      if (message.meeting_id !== myMeetingId) return;
-      setAccessRequests((prev) => [
-        ...prev.filter((r) => r.userId !== message.from),
-        { userId: message.from, at: Date.now() },
-      ]);
-    });
+    const unsubscribe = messenger.on(
+      MEETING_ACCESS_REQUEST_CHANNEL,
+      (message) => {
+        if (message.meeting_id !== myMeetingId) return;
+        setAccessRequests((prev) => [
+          ...prev.filter((r) => r.userId !== message.from),
+          { userId: message.from, at: Date.now() },
+        ]);
+      },
+    );
     return () => {
       unsubscribe();
       setAccessRequests([]);
@@ -485,27 +488,26 @@ export function useMeetingSession(token, orgId) {
     }
   };
 
-  // Force `userId` straight into a meeting, no invite or accept -- starting
-  // one under `orgId` first if this tab isn't already in one, same as
-  // `inviteUser`. Only meaningful as the meeting's creator, since the
-  // backend gates `force` on that -- see `features::meetings::force_join`.
-  const forceUser = async (userId) => {
+  const joinOrForce = async (userId, meetingId) => {
+    if (myMeetingId) {
+      if (!window.confirm("Leave your current meeting?")) return;
+      await leave();
+    }
+    if (meetingId) {
+      await join(meetingId);
+      return;
+    }
     setError(null);
     try {
-      const meetingId = myMeetingId ?? (await create());
-      if (!meetingId) return;
-      await forceJoinMeeting(token, meetingId, userId);
+      const newMeetingId = await create();
+      if (!newMeetingId) return;
+      await forceJoinMeeting(token, newMeetingId, userId);
     } catch (err) {
       setError(err.message);
     }
   };
 
-  // Lock/unlock the meeting this tab is in -- see
-  // `features::meetings::set_locked` (backend/lib/features/meetings/mod.rs).
-  // `meetings` (kept live over `MEETING_LIST_CHANNEL`) already carries the
-  // current `invite_only` flag, so there's no local state to flip here --
-  // just fire the request and let the broadcast update `meetings` for
-  // everyone, this tab included.
+  // Lock/unlock the meeting this tab is in
   const toggleLock = async () => {
     if (!myMeetingId) return;
     const locked = meetings.find((m) => m.id === myMeetingId)?.invite_only;
@@ -619,7 +621,7 @@ export function useMeetingSession(token, orgId) {
     acceptInvite,
     declineInvite,
     inviteUser,
-    forceUser,
+    joinOrForce,
     toggleLock,
     toggleCamera,
     toggleMic,

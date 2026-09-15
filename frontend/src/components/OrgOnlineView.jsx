@@ -1,7 +1,10 @@
 //! Everyone online in the current org, grouped by whichever meeting (if
 //! any) they're in, plus who's offline. Clicking an online member reveals
-//! join/invite/force-join actions for them; offline members are listed but
-//! inert -- there's nothing to join, invite, or force yet.
+//! whichever of join/invite/ask-to-join actually make sense for them --
+//! see `actionsFor` below, which is the one place that decision is made.
+//! Offline members are listed but inert -- there's nothing to do with them
+//! yet. A member already sharing this tab's own meeting gets no actions
+//! either -- nothing to join or invite them to that isn't already true.
 //!
 //! Collapses to first-letter avatars when the container gets too narrow to
 //! fit a name.
@@ -25,6 +28,18 @@ function Avatar({ name, online }) {
   );
 }
 
+// Which actions to offer upon clicking on other org member
+function actionsFor(myMeetingId, meetingId, locked) {
+  if (meetingId && locked) return ["ask", "invite"];
+  return myMeetingId ? ["join", "invite"] : ["join"];
+}
+
+const ACTION_LABEL = {
+  join: "Join",
+  invite: "Invite",
+  ask: "Ask to join",
+};
+
 function MemberRow({
   member,
   meetingId,
@@ -34,10 +49,10 @@ function MemberRow({
   onJoin,
   onRequestAccess,
   onInvite,
-  onForce,
 }) {
   const [open, setOpen] = useState(false);
-  const interactive = member.online;
+  const sameMeeting = !!meetingId && meetingId === myMeetingId;
+  const interactive = member.online && !sameMeeting;
 
   // Dropdown stays open (buttons showing their own spinner/disabled state
   // via `AsyncButton`) until the action actually finishes, rather than
@@ -45,6 +60,12 @@ function MemberRow({
   const runAndClose = async (action) => {
     await action();
     setOpen(false);
+  };
+
+  const HANDLER = {
+    join: () => onJoin(member.user_id, meetingId),
+    invite: () => onInvite(member.user_id),
+    ask: () => onRequestAccess(meetingId),
   };
 
   return (
@@ -65,38 +86,15 @@ function MemberRow({
       </button>
       {open && (
         <div className="absolute left-0 z-10 mt-1 flex min-w-max flex-col gap-1 rounded-card border bg-surface p-1.5 shadow-lg">
-          {meetingId ? (
-            meetingLocked ? (
-              <AsyncButton
-                onClick={() => runAndClose(() => onRequestAccess(meetingId))}
-                disabled={!!myMeetingId}
-                className="whitespace-nowrap rounded-card px-2 py-1 text-left text-sm text-ink hover:bg-muted disabled:opacity-50"
-              >
-                Request access
-              </AsyncButton>
-            ) : (
-              <AsyncButton
-                onClick={() => runAndClose(() => onJoin(meetingId))}
-                disabled={!!myMeetingId}
-                className="whitespace-nowrap rounded-card px-2 py-1 text-left text-sm text-ink hover:bg-muted disabled:opacity-50"
-              >
-                Join their meeting
-              </AsyncButton>
-            )
-          ) : (
+          {actionsFor(myMeetingId, meetingId, meetingLocked).map((action) => (
             <AsyncButton
-              onClick={() => runAndClose(onInvite)}
+              key={action}
+              onClick={() => runAndClose(HANDLER[action])}
               className="whitespace-nowrap rounded-card px-2 py-1 text-left text-sm text-ink hover:bg-muted"
             >
-              Invite to a meeting
+              {ACTION_LABEL[action]}
             </AsyncButton>
-          )}
-          <AsyncButton
-            onClick={() => runAndClose(onForce)}
-            className="whitespace-nowrap rounded-card px-2 py-1 text-left text-sm text-ink hover:bg-muted"
-          >
-            Force into meeting
-          </AsyncButton>
+          ))}
         </div>
       )}
     </li>
@@ -105,7 +103,7 @@ function MemberRow({
 
 export default function OrgOnlineView() {
   const { myId, roster, session } = useOrgSession();
-  const { meetings, myMeetingId, join, requestAccess, inviteUser, forceUser } =
+  const { meetings, myMeetingId, joinOrForce, requestAccess, inviteUser } =
     session;
   const containerRef = useRef(null);
   const [compact, setCompact] = useState(false);
@@ -152,10 +150,9 @@ export default function OrgOnlineView() {
       meetingLocked={!!meetingById.get(meetingId)?.invite_only}
       myMeetingId={myMeetingId}
       compact={compact}
-      onJoin={join}
+      onJoin={joinOrForce}
       onRequestAccess={requestAccess}
-      onInvite={() => inviteUser(member.user_id)}
-      onForce={() => forceUser(member.user_id)}
+      onInvite={inviteUser}
     />
   );
 
