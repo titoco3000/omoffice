@@ -51,18 +51,19 @@ function DesktopSidebar() {
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto p-2">
-        {currentOrg && path !== "/in" ? (
-          <OrgOnlineView />
-        ) : (
-          <div className="flex h-full items-center justify-center">
-            <Link
-              to="/in"
-              title="Home"
-              className="flex size-10 items-center justify-center rounded-card text-xl text-ink-muted hover:bg-muted hover:text-ink"
-            >
-              🏠
-            </Link>
-          </div>
+        {currentOrg && path !== "/in" && (
+          <>
+            <div className="flex flex-1 items-center justify-center">
+              <Link
+                to="/in"
+                title="Home"
+                className="flex size-10 items-center justify-center rounded-card text-xl text-ink-muted hover:bg-muted hover:text-ink"
+              >
+                🏠
+              </Link>
+            </div>
+            <OrgOnlineView />
+          </>
         )}
       </div>
 
@@ -148,20 +149,8 @@ export default function NavContainer({ children }) {
         <div
           className={`flex min-h-0 flex-1 ${isPortrait ? "flex-col" : "flex-row"}`}
         >
-          {/* Portrait: dock on top, page below -- landscape: page on the
-              left, dock on the right. Plain source order, no `fixed`/`order`
-              needed, since this is normal flex flow, not an overlay. */}
-          {isPortrait ? (
-            <>
-              {dock}
-              {main}
-            </>
-          ) : (
-            <>
-              {main}
-              {dock}
-            </>
-          )}
+          {dock}
+          {main}
         </div>
         <MobileBar />
       </div>
