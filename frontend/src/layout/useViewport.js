@@ -7,6 +7,7 @@ import { useEffect, useState } from "react";
 
 const MOBILE_QUERY = "(max-width: 15cm), (max-height: 15cm)";
 const PORTRAIT_QUERY = "(orientation: portrait)";
+const TOUCH_QUERY = "(pointer: coarse)";
 
 function useMediaQuery(query) {
   const [matches, setMatches] = useState(
@@ -29,4 +30,12 @@ export function useIsMobile() {
 
 export function useIsPortrait() {
   return useMediaQuery(PORTRAIT_QUERY);
+}
+
+// Whether the primary pointer is coarse (touch) rather than fine (mouse/
+// trackpad) -- a touch laptop with a mouse attached still reads `false`
+// here, which is what matters for hover-vs-tap affordances: a mouse is
+// present, so `:hover` still works.
+export function useIsTouch() {
+  return useMediaQuery(TOUCH_QUERY);
 }

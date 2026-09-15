@@ -3,6 +3,7 @@
 //! border turns `speaking` while their mic is producing sound.
 
 import { FiMicOff, FiVideoOff } from "react-icons/fi";
+import { useIsTouch } from "../layout/useViewport";
 
 export default function MeetingTile({
   name,
@@ -15,8 +16,15 @@ export default function MeetingTile({
   onMute,
   onCameraOff,
 }) {
+  const isTouch = useIsTouch();
+  const hasControls = onMute || onCameraOff;
   return (
     <div
+      // `tabIndex` only on touch, where there's no `:hover` -- lets a tap
+      // focus the tile and reveal the controls via `focus-within` instead.
+      // A mouse/trackpad keeps `:hover` only, so tabbing through with a
+      // keyboard doesn't flash the overlay on every tile it passes.
+      tabIndex={isTouch && hasControls ? 0 : undefined}
       className={`group relative aspect-video shrink-0 overflow-hidden rounded-card border-2 bg-muted ${
         speaking ? "border-speaking" : "border-transparent"
       } ${wide ? "w-full sm:w-96" : "w-40 sm:w-48"}`}
@@ -58,24 +66,32 @@ export default function MeetingTile({
         </span>
       )}
 
-      {(onMute || onCameraOff) && (
-        <div className="absolute inset-0 flex items-center justify-center gap-2 bg-black/40 opacity-0 transition-opacity group-hover:opacity-100">
+      {hasControls && (
+        <div
+          className={`absolute inset-0 flex items-center justify-center gap-2 bg-black/40 opacity-0 transition-opacity ${
+            isTouch
+              ? "group-focus-within:opacity-100"
+              : "group-hover:opacity-100"
+          }`}
+        >
           {onMute && (
             <button
               onClick={onMute}
+              disabled={muted}
               title="Mute"
-              className="flex items-center gap-1 rounded-card bg-surface/90 px-2 py-1 text-xs text-ink hover:bg-surface"
+              className="flex items-center gap-1 rounded-card bg-surface/90 px-2 py-1 text-xs text-ink hover:bg-surface disabled:opacity-50 disabled:hover:bg-surface/90"
             >
-              <FiMicOff /> Mute
+              <FiMicOff />
             </button>
           )}
           {onCameraOff && (
             <button
               onClick={onCameraOff}
+              disabled={!hasVideo}
               title="Camera off"
-              className="flex items-center gap-1 rounded-card bg-surface/90 px-2 py-1 text-xs text-ink hover:bg-surface"
+              className="flex items-center gap-1 rounded-card bg-surface/90 px-2 py-1 text-xs text-ink hover:bg-surface disabled:opacity-50 disabled:hover:bg-surface/90"
             >
-              <FiVideoOff /> Camera off
+              <FiVideoOff />
             </button>
           )}
         </div>
