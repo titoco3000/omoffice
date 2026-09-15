@@ -10,6 +10,7 @@ export default function MeetingTile({
   hasVideo,
   isSelf,
   speaking,
+  muted,
   wide,
   onMute,
   onCameraOff,
@@ -51,6 +52,11 @@ export default function MeetingTile({
       <span className="absolute bottom-1 left-1.5 rounded bg-black/50 px-1.5 py-0.5 text-xs text-white">
         {name}
       </span>
+      {muted && (
+        <span className="absolute bottom-1 right-1 flex size-5 items-center justify-center rounded-full bg-black/50 text-white">
+          <FiMicOff size={12} />
+        </span>
+      )}
 
       {(onMute || onCameraOff) && (
         <div className="absolute inset-0 flex items-center justify-center gap-2 bg-black/40 opacity-0 transition-opacity group-hover:opacity-100">

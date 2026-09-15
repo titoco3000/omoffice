@@ -37,9 +37,11 @@ let sharingScreen = false;
 const remoteTiles = new Map(); // tileId -> { attendeeId, externalUserId, isContent }
 const attendeeExternalIds = new Map(); // chime attendeeId -> ExternalUserId
 const speakingAttendeeIds = new Set();
+const mutedAttendeeIds = new Set();
 let onRemoteTilesChange = () => {};
 let onScreenShareEnded = () => {};
 let onSpeakingIdsChange = () => {};
+let onMutedIdsChange = () => {};
 
 function notifyRemoteTiles() {
   onRemoteTilesChange(
@@ -51,6 +53,10 @@ function notifySpeaking() {
   onSpeakingIdsChange(
     new Set([...speakingAttendeeIds].map((id) => userIdFor(id))),
   );
+}
+
+function notifyMuted() {
+  onMutedIdsChange(new Set([...mutedAttendeeIds].map((id) => userIdFor(id))));
 }
 
 // `ExternalUserId` is `${userId}#${joinSuffix}` (see `chime::external_user_id`,
@@ -103,6 +109,13 @@ export function onScreenShareStopped(callback) {
 // sound, any time it changes.
 export function onSpeakingChange(callback) {
   onSpeakingIdsChange = callback;
+}
+
+// Called with the current set of remote user ids whose mic is muted, any
+// time it changes -- driven by the same volume indicator subscription as
+// speaking state, since Chime reports both on the one callback.
+export function onMutedChange(callback) {
+  onMutedIdsChange = callback;
 }
 
 const SPEAKING_THRESHOLD = 0.4;
@@ -265,10 +278,12 @@ export async function connect(meetingInfo, attendeeInfo) {
       if (!present) {
         attendeeExternalIds.delete(attendeeId);
         speakingAttendeeIds.delete(attendeeId);
+        const wasMuted = mutedAttendeeIds.delete(attendeeId);
         nextSession.audioVideo.realtimeUnsubscribeFromVolumeIndicator(
           attendeeId,
         );
         notifySpeaking();
+        if (wasMuted) notifyMuted();
         return;
       }
       attendeeExternalIds.set(attendeeId, externalUserId);
@@ -276,10 +291,16 @@ export async function connect(meetingInfo, attendeeInfo) {
         attendeeId,
         (id, volume, muted) => {
           const speaking = !muted && (volume ?? 0) > SPEAKING_THRESHOLD;
-          const changed = speaking
+          const speakingChanged = speaking
             ? !speakingAttendeeIds.has(id) && speakingAttendeeIds.add(id)
             : speakingAttendeeIds.delete(id);
-          if (changed) notifySpeaking();
+          if (speakingChanged) notifySpeaking();
+
+          if (muted == null) return;
+          const mutedChanged = muted
+            ? !mutedAttendeeIds.has(id) && mutedAttendeeIds.add(id)
+            : mutedAttendeeIds.delete(id);
+          if (mutedChanged) notifyMuted();
         },
       );
     },
@@ -315,6 +336,8 @@ export async function disconnect() {
   attendeeExternalIds.clear();
   speakingAttendeeIds.clear();
   notifySpeaking();
+  mutedAttendeeIds.clear();
+  notifyMuted();
   sharingScreen = false;
   try {
     // Resuming the preview happens in the `audioVideoDidStop` observer

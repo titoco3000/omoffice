@@ -38,6 +38,7 @@ export default function MeetingPanel({
     sharingScreen,
     remoteTiles,
     speakingUserIds,
+    mutedUserIds,
     chatMessages,
     sendChatMessage,
     muteAttendee,
@@ -79,6 +80,7 @@ export default function MeetingPanel({
                 videoRef={selfVideoRef}
                 hasVideo={cameraOn}
                 speaking={speakingUserIds.has(myId)}
+                muted={micMuted}
               />
               {others.map((userId) => {
                 const tile = cameraTileByUser.get(userId);
@@ -93,6 +95,7 @@ export default function MeetingPanel({
                     }
                     hasVideo={!!tile}
                     speaking={speakingUserIds.has(userId)}
+                    muted={mutedUserIds.has(userId)}
                     onMute={() => muteAttendee(userId)}
                     onCameraOff={() => turnOffAttendeeCamera(userId)}
                   />

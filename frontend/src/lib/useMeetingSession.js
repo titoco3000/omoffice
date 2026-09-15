@@ -57,6 +57,7 @@ export function useMeetingSession(token, orgId) {
   const [sharingScreen, setSharingScreen] = useState(false);
   const [remoteTiles, setRemoteTiles] = useState([]); // [{tileId, attendeeId, externalUserId, isContent}]
   const [speakingUserIds, setSpeakingUserIds] = useState(new Set());
+  const [mutedUserIds, setMutedUserIds] = useState(new Set());
   // Every pending invite the backend knows about for this user, regardless
   // of org -- narrowed to `orgId` below, before this hook hands anything
   // back.
@@ -83,6 +84,7 @@ export function useMeetingSession(token, orgId) {
     chime.onRemoteTiles(setRemoteTiles);
     chime.onScreenShareStopped(() => setSharingScreen(false));
     chime.onSpeakingChange(setSpeakingUserIds);
+    chime.onMutedChange(setMutedUserIds);
   }, []);
 
   useEffect(() => {
@@ -531,6 +533,7 @@ export function useMeetingSession(token, orgId) {
     sharingScreen,
     remoteTiles,
     speakingUserIds,
+    mutedUserIds,
     invites,
     error,
     chatMessages,
