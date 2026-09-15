@@ -2,6 +2,8 @@
 //! initial placeholder. Hovering reveals mute/camera-off buttons; the
 //! border turns `speaking` while their mic is producing sound.
 
+import { FiMicOff, FiVideoOff } from "react-icons/fi";
+
 export default function MeetingTile({
   name,
   videoRef,
@@ -55,17 +57,19 @@ export default function MeetingTile({
           {onMute && (
             <button
               onClick={onMute}
-              className="rounded-card bg-surface/90 px-2 py-1 text-xs text-ink hover:bg-surface"
+              title="Mute"
+              className="flex items-center gap-1 rounded-card bg-surface/90 px-2 py-1 text-xs text-ink hover:bg-surface"
             >
-              Mute
+              <FiMicOff /> Mute
             </button>
           )}
           {onCameraOff && (
             <button
               onClick={onCameraOff}
-              className="rounded-card bg-surface/90 px-2 py-1 text-xs text-ink hover:bg-surface"
+              title="Camera off"
+              className="flex items-center gap-1 rounded-card bg-surface/90 px-2 py-1 text-xs text-ink hover:bg-surface"
             >
-              Camera off
+              <FiVideoOff /> Camera off
             </button>
           )}
         </div>

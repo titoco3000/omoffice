@@ -4,6 +4,7 @@
 //! this component only knows how to fill whatever space it's given.
 
 import { useState } from "react";
+import { FiMessageCircle } from "react-icons/fi";
 import * as chime from "../lib/chime";
 import { preferredName } from "../lib/names";
 import Spinner from "../components/Spinner";
@@ -145,9 +146,9 @@ export default function MeetingPanel({
         <button
           onClick={() => setChatOpen((v) => !v)}
           title={chatOpen ? "Hide chat" : "Show chat"}
-          className={`rounded-card border p-2 text-lg leading-none ${chatOpen ? "text-brand" : "text-ink-muted hover:text-ink"}`}
+          className={`flex items-center rounded-card border p-2 text-lg leading-none ${chatOpen ? "text-brand" : "text-ink-muted hover:text-ink"}`}
         >
-          💬
+          <FiMessageCircle />
         </button>
       </div>
     </div>

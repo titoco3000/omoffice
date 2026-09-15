@@ -7,6 +7,7 @@
 //! opens on `creating` alone, before there's an id to be "in" yet.
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { FiMaximize, FiMinimize } from "react-icons/fi";
 import { useAuth } from "../auth/AuthContext";
 import { decodeJwt } from "../lib/jwt";
 import { useIsMobile } from "../layout/useViewport";
@@ -135,7 +136,7 @@ export default function MeetingDock() {
           onClick={() => setFullScreen((v) => !v)}
           className="rounded-card border px-2 py-1 text-xs text-ink-muted hover:text-ink"
         >
-          {fullScreen ? "Minimize" : "Full screen"}
+          {fullScreen ? <FiMinimize /> : <FiMaximize />}
         </button>
       </header>
       <MeetingPanel

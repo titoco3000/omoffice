@@ -1,10 +1,19 @@
+import {
+  FiMic,
+  FiMicOff,
+  FiMonitor,
+  FiPhoneOff,
+  FiStopCircle,
+  FiVideo,
+  FiVideoOff,
+} from "react-icons/fi";
 import AsyncButton from "../components/AsyncButton";
 
-function ControlButton({ active, danger, children, ...props }) {
+function ControlButton({ active, danger, icon, children, ...props }) {
   return (
     <AsyncButton
       {...props}
-      className={`rounded-card border px-3 py-1.5 text-sm disabled:opacity-50 ${
+      className={`flex items-center gap-1.5 rounded-card border px-3 py-1.5 text-sm disabled:opacity-50 ${
         danger
           ? "text-danger hover:bg-danger/10"
           : active
@@ -12,6 +21,7 @@ function ControlButton({ active, danger, children, ...props }) {
             : "text-ink-muted hover:text-ink"
       }`}
     >
+      {icon}
       {children}
     </AsyncButton>
   );
@@ -29,18 +39,27 @@ export default function MeetingControls({
 }) {
   return (
     <div className="flex flex-wrap gap-2">
-      <ControlButton danger onClick={onLeave}>
+      <ControlButton danger icon={<FiPhoneOff />} onClick={onLeave}>
         Leave
       </ControlButton>
-      <ControlButton active={cameraOn} onClick={onToggleCamera}>
+      <ControlButton
+        active={cameraOn}
+        icon={cameraOn ? <FiVideo /> : <FiVideoOff />}
+        onClick={onToggleCamera}
+      >
         {cameraOn ? "Turn camera off" : "Turn camera on"}
       </ControlButton>
-      <ControlButton active={!micMuted} onClick={onToggleMic}>
+      <ControlButton
+        active={!micMuted}
+        icon={micMuted ? <FiMicOff /> : <FiMic />}
+        onClick={onToggleMic}
+      >
         {micMuted ? "Unmute" : "Mute"}
       </ControlButton>
       <ControlButton
         active={sharingScreen}
         disabled={!canShareScreen}
+        icon={sharingScreen ? <FiStopCircle /> : <FiMonitor />}
         onClick={onToggleScreenShare}
       >
         {sharingScreen ? "Stop sharing screen" : "Share screen"}

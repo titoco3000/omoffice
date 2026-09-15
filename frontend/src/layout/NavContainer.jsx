@@ -4,6 +4,7 @@
 //! there while already showing on `/in` itself.
 
 import { useState } from "react";
+import { FiHome, FiMenu, FiUser } from "react-icons/fi";
 import { Link, useLocation } from "../router/Router";
 import { useIsMobile, useIsPortrait } from "./useViewport";
 import { useOrgSession } from "../org/OrgSessionContext";
@@ -59,7 +60,7 @@ function DesktopSidebar() {
                 title="Home"
                 className="flex size-10 items-center justify-center rounded-card text-xl text-ink-muted hover:bg-muted hover:text-ink"
               >
-                🏠
+                <FiHome />
               </Link>
             </div>
             <OrgOnlineView />
@@ -72,7 +73,7 @@ function DesktopSidebar() {
         className="flex shrink-0 items-center gap-2 border-t p-3 hover:bg-muted"
       >
         <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-brand text-sm font-semibold text-on-brand">
-          👤
+          <FiUser />
         </span>
         {!collapsed && (
           <span className="truncate text-sm text-ink">Profile</span>
@@ -98,7 +99,7 @@ function MobileBar() {
         to="/profile"
         className="flex flex-col items-center justify-center text-ink-muted"
       >
-        <span className="text-lg">👤</span>
+        <FiUser className="text-lg" />
       </Link>
       <button
         onClick={inMeeting ? toggleMobileExpanded : undefined}
@@ -117,7 +118,7 @@ function MobileBar() {
         to="/in"
         className="flex flex-col items-center justify-center text-ink-muted"
       >
-        <span className="text-lg">☰</span>
+        <FiMenu className="text-lg" />
       </Link>
     </nav>
   );
