@@ -583,7 +583,10 @@ pub async fn set_locked(
     locked: bool,
 ) -> Result<Meeting, MeetingError> {
     let mut meeting = find(db, meeting_id).await?.ok_or(MeetingError::NotFound)?;
-    if !attendee_ids(db, meeting_id).await?.contains(&caller.to_string()) {
+    if !attendee_ids(db, meeting_id)
+        .await?
+        .contains(&caller.to_string())
+    {
         return Err(MeetingError::Forbidden);
     }
     set_invite_only(db, meeting_id, locked).await?;

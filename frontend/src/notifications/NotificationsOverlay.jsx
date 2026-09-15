@@ -79,7 +79,14 @@ function OrgInviteBubble({ invite, busy, onAccept, onDecline, onClose }) {
   );
 }
 
-function MeetingInviteBubble({ invite, members, busy, onAccept, onDecline, onClose }) {
+function MeetingInviteBubble({
+  invite,
+  members,
+  busy,
+  onAccept,
+  onDecline,
+  onClose,
+}) {
   return (
     <Bubble onClose={onClose}>
       <p className="text-sm text-ink">
@@ -140,8 +147,7 @@ export default function NotificationsOverlay() {
   const isMobile = useIsMobile();
   const isPortrait = useIsPortrait();
   const [dismissedIds, setDismissedIds] = useState(new Set());
-  const dismiss = (id) =>
-    setDismissedIds((prev) => new Set(prev).add(id));
+  const dismiss = (id) => setDismissedIds((prev) => new Set(prev).add(id));
 
   const onOrgAccepted = (orgId) => {
     reloadOrgs();
@@ -173,7 +179,7 @@ export default function NotificationsOverlay() {
 
   return (
     <ul
-      className={`pointer-events-none fixed top-0 ${bottom} ${edge} z-[60] flex w-chat max-w-full flex-col gap-2 overflow-y-auto p-3`}
+      className={`pointer-events-none fixed top-0 ${bottom} ${edge} z-60 flex w-chat max-w-full flex-col gap-2 overflow-y-auto p-3`}
     >
       {showUrlInvite && (
         <OrgInviteBubble

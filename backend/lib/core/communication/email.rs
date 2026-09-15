@@ -5,6 +5,6 @@ pub fn send_email(from: &str, to: &str, title: &str, content: &str) {
     println!("[email stub] from={from} to={to} title={title:?}\n{content}");
 }
 
-pub fn is_stub() -> bool{
+pub fn is_stub() -> bool {
     return true;
 }
