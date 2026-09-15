@@ -37,6 +37,7 @@
 //! [`meeting_invites::CHANNEL`] is separate again: a feed of one user's own
 //! pending invites, not scoped to an org at all.
 
+pub mod access_requests;
 pub mod chat;
 pub mod controls;
 pub mod meeting_invites;
@@ -310,6 +311,19 @@ async fn delete_attendees(db: &Db, meeting_id: &str) -> Result<(), DbError> {
     .await
 }
 
+async fn set_invite_only(db: &Db, meeting_id: &str, value: bool) -> Result<(), DbError> {
+    let pool = db.pool().await?;
+    retry_on_conflict(|| async move {
+        sqlx::query("UPDATE meetings SET invite_only = $1 WHERE id = $2")
+            .bind(value)
+            .bind(meeting_id)
+            .execute(pool)
+            .await
+            .map(|_| ())
+    })
+    .await
+}
+
 async fn delete_meeting_row(db: &Db, meeting_id: &str) -> Result<(), DbError> {
     let pool = db.pool().await?;
     retry_on_conflict(|| async move {
@@ -551,6 +565,33 @@ pub async fn leave(
         broadcast_list(messenger, db, org_id).await;
     }
     Ok(())
+}
+
+/// Lock or unlock a meeting: with `locked` true, [`join_inner`]'s existing
+/// `invite_only` gate applies from here on -- only the creator or someone
+/// holding a pending invite may join, same as a meeting created that way to
+/// begin with (see [`create`]). Current attendees are never affected either
+/// way; this only changes who may join *next*. Gated to current attendees,
+/// same as [`meeting_invites::create_invite`] -- the meeting keeps going
+/// after its creator leaves, so whoever's left in it should still be able to
+/// lock it down or open it back up.
+pub async fn set_locked(
+    db: &Db,
+    messenger: &Messenger,
+    meeting_id: &str,
+    caller: &str,
+    locked: bool,
+) -> Result<Meeting, MeetingError> {
+    let mut meeting = find(db, meeting_id).await?.ok_or(MeetingError::NotFound)?;
+    if !attendee_ids(db, meeting_id).await?.contains(&caller.to_string()) {
+        return Err(MeetingError::Forbidden);
+    }
+    set_invite_only(db, meeting_id, locked).await?;
+    meeting.invite_only = locked;
+    if let Some(org_id) = &meeting.org_id {
+        broadcast_list(messenger, db, org_id).await;
+    }
+    Ok(meeting)
 }
 
 /// Wire a hard disconnect to [`leave`] -- see the module doc. Shares
@@ -832,6 +873,28 @@ async fn leave_route(
     ))
 }
 
+/// `POST /meeting/{meeting_id}/lock` -- see [`set_locked`].
+async fn lock_route(
+    Extension(db): Extension<Db>,
+    Extension(messenger): Extension<Messenger>,
+    Extension(claims): Extension<Claims>,
+    Path(meeting_id): Path<String>,
+) -> Result<Json<Value>, MeetingError> {
+    let meeting = set_locked(&db, &messenger, &meeting_id, &claims.sub, true).await?;
+    Ok(Json(json!({ "meeting": meeting })))
+}
+
+/// `POST /meeting/{meeting_id}/unlock` -- see [`set_locked`].
+async fn unlock_route(
+    Extension(db): Extension<Db>,
+    Extension(messenger): Extension<Messenger>,
+    Extension(claims): Extension<Claims>,
+    Path(meeting_id): Path<String>,
+) -> Result<Json<Value>, MeetingError> {
+    let meeting = set_locked(&db, &messenger, &meeting_id, &claims.sub, false).await?;
+    Ok(Json(json!({ "meeting": meeting })))
+}
+
 #[derive(Debug, Deserialize)]
 struct CreateInviteBody {
     invited_user_id: String,
@@ -932,6 +995,8 @@ pub fn routes() -> Router {
         .route("/{meeting_id}/join", post(join_route))
         .route("/{meeting_id}/force", post(force_join_route))
         .route("/{meeting_id}/leave", post(leave_route))
+        .route("/{meeting_id}/lock", post(lock_route))
+        .route("/{meeting_id}/unlock", post(unlock_route))
         .route("/{meeting_id}/invites", post(create_invite_route))
         .route(
             "/{meeting_id}/invites/{invite_id}",

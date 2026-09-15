@@ -7,6 +7,7 @@
 //! fit a name.
 
 import { useLayoutEffect, useRef, useState } from "react";
+import { FiLock } from "react-icons/fi";
 import { useOrgSession } from "../org/OrgSessionContext";
 import AsyncButton from "./AsyncButton";
 
@@ -27,9 +28,11 @@ function Avatar({ name, online }) {
 function MemberRow({
   member,
   meetingId,
+  meetingLocked,
   myMeetingId,
   compact,
   onJoin,
+  onRequestAccess,
   onInvite,
   onForce,
 }) {
@@ -63,13 +66,23 @@ function MemberRow({
       {open && (
         <div className="absolute left-0 z-10 mt-1 flex min-w-max flex-col gap-1 rounded-card border bg-surface p-1.5 shadow-lg">
           {meetingId ? (
-            <AsyncButton
-              onClick={() => runAndClose(() => onJoin(meetingId))}
-              disabled={!!myMeetingId}
-              className="whitespace-nowrap rounded-card px-2 py-1 text-left text-sm text-ink hover:bg-muted disabled:opacity-50"
-            >
-              Join their meeting
-            </AsyncButton>
+            meetingLocked ? (
+              <AsyncButton
+                onClick={() => runAndClose(() => onRequestAccess(meetingId))}
+                disabled={!!myMeetingId}
+                className="whitespace-nowrap rounded-card px-2 py-1 text-left text-sm text-ink hover:bg-muted disabled:opacity-50"
+              >
+                Request access
+              </AsyncButton>
+            ) : (
+              <AsyncButton
+                onClick={() => runAndClose(() => onJoin(meetingId))}
+                disabled={!!myMeetingId}
+                className="whitespace-nowrap rounded-card px-2 py-1 text-left text-sm text-ink hover:bg-muted disabled:opacity-50"
+              >
+                Join their meeting
+              </AsyncButton>
+            )
           ) : (
             <AsyncButton
               onClick={() => runAndClose(onInvite)}
@@ -92,7 +105,8 @@ function MemberRow({
 
 export default function OrgOnlineView() {
   const { myId, roster, session } = useOrgSession();
-  const { meetings, myMeetingId, join, inviteUser, forceUser } = session;
+  const { meetings, myMeetingId, join, requestAccess, inviteUser, forceUser } =
+    session;
   const containerRef = useRef(null);
   const [compact, setCompact] = useState(false);
 
@@ -107,7 +121,9 @@ export default function OrgOnlineView() {
   }, []);
 
   const meetingIdByUser = {};
+  const meetingById = new Map();
   for (const meeting of meetings) {
+    meetingById.set(meeting.id, meeting);
     for (const userId of meeting.attendees ?? [])
       meetingIdByUser[userId] = meeting.id;
   }
@@ -133,9 +149,11 @@ export default function OrgOnlineView() {
       key={member.user_id}
       member={member}
       meetingId={meetingId}
+      meetingLocked={!!meetingById.get(meetingId)?.invite_only}
       myMeetingId={myMeetingId}
       compact={compact}
       onJoin={join}
+      onRequestAccess={requestAccess}
       onInvite={() => inviteUser(member.user_id)}
       onForce={() => forceUser(member.user_id)}
     />
@@ -146,8 +164,11 @@ export default function OrgOnlineView() {
       {[...groups.entries()].map(([meetingId, group]) => (
         <div key={meetingId}>
           {!compact && (
-            <h3 className="px-2 text-xs font-medium uppercase text-ink-muted">
+            <h3 className="flex items-center gap-1 px-2 text-xs font-medium uppercase text-ink-muted">
               In a meeting
+              {meetingById.get(meetingId)?.invite_only && (
+                <FiLock title="Locked" />
+              )}
             </h3>
           )}
           <ul className="mt-1 space-y-0.5">

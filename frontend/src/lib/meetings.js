@@ -7,6 +7,7 @@ export const MEETING_INVITES_CHANNEL = "meeting_invites";
 export const MEETING_FORCE_CHANNEL = "meeting_force";
 export const MEETING_CHAT_CHANNEL = "meeting_chat";
 export const MEETING_CONTROL_CHANNEL = "meeting_control";
+export const MEETING_ACCESS_REQUEST_CHANNEL = "meeting_access_request";
 
 export const listMeetings = (token, orgId) =>
   apiFetch(`/meeting?org_id=${encodeURIComponent(orgId)}`, { token });
@@ -23,6 +24,12 @@ export const joinMeeting = (token, meetingId) =>
 
 export const leaveMeeting = (token, meetingId) =>
   apiFetch(`/meeting/${meetingId}/leave`, { method: "POST", token });
+
+export const lockMeeting = (token, meetingId) =>
+  apiFetch(`/meeting/${meetingId}/lock`, { method: "POST", token });
+
+export const unlockMeeting = (token, meetingId) =>
+  apiFetch(`/meeting/${meetingId}/unlock`, { method: "POST", token });
 
 export const listMyInvites = (token) => apiFetch("/meeting/invites", { token });
 

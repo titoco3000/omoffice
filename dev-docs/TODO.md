@@ -1,6 +1,4 @@
-- fullscreen meeting should have no gap
-- Immediat UI reactions
-- Meeting panel upgrade
+- friendlier meeting invites (join, invite)
 - create client homepage
 - map
 - shared drawing

@@ -18,6 +18,7 @@ import { decodeJwt } from "./jwt";
 import * as chime from "./chime";
 import {
   IDLE_AFTER_SECONDS,
+  MEETING_ACCESS_REQUEST_CHANNEL,
   MEETING_CHAT_CHANNEL,
   MEETING_CONTROL_CHANNEL,
   MEETING_FORCE_CHANNEL,
@@ -33,6 +34,8 @@ import {
   leaveMeeting,
   listMeetings,
   listMyInvites,
+  lockMeeting,
+  unlockMeeting,
 } from "./meetings";
 
 export function useMeetingSession(token, orgId) {
@@ -79,6 +82,13 @@ export function useMeetingSession(token, orgId) {
   // just left) starts with no history, same as anyone else opening it late
   // would see.
   const [chatMessages, setChatMessages] = useState([]);
+  // Pending "let me in" requests for whichever locked meeting this tab is
+  // currently an attendee of -- see `features::meetings::access_requests`
+  // (backend/lib/features/meetings/access_requests.rs). Frontend-only, same
+  // as `chatMessages`: the backend relays a request but never stores it, so
+  // a repeat request from the same person just refreshes its timestamp
+  // rather than piling up, and the list resets whenever `myMeetingId` does.
+  const [accessRequests, setAccessRequests] = useState([]);
   const myId = decodeJwt(token)?.sub;
 
   // Mirrors `myMeetingId` for the unmount cleanup below, which is set up
@@ -223,6 +233,26 @@ export function useMeetingSession(token, orgId) {
     return () => {
       unsubscribe();
       setChatMessages([]);
+    };
+  }, [myMeetingId]);
+
+  // Access requests for whichever meeting this tab is in -- see
+  // `features::meetings::access_requests::CHANNEL`
+  // (backend/lib/features/meetings/access_requests.rs). Reset the same way
+  // `chatMessages` is: a switch to a different meeting shouldn't drag along
+  // requests addressed to the one just left.
+  useEffect(() => {
+    if (!myMeetingId) return;
+    const unsubscribe = messenger.on(MEETING_ACCESS_REQUEST_CHANNEL, (message) => {
+      if (message.meeting_id !== myMeetingId) return;
+      setAccessRequests((prev) => [
+        ...prev.filter((r) => r.userId !== message.from),
+        { userId: message.from, at: Date.now() },
+      ]);
+    });
+    return () => {
+      unsubscribe();
+      setAccessRequests([]);
     };
   }, [myMeetingId]);
 
@@ -470,6 +500,46 @@ export function useMeetingSession(token, orgId) {
     }
   };
 
+  // Lock/unlock the meeting this tab is in -- see
+  // `features::meetings::set_locked` (backend/lib/features/meetings/mod.rs).
+  // `meetings` (kept live over `MEETING_LIST_CHANNEL`) already carries the
+  // current `invite_only` flag, so there's no local state to flip here --
+  // just fire the request and let the broadcast update `meetings` for
+  // everyone, this tab included.
+  const toggleLock = async () => {
+    if (!myMeetingId) return;
+    const locked = meetings.find((m) => m.id === myMeetingId)?.invite_only;
+    setError(null);
+    try {
+      await (locked ? unlockMeeting : lockMeeting)(token, myMeetingId);
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  // Ask whoever's already in a locked meeting to let this tab's user in --
+  // fire-and-forget over the messenger, same as `sendChatMessage`: the
+  // backend relays it to that meeting's current attendees alone (see
+  // `features::meetings::access_requests`), and there is no accept step on
+  // the wire, just whatever an attendee does about it (`admitAccessRequest`
+  // below, or nothing).
+  const requestAccess = (meetingId) => {
+    messenger.send(MEETING_ACCESS_REQUEST_CHANNEL, { meeting_id: meetingId });
+  };
+
+  const dismissAccessRequest = (userId) => {
+    setAccessRequests((prev) => prev.filter((r) => r.userId !== userId));
+  };
+
+  // An attendee's answer to a pending request: invite the requester into
+  // this tab's own meeting (reusing `inviteUser`, since this tab is already
+  // in it) and drop the request locally -- the requester's own invite list
+  // updates from the invite itself, not from anything pushed back here.
+  const admitAccessRequest = async (userId) => {
+    await inviteUser(userId);
+    dismissAccessRequest(userId);
+  };
+
   const toggleCamera = async () => {
     const next = !cameraOn;
     try {
@@ -536,7 +606,11 @@ export function useMeetingSession(token, orgId) {
     invites,
     error,
     chatMessages,
+    accessRequests,
     sendChatMessage,
+    requestAccess,
+    admitAccessRequest,
+    dismissAccessRequest,
     muteAttendee,
     turnOffAttendeeCamera,
     create,
@@ -546,6 +620,7 @@ export function useMeetingSession(token, orgId) {
     declineInvite,
     inviteUser,
     forceUser,
+    toggleLock,
     toggleCamera,
     toggleMic,
     toggleScreenShare,

@@ -1,9 +1,11 @@
 import {
+  FiLock,
   FiMic,
   FiMicOff,
   FiMonitor,
   FiPhoneOff,
   FiStopCircle,
+  FiUnlock,
   FiVideo,
   FiVideoOff,
 } from "react-icons/fi";
@@ -31,17 +33,25 @@ export default function MeetingControls({
   cameraOn,
   micMuted,
   sharingScreen,
+  locked,
   canShareScreen,
   onLeave,
   onToggleCamera,
   onToggleMic,
   onToggleScreenShare,
+  onToggleLock,
 }) {
   return (
     <div className="flex flex-wrap gap-2">
       <ControlButton danger icon={<FiPhoneOff />} onClick={onLeave}>
         Leave
       </ControlButton>
+      <ControlButton
+        active={locked}
+        icon={locked ? <FiLock /> : <FiUnlock />}
+        onClick={onToggleLock}
+        title={locked ? "Unlock meeting" : "Lock meeting"}
+      ></ControlButton>
       <ControlButton
         active={cameraOn}
         icon={cameraOn ? <FiVideoOff /> : <FiVideo />}
