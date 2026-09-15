@@ -116,7 +116,7 @@ export default function MeetingDock() {
       style={dockedStyle}
       className={
         fullScreen
-          ? "fixed inset-4 z-50 flex flex-col rounded-card border bg-surface shadow-xl"
+          ? "fixed inset-0 z-50 flex flex-col bg-surface shadow-xl"
           : `fixed z-50 flex max-w-sm flex-col rounded-card border bg-surface shadow-xl ${
               drag ? "" : "transition-[top,left] duration-200"
             }`
@@ -126,8 +126,8 @@ export default function MeetingDock() {
         onPointerDown={startDrag}
         onPointerMove={dragMove}
         onPointerUp={dragEnd}
-        className={`flex shrink-0 items-center justify-between rounded-t-card border-b bg-bg px-3 py-2 ${
-          fullScreen ? "" : "cursor-move touch-none"
+        className={`flex shrink-0 items-center justify-between border-b bg-bg px-3 py-2 ${
+          fullScreen ? "" : "cursor-move touch-none rounded-t-card"
         }`}
       >
         <h2 className="text-sm font-semibold text-ink">Meeting</h2>
