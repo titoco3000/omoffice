@@ -12,7 +12,7 @@
 //! every pending invite regardless -- filtering to `orgId` happens here,
 //! client-side, on every render.
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { messenger } from "./messenger";
 import { decodeJwt } from "./jwt";
 import * as chime from "./chime";
@@ -37,7 +37,16 @@ import {
 
 export function useMeetingSession(token, orgId) {
   const audioRef = useRef(null);
-  const selfVideoRef = useRef(null);
+  // A callback ref, not `useRef` + an effect keyed on `myMeetingId`: the
+  // self tile can remount into a different spot in the DOM tree -- the
+  // pinned/sidebar layout switching, the mobile tiles/chat toggle -- with
+  // `myMeetingId` never changing, so an effect like that would miss the
+  // remount and leave the camera bound to an element no longer on screen.
+  // A callback ref fires on every mount and unmount directly, so it can't
+  // go stale that way.
+  const selfVideoRef = useCallback((element) => {
+    chime.setSelfVideoElement(element);
+  }, []);
 
   const [meetings, setMeetings] = useState([]);
   // The meeting this tab currently considers itself "in", and whether that
@@ -90,16 +99,6 @@ export function useMeetingSession(token, orgId) {
   useEffect(() => {
     chime.setAudioElement(audioRef.current);
     return () => chime.setAudioElement(null);
-  }, [myMeetingId]);
-
-  // The self-preview `<video>` only exists in the DOM while `myMeetingId`
-  // is set -- wiring this up once on mount would have grabbed `null`
-  // forever, since that element hasn't been created yet at that point.
-  // Re-running whenever `myMeetingId` changes catches it exactly when it
-  // mounts (and clears it when it unmounts).
-  useEffect(() => {
-    chime.setSelfVideoElement(selfVideoRef.current);
-    return () => chime.setSelfVideoElement(null);
   }, [myMeetingId]);
 
   const reloadMeetings = () =>

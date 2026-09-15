@@ -1,8 +1,19 @@
 //! One participant's video tile -- their camera feed if bound, else an
-//! initial placeholder. Hovering reveals mute/camera-off buttons; the
+//! initial placeholder. Hovering reveals mute/camera-off/pin buttons; the
 //! border turns `speaking` while their mic is producing sound.
+//!
+//! `fill` sizes the tile to whatever its parent grid cell/flex slot gives
+//! it (the gallery grid, and the pinned tile itself) rather than the fixed
+//! small size used for the sidebar list of unpinned tiles once something
+//! is pinned -- see `MeetingPanel`.
 
-import { FiMicOff, FiVideoOff } from "react-icons/fi";
+import {
+  FiMapPin,
+  FiMaximize,
+  FiMicOff,
+  FiMinimize,
+  FiVideoOff,
+} from "react-icons/fi";
 import { useIsTouch } from "../layout/useViewport";
 
 export default function MeetingTile({
@@ -12,12 +23,14 @@ export default function MeetingTile({
   isSelf,
   speaking,
   muted,
-  wide,
+  pinned,
+  fill,
   onMute,
   onCameraOff,
+  onPin,
 }) {
   const isTouch = useIsTouch();
-  const hasControls = onMute || onCameraOff;
+  const hasControls = onMute || onCameraOff || onPin;
   return (
     <div
       // `tabIndex` only on touch, where there's no `:hover` -- lets a tap
@@ -25,15 +38,23 @@ export default function MeetingTile({
       // A mouse/trackpad keeps `:hover` only, so tabbing through with a
       // keyboard doesn't flash the overlay on every tile it passes.
       tabIndex={isTouch && hasControls ? 0 : undefined}
-      className={`group relative aspect-video shrink-0 overflow-hidden rounded-card border-2 bg-muted ${
+      // `aspect-video` stays on in `fill` mode too -- it's a no-op wherever
+      // the parent grid/flex slot actually gives this tile a real height
+      // (a definite `height: 100%` wins over `aspect-ratio`), but it's what
+      // keeps the tile from collapsing to 0 tall in a spot with no definite
+      // height of its own (the floating mini dock, whose card is sized to
+      // its content rather than to the viewport) -- a percentage height
+      // against an indefinite container resolves to `auto`, so the aspect
+      // ratio is what ends up sizing it instead.
+      className={`group relative overflow-hidden rounded-card border-2 bg-muted aspect-video ${
         speaking ? "border-speaking" : "border-transparent"
-      } ${wide ? "w-full sm:w-96" : "w-40 sm:w-48"}`}
+      } ${fill ? "h-full w-full" : "w-40 shrink-0 sm:w-48"}`}
     >
       {/* The self tile's `<video>` stays mounted regardless of `hasVideo` --
-          `useMeetingSession` binds `selfVideoRef` to it once, when the
-          meeting starts, not on every camera toggle; unmounting it here
-          whenever the camera is off would drop that binding for good, and
-          the camera would never come back on. */}
+          `selfVideoRef` (a callback ref, see `useMeetingSession`) rebinds
+          Chime to it on every mount, so unmounting it here whenever the
+          camera is off would just have it rebind to nothing, and the
+          camera would never come back on. */}
       {isSelf ? (
         <video
           ref={videoRef}
@@ -92,6 +113,17 @@ export default function MeetingTile({
               className="flex items-center gap-1 rounded-card bg-surface/90 px-2 py-1 text-xs text-ink hover:bg-surface disabled:opacity-50 disabled:hover:bg-surface/90"
             >
               <FiVideoOff />
+            </button>
+          )}
+          {onPin && (
+            <button
+              onClick={onPin}
+              title={pinned ? "Unpin" : "Pin"}
+              className={`flex items-center gap-1 rounded-card bg-surface/90 px-2 py-1 text-xs hover:bg-surface ${
+                pinned ? "text-brand" : "text-ink"
+              }`}
+            >
+              {pinned ? <FiMinimize /> : <FiMaximize />}
             </button>
           )}
         </div>
