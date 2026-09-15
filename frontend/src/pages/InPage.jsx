@@ -1,6 +1,5 @@
 import { Link } from "../router/Router";
 import { useOrgSession } from "../org/OrgSessionContext";
-import Inbox from "../components/Inbox";
 import OrgOnlineView from "../components/OrgOnlineView";
 import AsyncButton from "../components/AsyncButton";
 
@@ -26,8 +25,6 @@ export default function InPage() {
 
   return (
     <main className="mx-auto flex max-w-2xl flex-col gap-6 px-6 py-10">
-      <Inbox />
-
       {currentOrg ? (
         <section>
           <div className="flex items-center justify-between">

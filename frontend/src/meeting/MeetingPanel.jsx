@@ -4,10 +4,9 @@
 //! this component only knows how to fill whatever space it's given.
 
 import { useState } from "react";
-import { FiMessageCircle, FiUserPlus, FiX } from "react-icons/fi";
+import { FiMessageCircle } from "react-icons/fi";
 import * as chime from "../lib/chime";
 import { preferredName } from "../lib/names";
-import AsyncButton from "../components/AsyncButton";
 import Spinner from "../components/Spinner";
 import MeetingChat from "./MeetingChat";
 import MeetingControls from "./MeetingControls";
@@ -45,10 +44,7 @@ export default function MeetingPanel({
     speakingUserIds,
     mutedUserIds,
     chatMessages,
-    accessRequests,
     sendChatMessage,
-    admitAccessRequest,
-    dismissAccessRequest,
     muteAttendee,
     turnOffAttendeeCamera,
     leave,
@@ -215,40 +211,6 @@ export default function MeetingPanel({
           />
         )}
       </div>
-
-      {accessRequests.length > 0 && (
-        <ul className="flex shrink-0 flex-col gap-1 border-t bg-bg p-2">
-          {accessRequests.map((request) => (
-            <li
-              key={request.userId}
-              className="flex items-center justify-between gap-2 rounded-card border border-brand/40 px-3 py-1.5 text-sm"
-            >
-              <span className="text-ink">
-                <span className="font-medium">
-                  {preferredName(request.userId, members)}
-                </span>{" "}
-                wants to join
-              </span>
-              <div className="flex shrink-0 gap-2">
-                <AsyncButton
-                  onClick={() => admitAccessRequest(request.userId)}
-                  title="Let them in"
-                  className="rounded-card bg-brand px-2 py-1 text-on-brand hover:bg-brand-strong"
-                >
-                  <FiUserPlus />
-                </AsyncButton>
-                <AsyncButton
-                  onClick={() => dismissAccessRequest(request.userId)}
-                  title="Dismiss"
-                  className="rounded-card border px-2 py-1 text-ink-muted hover:text-ink"
-                >
-                  <FiX />
-                </AsyncButton>
-              </div>
-            </li>
-          ))}
-        </ul>
-      )}
 
       <div className="flex shrink-0 items-center justify-between gap-2 border-t bg-bg p-3">
         <MeetingControls

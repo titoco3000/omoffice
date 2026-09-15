@@ -11,6 +11,7 @@ import { useOrgSession } from "../org/OrgSessionContext";
 import { useMeetingLayout } from "../meeting/MeetingLayoutContext";
 import MeetingDock from "../meeting/MeetingDock";
 import OrgOnlineView from "../components/OrgOnlineView";
+import NotificationsOverlay from "../notifications/NotificationsOverlay";
 
 const STORAGE_KEY = "omoffice_sidebar_collapsed";
 
@@ -146,23 +147,29 @@ export default function NavContainer({ children }) {
     const dock = inMeeting ? <MeetingDock /> : null;
 
     return (
-      <div className={`flex h-full ${isPortrait ? "flex-col" : "flex-row"}`}>
-        <div
-          className={`flex min-h-0 flex-1 ${isPortrait ? "flex-col" : "flex-row"}`}
-        >
-          {dock}
-          {main}
+      <>
+        <div className={`flex h-full ${isPortrait ? "flex-col" : "flex-row"}`}>
+          <div
+            className={`flex min-h-0 flex-1 ${isPortrait ? "flex-col" : "flex-row"}`}
+          >
+            {dock}
+            {main}
+          </div>
+          <MobileBar />
         </div>
-        <MobileBar />
-      </div>
+        <NotificationsOverlay />
+      </>
     );
   }
 
   return (
-    <div className="flex h-full">
-      <DesktopSidebar />
-      <main className="min-h-0 flex-1 overflow-y-auto">{children}</main>
-      <MeetingDock />
-    </div>
+    <>
+      <div className="flex h-full">
+        <DesktopSidebar />
+        <main className="min-h-0 flex-1 overflow-y-auto">{children}</main>
+        <MeetingDock />
+      </div>
+      <NotificationsOverlay />
+    </>
   );
 }
