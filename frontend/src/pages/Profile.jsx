@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useAuth } from "../auth/AuthContext";
 import { useOrgSession } from "../org/OrgSessionContext";
 import { Link } from "../router/Router";
-import { me, renameMe, renameMeInOrg, leaveOrg } from "../lib/rbac";
+import { me, renameMe, meInOrg, renameMeInOrg, leaveOrg } from "../lib/rbac";
 import { avatarUrl, removeAvatar } from "../lib/avatars";
 import ThemeToggle from "../theme/ThemeToggle";
 import AsyncButton from "../components/AsyncButton";
@@ -12,13 +12,11 @@ import AvatarUploadPanel from "../components/AvatarUploadPanel";
 export default function Profile() {
   const { token, logout } = useAuth();
   const {
-    myId,
     orgs,
     orgId,
     currentOrg,
     selectOrg,
     reloadOrgs,
-    roster,
     canManageTeam,
     reloadProfile,
   } = useOrgSession();
@@ -27,6 +25,10 @@ export default function Profile() {
   const [picture, setPicture] = useState(null);
   const [error, setError] = useState(null);
   const [editingPhoto, setEditingPhoto] = useState(null); // null | "me" | "org"
+  // The caller's own raw name/picture/roles within `currentOrg` -- no
+  // fallback to the global name/photo, unlike a roster entry -- see
+  // `GET /rbac/me/org/{org_id}`.
+  const [selfInOrg, setSelfInOrg] = useState(null);
 
   useEffect(() => {
     me(token)
@@ -37,20 +39,29 @@ export default function Profile() {
       .catch(() => {});
   }, [token]);
 
+  const reloadSelfInOrg = () => {
+    if (!currentOrg) return Promise.resolve();
+    return meInOrg(token, currentOrg.id)
+      .then(setSelfInOrg)
+      .catch(() => {});
+  };
+
+  useEffect(() => {
+    if (!currentOrg?.id) return;
+    reloadSelfInOrg();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token, currentOrg?.id]);
+
   const saveName = () =>
     renameMe(token, name).catch((err) => setError(err.message));
   const saveOrgName = (event) => {
     const value = event.target.value.trim();
     renameMeInOrg(token, currentOrg.id, value)
-      .then(roster.reload)
+      .then(reloadSelfInOrg)
       .catch((err) => setError(err.message));
   };
-  const myMember = roster.members.find((member) => member.user_id === myId);
-  const orgDisplayName = myMember?.display_name ?? "";
-  // `myMember.picture` falls back to the global photo when there is no
-  // org-specific one -- only show it here, as an org photo, when it's
-  // actually this member's own upload in this org.
-  const orgPicture = myMember?.has_own_picture ? myMember.picture : null;
+  const orgDisplayName = selfInOrg?.name ?? "";
+  const orgPicture = selfInOrg?.picture ?? null;
 
   const removeMyPhoto = () =>
     removeAvatar(token, { target: "me" })
@@ -62,7 +73,7 @@ export default function Profile() {
 
   const removeOrgPhoto = () =>
     removeAvatar(token, { target: "org_me", org_id: currentOrg.id })
-      .then(roster.reload)
+      .then(reloadSelfInOrg)
       .catch((err) => setError(err.message));
 
   const leave = async () => {
@@ -175,7 +186,7 @@ export default function Profile() {
           title={`Photo in ${currentOrg.name}`}
           target={{ target: "org_me", org_id: currentOrg.id }}
           onClose={() => setEditingPhoto(null)}
-          onDone={() => roster.reload()}
+          onDone={reloadSelfInOrg}
         />
       )}
 

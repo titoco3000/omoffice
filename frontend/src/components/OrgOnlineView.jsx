@@ -74,8 +74,8 @@ function MemberRow({
   };
 
   const HANDLER = {
-    join: () => onJoin(member.user_id, meetingId),
-    invite: () => onInvite(member.user_id),
+    join: () => onJoin(member.id, meetingId),
+    invite: () => onInvite(member.id),
     ask: () => onRequestAccess(meetingId),
   };
 
@@ -83,20 +83,18 @@ function MemberRow({
     <li className="relative">
       <button
         onClick={interactive ? () => setOpen((v) => !v) : undefined}
-        title={member.display_name}
+        title={member.name}
         className={`flex w-full items-center gap-2 rounded-card px-2 py-1.5 text-left ${
           interactive ? "hover:bg-muted" : "cursor-default opacity-60"
         }`}
       >
         <Avatar
-          name={member.display_name}
+          name={member.name}
           picture={member.picture}
           online={member.online}
         />
         {!compact && (
-          <span className="truncate text-sm text-ink">
-            {member.display_name}
-          </span>
+          <span className="truncate text-sm text-ink">{member.name}</span>
         )}
       </button>
       {open && (
@@ -141,14 +139,14 @@ export default function OrgOnlineView() {
       meetingIdByUser[userId] = meeting.id;
   }
 
-  const others = roster.members.filter((member) => member.user_id !== myId);
+  const others = roster.members.filter((member) => member.id !== myId);
   const online = others.filter((member) => member.online);
   const offline = others.filter((member) => !member.online);
 
   const groups = new Map(); // meeting_id -> [member, ...]
   const alone = [];
   for (const member of online) {
-    const meetingId = meetingIdByUser[member.user_id];
+    const meetingId = meetingIdByUser[member.id];
     if (meetingId) {
       if (!groups.has(meetingId)) groups.set(meetingId, []);
       groups.get(meetingId).push(member);
@@ -159,7 +157,7 @@ export default function OrgOnlineView() {
 
   const row = (member, meetingId = null) => (
     <MemberRow
-      key={member.user_id}
+      key={member.id}
       member={member}
       meetingId={meetingId}
       meetingLocked={!!meetingById.get(meetingId)?.invite_only}

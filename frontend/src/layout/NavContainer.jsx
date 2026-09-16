@@ -25,11 +25,9 @@ function Logo({ className = "text-lg" }) {
 
 function useMyDisplay() {
   const { myId, currentOrg, roster, profile } = useOrgSession();
-  const member = currentOrg
-    ? roster.members.find((m) => m.user_id === myId)
-    : null;
+  const member = currentOrg ? roster.members.find((m) => m.id === myId) : null;
   return {
-    name: member?.display_name ?? profile?.name ?? null,
+    name: member?.name ?? profile?.name ?? null,
     picture: member?.picture ?? profile?.picture ?? null,
   };
 }

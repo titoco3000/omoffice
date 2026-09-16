@@ -10,14 +10,12 @@
 //! only has the id.
 
 export function preferredName(userId, members) {
-  return (
-    members?.find((member) => member.user_id === userId)?.display_name ?? userId
-  );
+  return members?.find((member) => member.id === userId)?.name ?? userId;
 }
 
 // Same lookup, for the `picture` key (org-scoped, already falling back to
 // the global one -- see `core::rbac::picture_key`) a meeting tile shows in
 // place of video once the camera's off.
 export function preferredPicture(userId, members) {
-  return members?.find((member) => member.user_id === userId)?.picture ?? null;
+  return members?.find((member) => member.id === userId)?.picture ?? null;
 }

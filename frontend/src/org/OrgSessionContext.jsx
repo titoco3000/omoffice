@@ -9,7 +9,6 @@ import { messenger } from "../lib/messenger";
 import {
   ORG_ACTIVE_CHANNEL,
   ORG_ROSTER_CHANNEL,
-  listOrgs,
   me as fetchMe,
 } from "../lib/rbac";
 import { useMeetingSession } from "../lib/useMeetingSession";
@@ -33,19 +32,22 @@ export function OrgSessionProvider({ children }) {
   // selected at all.
   const [profile, setProfile] = useState(null);
 
-  const reloadOrgs = () =>
-    listOrgs(token)
-      .then((data) => setOrgs(data.orgs ?? []))
-      .catch((err) => setError(err.message));
-
-  const reloadProfile = () =>
+  // `GET /rbac/me` bundles the caller's own account and their org list in
+  // one response -- `reloadOrgs`/`reloadProfile` are two views onto the
+  // same fetch, kept as separate names since callers reach for whichever
+  // half they actually changed (a rename vs. joining/leaving an org).
+  const reloadMe = () =>
     fetchMe(token)
-      .then((data) => setProfile({ name: data.name, picture: data.picture }))
-      .catch(() => {});
+      .then((data) => {
+        setOrgs(data.orgs ?? []);
+        setProfile({ name: data.name, picture: data.picture });
+      })
+      .catch((err) => setError(err.message));
+  const reloadOrgs = reloadMe;
+  const reloadProfile = reloadMe;
 
   useEffect(() => {
-    reloadOrgs();
-    reloadProfile();
+    reloadMe();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
 
@@ -82,7 +84,7 @@ export function OrgSessionProvider({ children }) {
   const roster = useOrgRoster(token, currentOrg?.id ?? null);
   const session = useMeetingSession(token, currentOrg?.id ?? null);
 
-  const me = roster.members.find((member) => member.user_id === myId);
+  const me = roster.members.find((member) => member.id === myId);
   const isAdmin = me?.roles.includes("admin") ?? false;
   const canManageTeam =
     isAdmin || (me?.roles.includes("team-management") ?? false);

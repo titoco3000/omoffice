@@ -26,6 +26,7 @@
 //! removed is no longer in that roster to receive the push, so
 //! [`notify_removed`] tells them directly.
 
+mod avatar;
 pub mod org_invites;
 pub use org_invites::*;
 
@@ -42,6 +43,7 @@ use uuid::Uuid;
 use crate::core::auth::Claims;
 use crate::core::communication::web_messenger::{self, Messenger};
 use crate::core::data::db::{retry_on_conflict, Db, DbError};
+use crate::core::media::{MediaError, MediaState};
 
 /// The roles native to the RBAC. A member with none of these still has a
 /// row in `org_users` -- membership and role are separate, see the module doc.
@@ -73,20 +75,16 @@ pub struct Org {
 /// One row of `org_users`, folded with that member's `org_roles`.
 #[derive(Debug, Serialize)]
 pub struct OrgMember {
-    pub user_id: String,
+    pub id: String,
     /// Org name, else global name, else email, else the id itself -- see
     /// [`display_name`].
-    pub display_name: String,
+    pub name: String,
     /// Org-specific picture, else the global one, else `None` -- see
-    /// [`picture_key`].
+    /// [`picture_key`]. The raw, org-specific-only picture (what
+    /// distinguishes "this member's own upload in this org" from "showing
+    /// the global photo") is `GET /rbac/me/org/{org_id}`'s job, not this
+    /// roster's -- see `me_in_org_route`.
     pub picture: Option<String>,
-    /// Whether `picture` above is this member's own org-specific upload
-    /// rather than the global picture shown through as a fallback --
-    /// distinguishes "no override, showing the global photo" from "this
-    /// person's photo in this org" for a UI (`Profile.jsx`'s "override
-    /// photo in `<org>`" prompt) that needs to tell the two apart, since
-    /// `picture` alone can't.
-    pub has_own_picture: bool,
     pub email: Option<String>,
     pub online: bool,
     pub roles: Vec<String>,
@@ -137,11 +135,20 @@ pub enum RbacError {
     InviteNotFound,
     InviteNotPending,
     Database(DbError),
+    Media(MediaError),
+    UnsupportedMediaType,
+    InvalidImage,
 }
 
 impl From<DbError> for RbacError {
     fn from(err: DbError) -> Self {
         Self::Database(err)
+    }
+}
+
+impl From<MediaError> for RbacError {
+    fn from(err: MediaError) -> Self {
+        Self::Media(err)
     }
 }
 
@@ -192,6 +199,17 @@ impl IntoResponse for RbacError {
                 "this invite has already been accepted, revoked or declined".to_string(),
             ),
             Self::Database(err) => return err.into_response(),
+            Self::Media(err) => return err.into_response(),
+            Self::UnsupportedMediaType => (
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                "unsupported_media_type",
+                "that upload isn't an image".to_string(),
+            ),
+            Self::InvalidImage => (
+                StatusCode::BAD_REQUEST,
+                "invalid_image",
+                "uploaded object is not a decodable image".to_string(),
+            ),
         };
         (status, Json(json!({ "error": error, "message": message }))).into_response()
     }
@@ -485,42 +503,6 @@ pub async fn rename_globally(db: &Db, user_id: &str, name: &str) -> Result<(), R
     Ok(())
 }
 
-pub async fn mark_upload_pending(db: &Db, user_id: &str) -> Result<(), RbacError> {
-    let pool = db.pool().await?;
-    retry_on_conflict(|| async move {
-        sqlx::query("UPDATE users SET pending_upload_at = now() WHERE id = $1")
-            .bind(user_id)
-            .execute(pool)
-            .await
-            .map(|_| ())
-    })
-    .await?;
-    Ok(())
-}
-
-pub async fn clear_upload_pending(db: &Db, user_id: &str) -> Result<(), RbacError> {
-    let pool = db.pool().await?;
-    retry_on_conflict(|| async move {
-        sqlx::query("UPDATE users SET pending_upload_at = NULL WHERE id = $1")
-            .bind(user_id)
-            .execute(pool)
-            .await
-            .map(|_| ())
-    })
-    .await?;
-    Ok(())
-}
-
-pub async fn upload_pending(db: &Db, user_id: &str) -> Result<bool, RbacError> {
-    let pool = db.pool().await?;
-    let at: Option<Option<DateTime<Utc>>> =
-        sqlx::query_scalar("SELECT pending_upload_at FROM users WHERE id = $1")
-            .bind(user_id)
-            .fetch_optional(pool)
-            .await?;
-    Ok(at.flatten().is_some())
-}
-
 /// Sets `key` as `user_id`'s global avatar -- `users.picture` -- or clears
 /// it (`None`) when the user removes their photo.
 pub async fn set_picture_globally(
@@ -622,6 +604,20 @@ pub async fn member_picture(
     Ok(picture.flatten())
 }
 
+/// Every role `user_id` holds in `org_id`, raw -- no `admin`-implies-
+/// `team-management`/`billing` folding, unlike [`has_role`]. What
+/// `GET /rbac/me/org/{org_id}` shows the caller about their own roles.
+pub async fn member_roles(db: &Db, org_id: &str, user_id: &str) -> Result<Vec<String>, RbacError> {
+    let pool = db.pool().await?;
+    let roles: Vec<String> =
+        sqlx::query_scalar("SELECT role FROM org_roles WHERE org_id = $1 AND user_id = $2")
+            .bind(org_id)
+            .bind(user_id)
+            .fetch_all(pool)
+            .await?;
+    Ok(roles)
+}
+
 /// The raw `organizations.picture` for one org.
 pub async fn org_picture(db: &Db, org_id: &str) -> Result<Option<String>, RbacError> {
     let pool = db.pool().await?;
@@ -719,23 +715,18 @@ pub async fn list_members(db: &Db, org_id: &str) -> Result<Vec<OrgMember>, RbacE
     let mut members: Vec<OrgMember> = Vec::new();
     for row in rows {
         match members.last_mut() {
-            Some(last) if last.user_id == row.user_id => {
+            Some(last) if last.id == row.user_id => {
                 if let Some(role) = row.role {
                     last.roles.push(role);
                 }
             }
             _ => {
                 let name = display_name(&row.org_name, &row.global_name, &row.email, &row.user_id);
-                let has_own_picture = row
-                    .org_picture
-                    .as_ref()
-                    .is_some_and(|s| !s.trim().is_empty());
                 let picture = picture_key(&row.org_picture, &row.global_picture);
                 members.push(OrgMember {
-                    user_id: row.user_id,
-                    display_name: name,
+                    id: row.user_id,
+                    name,
                     picture,
-                    has_own_picture,
                     email: row.email,
                     online: row.online.unwrap_or(false),
                     roles: row.role.into_iter().collect(),
@@ -761,7 +752,7 @@ pub async fn broadcast_roster(
     let online_ids: Vec<String> = members
         .iter()
         .filter(|member| member.online)
-        .map(|member| member.user_id.clone())
+        .map(|member| member.id.clone())
         .collect();
     messenger
         .send(
@@ -1059,14 +1050,74 @@ struct InviteBody {
     roles: Vec<String>,
 }
 
+/// `GET /rbac/me` -- the caller's own account plus every org they belong
+/// to, brief (`id`/`name`/`picture` only).
 async fn me_route(
     Extension(db): Extension<Db>,
     Extension(claims): Extension<Claims>,
-) -> Result<Json<serde_json::Value>, RbacError> {
+) -> Result<Json<Value>, RbacError> {
     let user = get_user(&db, &claims.sub)
         .await?
         .ok_or(RbacError::Forbidden)?;
-    Ok(Json(json!(user)))
+    let orgs: Vec<Value> = list_orgs_for_user(&db, &claims.sub)
+        .await?
+        .into_iter()
+        .map(|org| json!({ "id": org.id, "name": org.name, "picture": org.picture }))
+        .collect();
+    Ok(Json(json!({
+        "id": user.id,
+        "email": user.email,
+        "name": user.name,
+        "picture": user.picture,
+        "orgs": orgs,
+    })))
+}
+
+/// `PUT /rbac/me/picture` -- promote whatever the caller just PUT to their
+/// staging slot (`GET /media/upload`) to their global avatar.
+async fn me_picture_put_route(
+    Extension(media): Extension<MediaState>,
+    Extension(db): Extension<Db>,
+    Extension(messenger): Extension<Messenger>,
+    Extension(claims): Extension<Claims>,
+) -> Result<Json<Value>, RbacError> {
+    let final_key = avatar::promote(&media, &claims.sub).await?;
+
+    let previous = get_user(&db, &claims.sub)
+        .await?
+        .and_then(|user| user.picture);
+    set_picture_globally(&db, &claims.sub, Some(&final_key)).await?;
+    for org in list_orgs_for_user(&db, &claims.sub).await? {
+        broadcast_roster(&messenger, &db, &org.id).await?;
+    }
+
+    if let Some(previous) = previous {
+        media.delete(&previous).await;
+    }
+    Ok(Json(json!({ "key": final_key })))
+}
+
+/// `DELETE /rbac/me/picture` -- clear the caller's global avatar back to
+/// none. No-op (no write, no broadcast) when there was nothing to remove.
+async fn me_picture_delete_route(
+    Extension(media): Extension<MediaState>,
+    Extension(db): Extension<Db>,
+    Extension(messenger): Extension<Messenger>,
+    Extension(claims): Extension<Claims>,
+) -> Result<Json<Value>, RbacError> {
+    let previous = get_user(&db, &claims.sub)
+        .await?
+        .and_then(|user| user.picture);
+    if previous.is_some() {
+        set_picture_globally(&db, &claims.sub, None).await?;
+        for org in list_orgs_for_user(&db, &claims.sub).await? {
+            broadcast_roster(&messenger, &db, &org.id).await?;
+        }
+    }
+    if let Some(previous) = previous {
+        media.delete(&previous).await;
+    }
+    Ok(Json(json!({ "key": Value::Null })))
 }
 
 /// Renaming the account globally moves every org's `display_name` for it
@@ -1109,12 +1160,63 @@ async fn rename_me_in_org_route(
     Ok(Json(json!({ "org_id": org_id, "name": body.name })))
 }
 
-async fn list_orgs_route(
+/// `GET /rbac/me/org/{org_id}` -- the caller's own raw, org-specific
+/// override name/picture (no fallback to the global one) plus their roles in it.
+async fn me_in_org_route(
     Extension(db): Extension<Db>,
     Extension(claims): Extension<Claims>,
-) -> Result<Json<serde_json::Value>, RbacError> {
-    let orgs = list_orgs_for_user(&db, &claims.sub).await?;
-    Ok(Json(json!({ "orgs": orgs })))
+    Path(org_id): Path<String>,
+) -> Result<Json<Value>, RbacError> {
+    require_member(&db, &org_id, &claims.sub).await?;
+    let name = member_name(&db, &org_id, &claims.sub).await?;
+    let picture = member_picture(&db, &org_id, &claims.sub).await?;
+    let roles = member_roles(&db, &org_id, &claims.sub).await?;
+    Ok(Json(
+        json!({ "name": name, "picture": picture, "roles": roles }),
+    ))
+}
+
+/// `PUT /rbac/me/org/{org_id}/picture` -- promote the caller's staged
+/// upload to their picture within `org_id` only.
+async fn me_org_picture_put_route(
+    Extension(media): Extension<MediaState>,
+    Extension(db): Extension<Db>,
+    Extension(messenger): Extension<Messenger>,
+    Extension(claims): Extension<Claims>,
+    Path(org_id): Path<String>,
+) -> Result<Json<Value>, RbacError> {
+    require_member(&db, &org_id, &claims.sub).await?;
+    let final_key = avatar::promote(&media, &claims.sub).await?;
+
+    let previous = member_picture(&db, &org_id, &claims.sub).await?;
+    set_picture_in_org(&db, &org_id, &claims.sub, Some(&final_key)).await?;
+    broadcast_roster(&messenger, &db, &org_id).await?;
+
+    if let Some(previous) = previous {
+        media.delete(&previous).await;
+    }
+    Ok(Json(json!({ "key": final_key })))
+}
+
+/// `DELETE /rbac/me/org/{org_id}/picture` -- clear the caller's
+/// org-specific picture override back to none
+async fn me_org_picture_delete_route(
+    Extension(media): Extension<MediaState>,
+    Extension(db): Extension<Db>,
+    Extension(messenger): Extension<Messenger>,
+    Extension(claims): Extension<Claims>,
+    Path(org_id): Path<String>,
+) -> Result<Json<Value>, RbacError> {
+    require_member(&db, &org_id, &claims.sub).await?;
+    let previous = member_picture(&db, &org_id, &claims.sub).await?;
+    if previous.is_some() {
+        set_picture_in_org(&db, &org_id, &claims.sub, None).await?;
+        broadcast_roster(&messenger, &db, &org_id).await?;
+    }
+    if let Some(previous) = previous {
+        media.delete(&previous).await;
+    }
+    Ok(Json(json!({ "key": Value::Null })))
 }
 
 async fn create_org_route(
@@ -1137,6 +1239,24 @@ async fn rename_org_route(
     Ok(Json(json!({ "org_id": org_id, "name": body.name })))
 }
 
+/// `GET /rbac/org/{org_id}` -- an org's own name/picture. Member only, same
+/// gate as its roster.
+async fn org_brief_route(
+    Extension(db): Extension<Db>,
+    Extension(claims): Extension<Claims>,
+    Path(org_id): Path<String>,
+) -> Result<Json<Value>, RbacError> {
+    require_member(&db, &org_id, &claims.sub).await?;
+    let pool = db.pool().await?;
+    let row: Option<(String, Option<String>)> =
+        sqlx::query_as("SELECT name, picture FROM organizations WHERE id = $1")
+            .bind(&org_id)
+            .fetch_optional(pool)
+            .await?;
+    let (name, picture) = row.ok_or(RbacError::OrgNotFound)?;
+    Ok(Json(json!({ "name": name, "picture": picture })))
+}
+
 async fn delete_org_route(
     Extension(db): Extension<Db>,
     Extension(claims): Extension<Claims>,
@@ -1145,6 +1265,44 @@ async fn delete_org_route(
     require_role(&db, &org_id, &claims.sub, roles::ADMIN).await?;
     delete_org(&db, &org_id).await?;
     Ok(Json(json!({ "deleted": org_id })))
+}
+
+/// `PUT /rbac/org/{org_id}/picture` -- promote the caller's staged upload
+/// to `org_id`'s icon. Admin only.
+async fn org_picture_put_route(
+    Extension(media): Extension<MediaState>,
+    Extension(db): Extension<Db>,
+    Extension(claims): Extension<Claims>,
+    Path(org_id): Path<String>,
+) -> Result<Json<Value>, RbacError> {
+    require_role(&db, &org_id, &claims.sub, roles::ADMIN).await?;
+    let final_key = avatar::promote(&media, &claims.sub).await?;
+
+    let previous = org_picture(&db, &org_id).await?;
+    set_org_picture(&db, &org_id, Some(&final_key)).await?;
+
+    if let Some(previous) = previous {
+        media.delete(&previous).await;
+    }
+    Ok(Json(json!({ "key": final_key })))
+}
+
+/// `DELETE /rbac/org/{org_id}/picture` -- clear the org's icon back to none.
+async fn org_picture_delete_route(
+    Extension(media): Extension<MediaState>,
+    Extension(db): Extension<Db>,
+    Extension(claims): Extension<Claims>,
+    Path(org_id): Path<String>,
+) -> Result<Json<Value>, RbacError> {
+    require_role(&db, &org_id, &claims.sub, roles::ADMIN).await?;
+    let previous = org_picture(&db, &org_id).await?;
+    if previous.is_some() {
+        set_org_picture(&db, &org_id, None).await?;
+    }
+    if let Some(previous) = previous {
+        media.delete(&previous).await;
+    }
+    Ok(Json(json!({ "key": Value::Null })))
 }
 
 async fn list_members_route(
@@ -1296,29 +1454,44 @@ pub fn routes() -> Router {
     Router::new()
         .route("/me", get(me_route))
         .route("/me/name", put(rename_me_route))
-        .route("/orgs", get(list_orgs_route).post(create_org_route))
-        .route("/orgs/{org_id}", delete(delete_org_route))
-        .route("/orgs/{org_id}/name", put(rename_org_route))
-        .route("/orgs/{org_id}/members", get(list_members_route))
-        .route("/orgs/{org_id}/members/me", delete(leave_org_route))
         .route(
-            "/orgs/{org_id}/members/me/name",
-            put(rename_me_in_org_route),
+            "/me/picture",
+            put(me_picture_put_route).delete(me_picture_delete_route),
         )
         .route(
-            "/orgs/{org_id}/members/{user_id}",
+            "/me/org/{org_id}",
+            get(me_in_org_route).delete(leave_org_route),
+        )
+        .route("/me/org/{org_id}/name", put(rename_me_in_org_route))
+        .route(
+            "/me/org/{org_id}/picture",
+            put(me_org_picture_put_route).delete(me_org_picture_delete_route),
+        )
+        .route("/org", post(create_org_route))
+        .route(
+            "/org/{org_id}",
+            get(org_brief_route).delete(delete_org_route),
+        )
+        .route("/org/{org_id}/name", put(rename_org_route))
+        .route(
+            "/org/{org_id}/picture",
+            put(org_picture_put_route).delete(org_picture_delete_route),
+        )
+        .route("/org/{org_id}/members", get(list_members_route))
+        .route(
+            "/org/{org_id}/members/{user_id}",
             delete(remove_member_route),
         )
         .route(
-            "/orgs/{org_id}/roles",
+            "/org/{org_id}/roles",
             post(assign_role_route).delete(revoke_role_route),
         )
         .route(
-            "/orgs/{org_id}/invites",
+            "/org/{org_id}/invites",
             get(list_invites_route).post(create_invite_route),
         )
         .route(
-            "/orgs/{org_id}/invites/{invite_id}",
+            "/org/{org_id}/invites/{invite_id}",
             delete(revoke_invite_route),
         )
         .route("/invites", get(list_my_invites_route))

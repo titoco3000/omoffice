@@ -121,12 +121,12 @@ export default function UsersManagement() {
         </thead>
         <tbody>
           {members.map((member) => (
-            <tr key={member.user_id} className="border-t">
+            <tr key={member.id} className="border-t">
               <td className="py-1.5 text-ink">
                 <div className="flex items-center gap-2">
                   <Avatar
                     url={avatarUrl(member.picture)}
-                    name={member.display_name}
+                    name={member.name}
                     size="size-6"
                   />
                   <span
@@ -135,7 +135,7 @@ export default function UsersManagement() {
                   >
                     ●
                   </span>
-                  {member.display_name}
+                  {member.name}
                 </div>
               </td>
               <td className="py-1.5 text-ink-muted">{member.email ?? "--"}</td>
@@ -148,11 +148,11 @@ export default function UsersManagement() {
                     <input
                       type="checkbox"
                       checked={
-                        roleOverrides[`${member.user_id}:${role}`] ??
+                        roleOverrides[`${member.id}:${role}`] ??
                         member.roles.includes(role)
                       }
                       onChange={(event) =>
-                        toggleRole(member.user_id, role, event.target.checked)
+                        toggleRole(member.id, role, event.target.checked)
                       }
                     />
                     {role}
@@ -160,9 +160,9 @@ export default function UsersManagement() {
                 ))}
               </td>
               <td className="py-1.5 text-right">
-                {member.user_id !== myId && (
+                {member.id !== myId && (
                   <AsyncButton
-                    onClick={() => kick(member.user_id, member.display_name)}
+                    onClick={() => kick(member.id, member.name)}
                     className="text-danger hover:underline"
                   >
                     remove

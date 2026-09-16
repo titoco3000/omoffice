@@ -35,14 +35,6 @@
         "foreign_key": null
       },
       {
-        "name": "pending_upload_at",
-        "sql_type": "timestamptz",
-        "not_null": false,
-        "primary_key": false,
-        "default": null,
-        "foreign_key": null
-      },
-      {
         "name": "created_at",
         "sql_type": "timestamptz",
         "not_null": true,

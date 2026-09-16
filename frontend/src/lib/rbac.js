@@ -18,61 +18,68 @@ export const ORG_ACTIVE_CHANNEL = "org_active";
 export const requestKey = (email) =>
   apiFetch(`/auth/request-key/${encodeURIComponent(email)}`);
 
+// {id, email, name, picture, orgs: [{id, name, picture}, ...]}
 export const me = (token) => apiFetch("/rbac/me", { token });
 export const renameMe = (token, name) =>
   apiFetch("/rbac/me/name", { method: "PUT", token, body: { name } });
+
+// The caller's own raw, org-specific override name/picture (no fallback to
+// the global one) plus their roles in it -- {name, picture, roles}.
+export const meInOrg = (token, orgId) =>
+  apiFetch(`/rbac/me/org/${orgId}`, { token });
 export const renameMeInOrg = (token, orgId, name) =>
-  apiFetch(`/rbac/orgs/${orgId}/members/me/name`, {
+  apiFetch(`/rbac/me/org/${orgId}/name`, {
     method: "PUT",
     token,
     body: { name },
   });
+export const leaveOrg = (token, orgId) =>
+  apiFetch(`/rbac/me/org/${orgId}`, { method: "DELETE", token });
 
-export const listOrgs = (token) => apiFetch("/rbac/orgs", { token });
+export const getOrg = (token, orgId) =>
+  apiFetch(`/rbac/org/${orgId}`, { token });
 export const createOrg = (token, name) =>
-  apiFetch("/rbac/orgs", { method: "POST", token, body: { name } });
+  apiFetch("/rbac/org", { method: "POST", token, body: { name } });
 export const renameOrg = (token, orgId, name) =>
-  apiFetch(`/rbac/orgs/${orgId}/name`, {
+  apiFetch(`/rbac/org/${orgId}/name`, {
     method: "PUT",
     token,
     body: { name },
   });
 export const deleteOrg = (token, orgId) =>
-  apiFetch(`/rbac/orgs/${orgId}`, { method: "DELETE", token });
-export const leaveOrg = (token, orgId) =>
-  apiFetch(`/rbac/orgs/${orgId}/members/me`, { method: "DELETE", token });
+  apiFetch(`/rbac/org/${orgId}`, { method: "DELETE", token });
 
 export const listMembers = (token, orgId) =>
-  apiFetch(`/rbac/orgs/${orgId}/members`, { token });
+  apiFetch(`/rbac/org/${orgId}/members`, { token });
 export const removeMember = (token, orgId, userId) =>
-  apiFetch(`/rbac/orgs/${orgId}/members/${userId}`, {
+  apiFetch(`/rbac/org/${orgId}/members/${userId}`, {
     method: "DELETE",
     token,
   });
 
 export const assignRole = (token, orgId, userId, role) =>
-  apiFetch(`/rbac/orgs/${orgId}/roles`, {
+  apiFetch(`/rbac/org/${orgId}/roles`, {
     method: "POST",
     token,
     body: { user_id: userId, role },
   });
 export const revokeRole = (token, orgId, userId, role) =>
-  apiFetch(`/rbac/orgs/${orgId}/roles`, {
+  apiFetch(`/rbac/org/${orgId}/roles`, {
     method: "DELETE",
     token,
     body: { user_id: userId, role },
   });
 
 export const listInvites = (token, orgId) =>
-  apiFetch(`/rbac/orgs/${orgId}/invites`, { token });
+  apiFetch(`/rbac/org/${orgId}/invites`, { token });
 export const createInvite = (token, orgId, email, roles) =>
-  apiFetch(`/rbac/orgs/${orgId}/invites`, {
+  apiFetch(`/rbac/org/${orgId}/invites`, {
     method: "POST",
     token,
     body: { email, roles },
   });
 export const revokeInvite = (token, orgId, inviteId) =>
-  apiFetch(`/rbac/orgs/${orgId}/invites/${inviteId}`, {
+  apiFetch(`/rbac/org/${orgId}/invites/${inviteId}`, {
     method: "DELETE",
     token,
   });

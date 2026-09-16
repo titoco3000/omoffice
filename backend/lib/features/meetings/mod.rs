@@ -768,7 +768,7 @@ pub(crate) async fn broadcast_list(messenger: &Messenger, db: &Db, org_id: &str)
         Ok(members) => members
             .into_iter()
             .filter(|member| member.online)
-            .map(|member| member.user_id)
+            .map(|member| member.id)
             .collect::<Vec<_>>(),
         Err(err) => {
             tracing::warn!("meetings: could not list members of org {org_id}: {err:?}");
