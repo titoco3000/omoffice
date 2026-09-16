@@ -72,6 +72,7 @@ output "backend_env_file" {
     DATABASE_ENDPOINT=${local.db_endpoint}
     MESSENGER_MANAGEMENT_ENDPOINT=${local.messenger_management_endpoint}
     MEDIA_BUCKET=${aws_s3_bucket.media.bucket}
+    CHIME_WEBHOOK_SECRET=${nonsensitive(random_password.chime_webhook_secret.result)}
   EOT
 }
 

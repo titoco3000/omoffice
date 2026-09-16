@@ -68,6 +68,9 @@ resource "aws_lambda_function" "api" {
       # Bucket core::media presigns uploads into and reads/writes/deletes
       # from directly -- see media.tf.
       MEDIA_BUCKET = aws_s3_bucket.media.bucket
+      # Shared secret POST /chime/events checks the EventBridge API
+      # destination's header against -- see chime.tf.
+      CHIME_WEBHOOK_SECRET = random_password.chime_webhook_secret.result
     }
   }
 

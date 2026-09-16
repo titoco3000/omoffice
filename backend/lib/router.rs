@@ -1,5 +1,7 @@
 //! Top-level route table: mounts each module's own routes under its prefix.
-//! `/auth/*` is public; `/rbac/*` and `/meeting/*` require a bearer token
+//! `/auth/*` and `/chime/*` (EventBridge's webhook, checked by its own
+//! shared secret instead -- see `core::chime`) are public; `/rbac/*` and
+//! `/meeting/*` require a bearer token
 //! (see [`core::auth::require_bearer`]). The websocket route depends on
 //! which transport this build compiled (see the module doc on
 //! `core::communication::web_messenger`): a local build adds `GET /ws` --
@@ -16,7 +18,7 @@ use axum::{middleware, Extension, Router};
 use tower_http::cors::{Any, CorsLayer};
 
 use crate::core::auth;
-use crate::core::chime::ChimeState;
+use crate::core::chime::{self, ChimeState};
 use crate::core::communication::web_messenger::{self, Messenger};
 use crate::core::data::db::Db;
 use crate::core::debug;
@@ -27,6 +29,7 @@ use crate::features::meetings;
 pub fn app(db: Db, chime: ChimeState, messenger: Messenger, media: MediaState) -> Router {
     let router = Router::new()
         .nest("/auth", auth::routes())
+        .nest("/chime", chime::routes())
         .nest(
             "/rbac",
             rbac::routes().layer(middleware::from_fn(auth::require_bearer)),
