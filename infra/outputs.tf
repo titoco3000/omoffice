@@ -53,6 +53,16 @@ output "messenger_management_endpoint" {
   value       = local.messenger_management_endpoint
 }
 
+output "media_bucket" {
+  description = "S3 bucket the API lambda presigns avatar/icon uploads into."
+  value       = aws_s3_bucket.media.bucket
+}
+
+output "media_url" {
+  description = "Public URL a stored `picture` key resolves under."
+  value       = "https://${aws_cloudfront_distribution.media.domain_name}"
+}
+
 output "backend_env_file" {
   description = "Paste this into backend/.env.<stage>."
   value       = <<-EOT
@@ -61,6 +71,7 @@ output "backend_env_file" {
     JWT_SECRET_ID=${aws_secretsmanager_secret.jwt.name}
     DATABASE_ENDPOINT=${local.db_endpoint}
     MESSENGER_MANAGEMENT_ENDPOINT=${local.messenger_management_endpoint}
+    MEDIA_BUCKET=${aws_s3_bucket.media.bucket}
   EOT
 }
 
@@ -87,5 +98,6 @@ output "frontend_env_file" {
     FRONTEND_DISTRIBUTION_ID=${aws_cloudfront_distribution.frontend.id}
     FRONTEND_URL=https://${aws_cloudfront_distribution.frontend.domain_name}
     MESSENGER_WS_URL=${local.messenger_ws_url}
+    MEDIA_URL=https://${aws_cloudfront_distribution.media.domain_name}
   EOT
 }

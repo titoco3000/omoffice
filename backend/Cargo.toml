@@ -49,9 +49,22 @@ aws-sdk-dsql = { version = "1", default-features = false, features = [
   "rt-tokio",
   "rustls",
 ] }
+# Avatar/icon storage (core::media): presigned upload URLs, and the
+# get/resize/put round trip that re-squares whatever a client uploaded.
+aws-sdk-s3 = { version = "1", default-features = false, features = [
+  "behavior-version-latest",
+  "rt-tokio",
+  "rustls",
+] }
 axum = { version = "0.8", features = ["ws"] }
 chrono = { version = "0.4", default-features = false, features = ["serde"] }
 futures-util = "0.3"
+# Pure-Rust codecs only -- same reason as the rustls pin above: no cmake/C
+# toolchain for the Lambda cross-build.
+image = { version = "0.25", default-features = false, features = [
+  "png",
+  "jpeg",
+] }
 # rust_crypto is a provider feature: without it jsonwebtoken has no signer.
 jsonwebtoken = { version = "11", default-features = false, features = ["rust_crypto"] }
 # Lambda entry point: `main.rs` hands `router::app` straight to

@@ -10,6 +10,11 @@ static USERS: Table = Table::new(
         Column::new("id", "text").primary_key(),
         Column::new("email", "text"),
         Column::new("name", "text"),
+        // S3 key of this user's global avatar, or NULL for none
+        Column::new("picture", "text"),
+        // When this user's `uploads/` staging object was presigned, or NULL
+        // for none currently outstanding. Cleared once media promoted
+        Column::new("pending_upload_at", "timestamptz"),
         Column::new("created_at", "timestamptz")
             .not_null()
             .default("now()"),
@@ -25,6 +30,8 @@ static ORGANIZATIONS: Table = Table::new(
         Column::new("created_by", "text")
             .not_null()
             .references("users", "id"),
+        // S3 key of the org's icon, or NULL for none
+        Column::new("picture", "text"),
         Column::new("created_at", "timestamptz")
             .not_null()
             .default("now()"),
@@ -41,7 +48,8 @@ static ORG_USERS: Table = Table::new(
         Column::new("user_id", "text")
             .not_null()
             .references("users", "id"),
-        Column::new("name", "text"), // custom name of the user inside the org
+        Column::new("name", "text"), // name override
+        Column::new("picture", "text"), // pic override
         Column::new("online", "boolean"),
     ],
 )

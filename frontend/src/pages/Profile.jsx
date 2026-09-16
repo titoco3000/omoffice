@@ -3,8 +3,11 @@ import { useAuth } from "../auth/AuthContext";
 import { useOrgSession } from "../org/OrgSessionContext";
 import { Link } from "../router/Router";
 import { me, renameMe, renameMeInOrg, leaveOrg } from "../lib/rbac";
+import { avatarUrl, removeAvatar } from "../lib/avatars";
 import ThemeToggle from "../theme/ThemeToggle";
 import AsyncButton from "../components/AsyncButton";
+import Avatar from "../components/Avatar";
+import AvatarUploadPanel from "../components/AvatarUploadPanel";
 
 export default function Profile() {
   const { token, logout } = useAuth();
@@ -17,14 +20,20 @@ export default function Profile() {
     reloadOrgs,
     roster,
     canManageTeam,
+    reloadProfile,
   } = useOrgSession();
 
   const [name, setName] = useState("");
+  const [picture, setPicture] = useState(null);
   const [error, setError] = useState(null);
+  const [editingPhoto, setEditingPhoto] = useState(null); // null | "me" | "org"
 
   useEffect(() => {
     me(token)
-      .then((data) => setName(data.name ?? ""))
+      .then((data) => {
+        setName(data.name ?? "");
+        setPicture(data.picture ?? null);
+      })
       .catch(() => {});
   }, [token]);
 
@@ -36,9 +45,25 @@ export default function Profile() {
       .then(roster.reload)
       .catch((err) => setError(err.message));
   };
-  const orgDisplayName =
-    roster.members.find((member) => member.user_id === myId)?.display_name ??
-    "";
+  const myMember = roster.members.find((member) => member.user_id === myId);
+  const orgDisplayName = myMember?.display_name ?? "";
+  // `myMember.picture` falls back to the global photo when there is no
+  // org-specific one -- only show it here, as an org photo, when it's
+  // actually this member's own upload in this org.
+  const orgPicture = myMember?.has_own_picture ? myMember.picture : null;
+
+  const removeMyPhoto = () =>
+    removeAvatar(token, { target: "me" })
+      .then(() => {
+        setPicture(null);
+        reloadProfile?.();
+      })
+      .catch((err) => setError(err.message));
+
+  const removeOrgPhoto = () =>
+    removeAvatar(token, { target: "org_me", org_id: currentOrg.id })
+      .then(roster.reload)
+      .catch((err) => setError(err.message));
 
   const leave = async () => {
     if (!window.confirm(`Leave ${currentOrg.name}?`)) return;
@@ -64,7 +89,29 @@ export default function Profile() {
       </div>
 
       <section className="rounded-card border bg-surface p-5">
-        <label className="block text-sm text-ink-muted">Display name</label>
+        <div className="flex items-center gap-3">
+          <Avatar url={avatarUrl(picture)} name={name || "?"} size="size-14" />
+          <div className="flex flex-col items-start gap-1">
+            <button
+              onClick={() => setEditingPhoto("me")}
+              className="text-sm text-brand hover:underline"
+            >
+              Change photo
+            </button>
+            {picture && (
+              <AsyncButton
+                onClick={removeMyPhoto}
+                className="text-sm text-danger hover:underline"
+              >
+                Remove photo
+              </AsyncButton>
+            )}
+          </div>
+        </div>
+
+        <label className="mt-4 block text-sm text-ink-muted">
+          Display name
+        </label>
         <input
           value={name}
           onChange={(event) => setName(event.target.value)}
@@ -83,9 +130,54 @@ export default function Profile() {
               onBlur={saveOrgName}
               className="mt-1 w-full rounded-card border bg-bg px-3 py-1.5 text-ink"
             />
+
+            <div className="mt-3 flex items-center gap-3">
+              {orgPicture && (
+                <Avatar
+                  url={avatarUrl(orgPicture)}
+                  name={orgDisplayName || "?"}
+                  size="size-10"
+                />
+              )}
+              <div className="flex flex-col items-start gap-1">
+                <button
+                  onClick={() => setEditingPhoto("org")}
+                  className="text-sm text-brand hover:underline"
+                >
+                  {orgPicture
+                    ? `Change photo in ${currentOrg.name}`
+                    : `Override photo in ${currentOrg.name}`}
+                </button>
+                {orgPicture && (
+                  <AsyncButton
+                    onClick={removeOrgPhoto}
+                    className="text-sm text-danger hover:underline"
+                  >
+                    Remove photo in {currentOrg.name}
+                  </AsyncButton>
+                )}
+              </div>
+            </div>
           </>
         )}
       </section>
+
+      {editingPhoto === "me" && (
+        <AvatarUploadPanel
+          title="Profile photo"
+          target={{ target: "me" }}
+          onClose={() => setEditingPhoto(null)}
+          onDone={setPicture}
+        />
+      )}
+      {editingPhoto === "org" && currentOrg && (
+        <AvatarUploadPanel
+          title={`Photo in ${currentOrg.name}`}
+          target={{ target: "org_me", org_id: currentOrg.id }}
+          onClose={() => setEditingPhoto(null)}
+          onDone={() => roster.reload()}
+        />
+      )}
 
       <section className="rounded-card border bg-surface p-5">
         <label className="block text-sm text-ink-muted">Organization</label>

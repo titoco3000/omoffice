@@ -13,6 +13,7 @@ use omoffice_api::core::chime::ChimeState;
 use omoffice_api::core::communication::web_messenger::Messenger;
 use omoffice_api::core::data::db::Db;
 use omoffice_api::core::data::orm::migrate;
+use omoffice_api::core::media::MediaState;
 use omoffice_api::{core, features, router};
 
 #[tokio::main]
@@ -40,6 +41,7 @@ async fn main() {
     let db = Db::from_env().await;
     let chime = ChimeState::from_env().await;
     let messenger = Messenger::new(db.clone()).await;
+    let media = MediaState::from_env().await;
 
     // Each feature wires its own channels/events before the router is
     // built, so registering one is never silently forgotten at startup.
@@ -50,7 +52,7 @@ async fn main() {
     features::meetings::controls::register(&messenger, db.clone());
     features::meetings::access_requests::register(&messenger, db.clone());
 
-    let app = router::app(db, chime, messenger);
+    let app = router::app(db, chime, messenger, media);
     serve(app).await;
 }
 

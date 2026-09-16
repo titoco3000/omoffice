@@ -65,6 +65,9 @@ resource "aws_lambda_function" "api" {
       # Where the messenger's Management API client pushes messages back out
       # through -- see messenger.tf.
       MESSENGER_MANAGEMENT_ENDPOINT = local.messenger_management_endpoint
+      # Bucket core::media presigns uploads into and reads/writes/deletes
+      # from directly -- see media.tf.
+      MEDIA_BUCKET = aws_s3_bucket.media.bucket
     }
   }
 
@@ -75,6 +78,7 @@ resource "aws_lambda_function" "api" {
     aws_iam_role_policy.api_chime,
     aws_iam_role_policy.api_dsql,
     aws_iam_role_policy.api_messenger_management,
+    aws_iam_role_policy.api_media,
   ]
 
   # Code is owned by the backend deploy, not terraform.

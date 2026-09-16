@@ -6,7 +6,8 @@
 import { useState } from "react";
 import { FiMessageCircle } from "react-icons/fi";
 import * as chime from "../lib/chime";
-import { preferredName } from "../lib/names";
+import { preferredName, preferredPicture } from "../lib/names";
+import { avatarUrl } from "../lib/avatars";
 import Spinner from "../components/Spinner";
 import MeetingChat from "./MeetingChat";
 import MeetingControls from "./MeetingControls";
@@ -77,9 +78,11 @@ export default function MeetingPanel({
       key: "self",
       props: {
         name: "You",
+        initial: preferredName(myId, members),
         isSelf: true,
         videoRef: selfVideoRef,
         hasVideo: cameraOn,
+        picture: avatarUrl(preferredPicture(myId, members)),
         speaking: speakingUserIds.has(myId),
         muted: micMuted,
       },
@@ -91,6 +94,7 @@ export default function MeetingPanel({
         key: userId,
         props: {
           name: preferredName(userId, members),
+          picture: avatarUrl(preferredPicture(userId, members)),
           videoRef: tile
             ? (el) => chime.bindRemoteVideo(tile.tileId, el)
             : undefined,

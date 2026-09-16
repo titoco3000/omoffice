@@ -1,5 +1,4 @@
 - Organization chat
-- Notification system
 - create client homepage
 - map
 - shared drawing

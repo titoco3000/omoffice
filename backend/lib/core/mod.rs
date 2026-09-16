@@ -3,6 +3,7 @@ pub mod chime;
 pub mod communication;
 pub mod data;
 pub mod debug;
+pub mod media;
 pub mod rbac;
 
 /// Where the SPA is served, for a magic-link invite URL.

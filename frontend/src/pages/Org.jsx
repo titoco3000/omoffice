@@ -3,14 +3,18 @@ import { useAuth } from "../auth/AuthContext";
 import { useOrgSession } from "../org/OrgSessionContext";
 import { navigate } from "../router/Router";
 import { renameOrg, deleteOrg } from "../lib/rbac";
+import { avatarUrl } from "../lib/avatars";
 import UsersManagement from "../components/UsersManagement";
 import AsyncButton from "../components/AsyncButton";
+import Avatar from "../components/Avatar";
+import AvatarUploadPanel from "../components/AvatarUploadPanel";
 
 export default function Org() {
   const { token } = useAuth();
   const { currentOrg, isAdmin, canManageTeam, reloadOrgs, selectOrg } =
     useOrgSession();
   const [error, setError] = useState(null);
+  const [editingIcon, setEditingIcon] = useState(false);
 
   if (!currentOrg)
     return (
@@ -49,15 +53,43 @@ export default function Org() {
 
   return (
     <main className="mx-auto flex max-w-2xl flex-col gap-6 px-6 py-10">
-      {isAdmin ? (
-        <input
-          key={currentOrg.id}
-          defaultValue={currentOrg.name}
-          onBlur={saveName}
-          className="rounded-card border bg-bg px-3 py-1.5 text-2xl font-semibold text-ink"
+      <div className="flex items-center gap-3">
+        <Avatar
+          url={avatarUrl(currentOrg.picture)}
+          name={currentOrg.name}
+          size="size-14"
         />
-      ) : (
-        <h1 className="text-2xl font-semibold text-ink">{currentOrg.name}</h1>
+        <div className="flex-1">
+          {isAdmin ? (
+            <input
+              key={currentOrg.id}
+              defaultValue={currentOrg.name}
+              onBlur={saveName}
+              className="w-full rounded-card border bg-bg px-3 py-1.5 text-2xl font-semibold text-ink"
+            />
+          ) : (
+            <h1 className="text-2xl font-semibold text-ink">
+              {currentOrg.name}
+            </h1>
+          )}
+          {isAdmin && (
+            <button
+              onClick={() => setEditingIcon(true)}
+              className="mt-1 text-sm text-brand hover:underline"
+            >
+              Change icon
+            </button>
+          )}
+        </div>
+      </div>
+
+      {editingIcon && (
+        <AvatarUploadPanel
+          title={`Icon for ${currentOrg.name}`}
+          target={{ target: "org_icon", org_id: currentOrg.id }}
+          onClose={() => setEditingIcon(false)}
+          onDone={() => reloadOrgs()}
+        />
       )}
 
       <UsersManagement />

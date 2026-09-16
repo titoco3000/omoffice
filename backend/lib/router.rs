@@ -20,10 +20,11 @@ use crate::core::chime::ChimeState;
 use crate::core::communication::web_messenger::{self, Messenger};
 use crate::core::data::db::Db;
 use crate::core::debug;
+use crate::core::media::{self, MediaState};
 use crate::core::rbac;
 use crate::features::meetings;
 
-pub fn app(db: Db, chime: ChimeState, messenger: Messenger) -> Router {
+pub fn app(db: Db, chime: ChimeState, messenger: Messenger, media: MediaState) -> Router {
     let router = Router::new()
         .nest("/auth", auth::routes())
         .nest(
@@ -33,6 +34,10 @@ pub fn app(db: Db, chime: ChimeState, messenger: Messenger) -> Router {
         .nest(
             "/meeting",
             meetings::routes().layer(middleware::from_fn(auth::require_bearer)),
+        )
+        .nest(
+            "/media",
+            media::routes().layer(middleware::from_fn(auth::require_bearer)),
         );
 
     #[cfg(not(feature = "lambda"))]
@@ -47,6 +52,7 @@ pub fn app(db: Db, chime: ChimeState, messenger: Messenger) -> Router {
         .layer(Extension(db))
         .layer(Extension(chime))
         .layer(Extension(messenger))
+        .layer(Extension(media))
         // Disable CORS
         .layer(
             CorsLayer::new()

@@ -6,7 +6,12 @@
 import { createContext, useContext, useEffect, useState } from "react";
 import { decodeJwt } from "../lib/jwt";
 import { messenger } from "../lib/messenger";
-import { ORG_ACTIVE_CHANNEL, ORG_ROSTER_CHANNEL, listOrgs } from "../lib/rbac";
+import {
+  ORG_ACTIVE_CHANNEL,
+  ORG_ROSTER_CHANNEL,
+  listOrgs,
+  me as fetchMe,
+} from "../lib/rbac";
 import { useMeetingSession } from "../lib/useMeetingSession";
 import { useOrgRoster } from "../lib/useOrgRoster";
 import { useAuth } from "../auth/AuthContext";
@@ -23,14 +28,24 @@ export function OrgSessionProvider({ children }) {
     localStorage.getItem(CURRENT_ORG_KEY),
   );
   const [error, setError] = useState(null);
+  // The signed-in user's own name/picture, independent of any org -- what
+  // `NavContainer`'s profile link shows, since it's visible with no org
+  // selected at all.
+  const [profile, setProfile] = useState(null);
 
   const reloadOrgs = () =>
     listOrgs(token)
       .then((data) => setOrgs(data.orgs ?? []))
       .catch((err) => setError(err.message));
 
+  const reloadProfile = () =>
+    fetchMe(token)
+      .then((data) => setProfile({ name: data.name, picture: data.picture }))
+      .catch(() => {});
+
   useEffect(() => {
     reloadOrgs();
+    reloadProfile();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
 
@@ -83,6 +98,8 @@ export function OrgSessionProvider({ children }) {
     session,
     isAdmin,
     canManageTeam,
+    profile,
+    reloadProfile,
     error,
   };
 

@@ -4,14 +4,16 @@
 //! there while already showing on `/in` itself.
 
 import { useState } from "react";
-import { FiHome, FiMenu, FiUser } from "react-icons/fi";
+import { FiHome, FiMenu } from "react-icons/fi";
 import { Link, useLocation } from "../router/Router";
 import { useIsMobile, useIsPortrait } from "./useViewport";
 import { useOrgSession } from "../org/OrgSessionContext";
 import { useMeetingLayout } from "../meeting/MeetingLayoutContext";
 import MeetingDock from "../meeting/MeetingDock";
 import OrgOnlineView from "../components/OrgOnlineView";
+import Avatar from "../components/Avatar";
 import NotificationsOverlay from "../notifications/NotificationsOverlay";
+import { avatarUrl } from "../lib/avatars";
 
 const STORAGE_KEY = "omoffice_sidebar_collapsed";
 
@@ -21,9 +23,21 @@ function Logo({ className = "text-lg" }) {
   );
 }
 
+function useMyDisplay() {
+  const { myId, currentOrg, roster, profile } = useOrgSession();
+  const member = currentOrg
+    ? roster.members.find((m) => m.user_id === myId)
+    : null;
+  return {
+    name: member?.display_name ?? profile?.name ?? null,
+    picture: member?.picture ?? profile?.picture ?? null,
+  };
+}
+
 function DesktopSidebar() {
   const path = useLocation();
   const { currentOrg } = useOrgSession();
+  const me = useMyDisplay();
   const [collapsed, setCollapsed] = useState(
     () => localStorage.getItem(STORAGE_KEY) === "true",
   );
@@ -73,11 +87,15 @@ function DesktopSidebar() {
         to="/profile"
         className="flex shrink-0 items-center gap-2 border-t p-3 hover:bg-muted"
       >
-        <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-brand text-sm font-semibold text-on-brand">
-          <FiUser />
-        </span>
+        <Avatar
+          url={avatarUrl(me.picture)}
+          name={me.name || "?"}
+          size="size-8"
+        />
         {!collapsed && (
-          <span className="truncate text-sm text-ink">Profile</span>
+          <span className="truncate text-sm text-ink">
+            {me.name || "Profile"}
+          </span>
         )}
       </Link>
     </aside>
@@ -87,6 +105,7 @@ function DesktopSidebar() {
 function MobileBar() {
   const isPortrait = useIsPortrait();
   const { session } = useOrgSession();
+  const me = useMyDisplay();
   const { mobileExpanded, toggleMobileExpanded } = useMeetingLayout();
   const inMeeting = !!session.myMeetingId;
 
@@ -98,9 +117,14 @@ function MobileBar() {
     >
       <Link
         to="/profile"
+        title={me.name || "Profile"}
         className="flex flex-col items-center justify-center text-ink-muted"
       >
-        <FiUser className="text-lg" />
+        <Avatar
+          url={avatarUrl(me.picture)}
+          name={me.name || "?"}
+          size="size-6"
+        />
       </Link>
       <button
         onClick={inMeeting ? toggleMobileExpanded : undefined}

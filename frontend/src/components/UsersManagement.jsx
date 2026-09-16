@@ -6,7 +6,9 @@ import { useEffect, useRef, useState } from "react";
 import { useAuth } from "../auth/AuthContext";
 import { useOrgSession } from "../org/OrgSessionContext";
 import { ROLES } from "../lib/roles";
+import { avatarUrl } from "../lib/avatars";
 import AsyncButton from "./AsyncButton";
+import Avatar from "./Avatar";
 import {
   removeMember,
   createInvite,
@@ -121,13 +123,20 @@ export default function UsersManagement() {
           {members.map((member) => (
             <tr key={member.user_id} className="border-t">
               <td className="py-1.5 text-ink">
-                <span
-                  className={`mr-1.5 inline-block ${member.online ? "text-success" : "text-ink-muted/40"}`}
-                  title={member.online ? "online" : "offline"}
-                >
-                  ●
-                </span>
-                {member.display_name}
+                <div className="flex items-center gap-2">
+                  <Avatar
+                    url={avatarUrl(member.picture)}
+                    name={member.display_name}
+                    size="size-6"
+                  />
+                  <span
+                    className={`inline-block ${member.online ? "text-success" : "text-ink-muted/40"}`}
+                    title={member.online ? "online" : "offline"}
+                  >
+                    ●
+                  </span>
+                  {member.display_name}
+                </div>
               </td>
               <td className="py-1.5 text-ink-muted">{member.email ?? "--"}</td>
               <td className="py-1.5">

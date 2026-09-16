@@ -1,6 +1,12 @@
-//! One participant's video tile -- their camera feed if bound, else an
-//! initial placeholder. Hovering reveals mute/camera-off/pin buttons; the
-//! border turns `speaking` while their mic is producing sound.
+//! One participant's video tile -- their camera feed if bound, else their
+//! preferred picture (org-scoped, falling back to global -- see
+//! `preferredPicture` in `lib/names.js`), else an initial placeholder.
+//! Hovering reveals mute/camera-off/pin buttons; the border turns
+//! `speaking` while their mic is producing sound.
+//!
+//! The self tile's `<video>` stays mounted regardless of `hasVideo` (see
+//! below), so its picture/initial placeholder is overlaid on top rather
+//! than swapped in for it, unlike every other tile.
 //!
 //! `fill` sizes the tile to whatever its parent grid cell/flex slot gives
 //! it (the gallery grid, and the pinned tile itself) rather than the fixed
@@ -12,6 +18,8 @@ import { useIsTouch } from "../layout/useViewport";
 
 export default function MeetingTile({
   name,
+  initial,
+  picture,
   videoRef,
   hasVideo,
   isSelf,
@@ -25,6 +33,28 @@ export default function MeetingTile({
 }) {
   const isTouch = useIsTouch();
   const hasControls = onMute || onCameraOff || onPin;
+
+  // What shows in place of a camera feed: the user's own preferred picture
+  // (org-scoped, already falling back to the global one -- see
+  // `core::rbac::picture_key`), circular-cropped same as `Avatar`, else an
+  // initial -- `initial` defaults to `name`, but the self tile's `name` is
+  // the label "You" rather than an actual name, so it passes its own
+  // preferred name in separately just for this.
+  const placeholder = (
+    <div className="flex size-full items-center justify-center">
+      {picture ? (
+        <img
+          src={picture}
+          alt=""
+          className="size-12 rounded-full object-cover"
+        />
+      ) : (
+        <span className="flex size-12 items-center justify-center rounded-full bg-brand text-lg font-semibold text-on-brand">
+          {(initial ?? name).charAt(0).toUpperCase()}
+        </span>
+      )}
+    </div>
+  );
   return (
     <div
       // `tabIndex` only on touch, where there's no `:hover` -- lets a tap
@@ -50,13 +80,16 @@ export default function MeetingTile({
           camera is off would just have it rebind to nothing, and the
           camera would never come back on. */}
       {isSelf ? (
-        <video
-          ref={videoRef}
-          autoPlay
-          muted
-          playsInline
-          className="size-full -scale-x-100 object-cover"
-        />
+        <>
+          <video
+            ref={videoRef}
+            autoPlay
+            muted
+            playsInline
+            className={`size-full -scale-x-100 object-cover ${hasVideo ? "" : "invisible"}`}
+          />
+          {!hasVideo && <div className="absolute inset-0">{placeholder}</div>}
+        </>
       ) : hasVideo ? (
         <video
           ref={videoRef}
@@ -65,11 +98,7 @@ export default function MeetingTile({
           className="size-full object-cover"
         />
       ) : (
-        <div className="flex size-full items-center justify-center">
-          <span className="flex size-12 items-center justify-center rounded-full bg-brand text-lg font-semibold text-on-brand">
-            {name.charAt(0).toUpperCase()}
-          </span>
-        </div>
+        placeholder
       )}
 
       <span className="absolute bottom-1 left-1.5 rounded bg-black/50 px-1.5 py-0.5 text-xs text-white">

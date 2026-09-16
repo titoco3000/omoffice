@@ -12,11 +12,22 @@
 import { useLayoutEffect, useRef, useState } from "react";
 import { FiLock } from "react-icons/fi";
 import { useOrgSession } from "../org/OrgSessionContext";
+import { avatarUrl } from "../lib/avatars";
 import AsyncButton from "./AsyncButton";
 
 const COMPACT_BELOW_PX = 176;
 
-function Avatar({ name, online }) {
+function Avatar({ name, picture, online }) {
+  const url = avatarUrl(picture);
+  if (url) {
+    return (
+      <img
+        src={url}
+        alt=""
+        className={`size-7 shrink-0 rounded-full object-cover ${online ? "" : "opacity-50"}`}
+      />
+    );
+  }
   return (
     <span
       className={`flex size-7 shrink-0 items-center justify-center rounded-full text-xs font-semibold ${
@@ -77,7 +88,11 @@ function MemberRow({
           interactive ? "hover:bg-muted" : "cursor-default opacity-60"
         }`}
       >
-        <Avatar name={member.display_name} online={member.online} />
+        <Avatar
+          name={member.display_name}
+          picture={member.picture}
+          online={member.online}
+        />
         {!compact && (
           <span className="truncate text-sm text-ink">
             {member.display_name}
