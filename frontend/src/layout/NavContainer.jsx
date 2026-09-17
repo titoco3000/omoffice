@@ -1,13 +1,15 @@
 //! Persistent chrome for every authenticated page except `/` and `/login`:
 //! a collapsible sidebar on desktop, a bottom (or side, landscape) bar on
 //! mobile. `OrgOnlineView` lives in the desktop sidebar only, and is hidden
-//! there while already showing on `/in` itself.
+//! there while already showing on `/in` itself -- except in graphics mode
+//! "map", where `/in` is just a canvas and the sidebar is its only home.
 
 import { useState } from "react";
 import { FiHome, FiMenu } from "react-icons/fi";
 import { Link, useLocation } from "../router/Router";
 import { useIsMobile, useIsPortrait } from "./useViewport";
 import { useOrgSession } from "../org/OrgSessionContext";
+import { useGraphics } from "../theme/GraphicsContext";
 import { useMeetingLayout } from "../meeting/MeetingLayoutContext";
 import MeetingDock from "../meeting/MeetingDock";
 import OrgOnlineView from "../components/OrgOnlineView";
@@ -35,6 +37,7 @@ function useMyDisplay() {
 function DesktopSidebar() {
   const path = useLocation();
   const { currentOrg } = useOrgSession();
+  const { mode } = useGraphics();
   const me = useMyDisplay();
   const [collapsed, setCollapsed] = useState(
     () => localStorage.getItem(STORAGE_KEY) === "true",
@@ -65,7 +68,7 @@ function DesktopSidebar() {
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto p-2">
-        {currentOrg && path !== "/in" && (
+        {currentOrg && (path !== "/in" || mode === "map") && (
           <>
             <div className="flex flex-1 items-center justify-center">
               <Link

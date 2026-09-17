@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { AuthProvider, useAuth } from "./auth/AuthContext";
 import { ThemeProvider } from "./theme/ThemeContext";
+import { GraphicsProvider } from "./theme/GraphicsContext";
 import { RouterProvider, useLocation, navigate } from "./router/Router";
 import { OrgSessionProvider } from "./org/OrgSessionContext";
 import { MeetingLayoutProvider } from "./meeting/MeetingLayoutContext";
@@ -48,11 +49,13 @@ function Pages() {
 export default function App() {
   return (
     <ThemeProvider>
-      <AuthProvider>
-        <RouterProvider>
-          <Pages />
-        </RouterProvider>
-      </AuthProvider>
+      <GraphicsProvider>
+        <AuthProvider>
+          <RouterProvider>
+            <Pages />
+          </RouterProvider>
+        </AuthProvider>
+      </GraphicsProvider>
     </ThemeProvider>
   );
 }

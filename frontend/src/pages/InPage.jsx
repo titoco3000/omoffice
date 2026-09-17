@@ -1,10 +1,60 @@
+import { useEffect, useRef, useState } from "react";
+import { FiUsers, FiX } from "react-icons/fi";
 import { Link } from "../router/Router";
 import { useOrgSession } from "../org/OrgSessionContext";
+import { useGraphics } from "../theme/GraphicsContext";
+import { useIsMobile } from "../layout/useViewport";
 import OrgOnlineView from "../components/OrgOnlineView";
 import AsyncButton from "../components/AsyncButton";
 
+// Graphics mode "map": the canvas is the whole page. Desktop gets the
+// roster in `NavContainer`'s sidebar (see its `mode === "map"` check);
+// mobile has no sidebar, so a floating bottom-right toggle reveals it
+// in an overlay instead.
+function MapView() {
+  const canvasRef = useRef(null);
+  const isMobile = useIsMobile();
+  const [rosterOpen, setRosterOpen] = useState(false);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const resize = () => {
+      canvas.width = canvas.clientWidth;
+      canvas.height = canvas.clientHeight;
+    };
+    resize();
+    const observer = new ResizeObserver(resize);
+    observer.observe(canvas);
+    return () => observer.disconnect();
+  }, []);
+
+  return (
+    <div className="relative size-full">
+      <canvas ref={canvasRef} className="block size-full" />
+      {isMobile && (
+        <>
+          <button
+            onClick={() => setRosterOpen((v) => !v)}
+            title={rosterOpen ? "Hide roster" : "Show roster"}
+            className="absolute bottom-4 right-4 flex size-11 items-center justify-center rounded-full bg-brand text-on-brand shadow-lg"
+          >
+            {rosterOpen ? <FiX /> : <FiUsers />}
+          </button>
+          {rosterOpen && (
+            <div className="absolute bottom-20 right-4 max-h-[70%] w-64 overflow-y-auto rounded-card border bg-surface p-3 shadow-lg">
+              <OrgOnlineView />
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 export default function InPage() {
   const { orgs, currentOrg, session } = useOrgSession();
+  const { mode } = useGraphics();
   const { myMeetingId, create } = session;
 
   if (orgs.length === 0) {
@@ -19,6 +69,14 @@ export default function InPage() {
         >
           Create an organization
         </Link>
+      </main>
+    );
+  }
+
+  if (mode === "map" && currentOrg) {
+    return (
+      <main className="size-full">
+        <MapView />
       </main>
     );
   }

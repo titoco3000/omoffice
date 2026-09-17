@@ -5,6 +5,7 @@ import { Link } from "../router/Router";
 import { me, renameMe, meInOrg, renameMeInOrg, leaveOrg } from "../lib/rbac";
 import { avatarUrl, removeAvatar } from "../lib/avatars";
 import ThemeToggle from "../theme/ThemeToggle";
+import GraphicsToggle from "../theme/GraphicsToggle";
 import AsyncButton from "../components/AsyncButton";
 import Avatar from "../components/Avatar";
 import AvatarUploadPanel from "../components/AvatarUploadPanel";
@@ -229,6 +230,11 @@ export default function Profile() {
       <section className="rounded-card border bg-surface p-5">
         <label className="block text-sm text-ink-muted">Theme</label>
         <ThemeToggle className="mt-2" />
+      </section>
+
+      <section className="rounded-card border bg-surface p-5">
+        <label className="block text-sm text-ink-muted">Graphics mode</label>
+        <GraphicsToggle className="mt-2" />
       </section>
 
       {error && <p className="text-sm text-danger">{error}</p>}
