@@ -95,6 +95,61 @@
     "primary_key": []
   },
   {
+    "name": "map_positions",
+    "columns": [
+      {
+        "name": "org_id",
+        "sql_type": "text",
+        "not_null": true,
+        "primary_key": false,
+        "default": null,
+        "foreign_key": [
+          "organizations",
+          "id"
+        ]
+      },
+      {
+        "name": "user_id",
+        "sql_type": "text",
+        "not_null": true,
+        "primary_key": false,
+        "default": null,
+        "foreign_key": [
+          "users",
+          "id"
+        ]
+      },
+      {
+        "name": "x",
+        "sql_type": "integer",
+        "not_null": true,
+        "primary_key": false,
+        "default": "0",
+        "foreign_key": null
+      },
+      {
+        "name": "y",
+        "sql_type": "integer",
+        "not_null": true,
+        "primary_key": false,
+        "default": "0",
+        "foreign_key": null
+      },
+      {
+        "name": "map_active",
+        "sql_type": "boolean",
+        "not_null": false,
+        "primary_key": false,
+        "default": null,
+        "foreign_key": null
+      }
+    ],
+    "primary_key": [
+      "org_id",
+      "user_id"
+    ]
+  },
+  {
     "name": "meetings",
     "columns": [
       {

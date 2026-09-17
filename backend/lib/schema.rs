@@ -162,6 +162,25 @@ static MEETING_ATTENDEES: Table = Table::new(
 )
 .primary_key(&["meeting_id", "user_id"]);
 
+// features::map
+
+#[distributed_slice(orm::TABLES)]
+static MAP_POSITIONS: Table = Table::new(
+    "map_positions",
+    &[
+        Column::new("org_id", "text")
+            .not_null()
+            .references("organizations", "id"),
+        Column::new("user_id", "text")
+            .not_null()
+            .references("users", "id"),
+        Column::new("x", "integer").not_null().default("0"),
+        Column::new("y", "integer").not_null().default("0"),
+        Column::new("map_active", "boolean"),
+    ],
+)
+.primary_key(&["org_id", "user_id"]);
+
 // core::communication::web_messenger
 
 #[distributed_slice(orm::TABLES)]
@@ -192,6 +211,7 @@ mod tests {
         assert_eq!(
             names,
             vec![
+                "map_positions",
                 "meeting_attendees",
                 "meeting_invites",
                 "meeting_rooms",

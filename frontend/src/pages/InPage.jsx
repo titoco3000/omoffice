@@ -1,37 +1,34 @@
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { FiUsers, FiX } from "react-icons/fi";
 import { Link } from "../router/Router";
+import { useAuth } from "../auth/AuthContext";
 import { useOrgSession } from "../org/OrgSessionContext";
 import { useGraphics } from "../theme/GraphicsContext";
 import { useIsMobile } from "../layout/useViewport";
 import OrgOnlineView from "../components/OrgOnlineView";
 import AsyncButton from "../components/AsyncButton";
+import MapCanvas from "../map/MapCanvas";
 
 // Graphics mode "map": the canvas is the whole page. Desktop gets the
 // roster in `NavContainer`'s sidebar (see its `mode === "map"` check);
 // mobile has no sidebar, so a floating bottom-right toggle reveals it
 // in an overlay instead.
 function MapView() {
-  const canvasRef = useRef(null);
+  const { token } = useAuth();
+  const { myId, currentOrg, roster } = useOrgSession();
   const isMobile = useIsMobile();
   const [rosterOpen, setRosterOpen] = useState(false);
 
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const resize = () => {
-      canvas.width = canvas.clientWidth;
-      canvas.height = canvas.clientHeight;
-    };
-    resize();
-    const observer = new ResizeObserver(resize);
-    observer.observe(canvas);
-    return () => observer.disconnect();
-  }, []);
+  const online = roster.members.filter((member) => member.online);
 
   return (
     <div className="relative size-full">
-      <canvas ref={canvasRef} className="block size-full" />
+      <MapCanvas
+        token={token}
+        orgId={currentOrg.id}
+        members={online}
+        myId={myId}
+      />
       {isMobile && (
         <>
           <button

@@ -1,7 +1,7 @@
 //! Top-level route table: mounts each module's own routes under its prefix.
 //! `/auth/*` and `/chime/*` (EventBridge's webhook, checked by its own
-//! shared secret instead -- see `core::chime`) are public; `/rbac/*` and
-//! `/meeting/*` require a bearer token
+//! shared secret instead -- see `core::chime`) are public; `/rbac/*`,
+//! `/meeting/*` and `/map/*` require a bearer token
 //! (see [`core::auth::require_bearer`]). The websocket route depends on
 //! which transport this build compiled (see the module doc on
 //! `core::communication::web_messenger`): a local build adds `GET /ws` --
@@ -24,7 +24,7 @@ use crate::core::data::db::Db;
 use crate::core::debug;
 use crate::core::media::{self, MediaState};
 use crate::core::rbac;
-use crate::features::meetings;
+use crate::features::{map, meetings};
 
 pub fn app(db: Db, chime: ChimeState, messenger: Messenger, media: MediaState) -> Router {
     let router = Router::new()
@@ -37,6 +37,10 @@ pub fn app(db: Db, chime: ChimeState, messenger: Messenger, media: MediaState) -
         .nest(
             "/meeting",
             meetings::routes().layer(middleware::from_fn(auth::require_bearer)),
+        )
+        .nest(
+            "/map",
+            map::routes().layer(middleware::from_fn(auth::require_bearer)),
         )
         .nest(
             "/media",
