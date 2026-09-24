@@ -19,9 +19,11 @@ export const MAP_ACTIVE_CHANNEL = "map_active";
 export const listMapPositions = (token, orgId) =>
   apiFetch(`/map/org/${orgId}/positions`, { token });
 
-export const moveInMap = (token, orgId, x, y) =>
+// Every move is broadcast; only one with `persist` set is also stored --
+// see `features::map::MoveBody`.
+export const moveInMap = (token, orgId, x, y, persist = false) =>
   apiFetch(`/map/org/${orgId}/move`, {
     method: "POST",
     token,
-    body: { x, y },
+    body: { x, y, persist },
   });

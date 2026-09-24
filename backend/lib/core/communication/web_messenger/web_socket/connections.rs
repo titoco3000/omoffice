@@ -60,9 +60,20 @@ pub async fn by_id(db: &Db, id: &str) -> Result<Option<String>, DbError> {
 pub async fn for_user(db: &Db, user_id: &str) -> Result<Vec<String>, DbError> {
     let pool = db.pool().await?;
     let ids: Vec<String> = sqlx::query_scalar("SELECT id FROM ws_connections WHERE user_id = $1")
-        .bind(user_id)
-        .fetch_all(pool)
-        .await?;
+    .bind(user_id)
+    .fetch_all(pool)
+    .await?;
+Ok(ids)
+}
+
+/// Same as the prev function, but with mutiple users
+pub async fn for_users(db: &Db, user_ids: &[String]) -> Result<Vec<String>, DbError> {
+    let pool = db.pool().await?;
+    let ids: Vec<String> =
+        sqlx::query_scalar("SELECT id FROM ws_connections WHERE user_id = ANY($1)")
+            .bind(user_ids)
+            .fetch_all(pool)
+            .await?;
     Ok(ids)
 }
 

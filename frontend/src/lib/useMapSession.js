@@ -21,6 +21,12 @@
 //! `features::map::set_position`, backend/lib/features/map.rs) -- this hook
 //! is what keeps the cadence honest, applied optimistically before the
 //! request even lands, same as `useMeetingSession`'s `create`/`join`.
+//!
+//! Every move is broadcast, but only some are stored (`persist`): the first
+//! move after `PERSIST_MS` without one, the resting cell once movement
+//! stops (a cooldown passes with nothing pending), and whatever cell is
+//! unsaved when the canvas unmounts -- so a held key's every step costs a
+//! push, not a database write.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { decodeJwt } from "./jwt";
@@ -43,6 +49,8 @@ const STEP_MS = 1000 / USER_SPEED;
 // late; the cooldown itself is still enforced by `lastMoveAtRef`, not by
 // this interval's period.
 const POLL_MS = 30;
+// At most one stored move per this long while moving -- see the module doc.
+const PERSIST_MS = 1000;
 
 const ARROW_DELTA = {
   ArrowUp: { dx: 0, dy: -1 },
@@ -133,15 +141,33 @@ export function useMapSession(token, orgId, members) {
   const heldKeysRef = useRef([]); // most-recently-pressed direction last
   const queuedClickRef = useRef(null);
   const lastMoveAtRef = useRef(0);
+  const lastPersistAtRef = useRef(0);
+  // This tab has moved since its last stored move.
+  const dirtyRef = useRef(false);
 
   const applyMove = useCallback(
     (x, y) => {
       const target = { x: clamp(x), y: clamp(y) };
+      const persist = Date.now() - lastPersistAtRef.current >= PERSIST_MS;
+      if (persist) lastPersistAtRef.current = Date.now();
+      dirtyRef.current = !persist;
       setOverrides((prev) => ({ ...prev, [myId]: target }));
-      moveInMap(token, orgId, target.x, target.y).catch(() => {});
+      moveInMap(token, orgId, target.x, target.y, persist).catch(() => {});
     },
     [token, orgId, myId],
   );
+
+  // Store the current cell if any move since the last stored one wasn't --
+  // movement stopping, or the canvas going away.
+  const flush = useCallback(() => {
+    if (!dirtyRef.current) return;
+    dirtyRef.current = false;
+    lastPersistAtRef.current = Date.now();
+    const { x, y } = myPositionRef.current;
+    moveInMap(token, orgId, x, y, true).catch(() => {});
+  }, [token, orgId]);
+
+  useEffect(() => flush, [flush]);
 
   // Apply whichever of a queued click or a held key is pending, preferring
   // the click -- but only once the cooldown since the last actual move has
@@ -161,11 +187,13 @@ export function useMapSession(token, orgId, members) {
         target = { x: from.x + delta.dx, y: from.y + delta.dy };
       }
     }
-    if (!target) return;
+    // Nothing pending a full cooldown after the last move: movement has
+    // stopped, so store where it stopped.
+    if (!target) return flush();
 
     applyMove(target.x, target.y);
     lastMoveAtRef.current = Date.now();
-  }, [applyMove]);
+  }, [applyMove, flush]);
 
   // Polls `attempt` so a held key keeps repeating and a click queued during
   // the cooldown still gets applied once it clears, for as long as this

@@ -14,6 +14,7 @@ use axum::body::to_bytes;
 use axum::extract::{Extension, Query, Request};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
+use futures_util::stream::{self, StreamExt};
 use lambda_http::aws_lambda_events::apigw::ApiGatewayWebsocketProxyRequestContext;
 use lambda_http::request::RequestContext;
 use serde_json::Value;
@@ -21,6 +22,9 @@ use serde_json::Value;
 use super::{Channel, Messenger, WsAuth, CONNECTED, DISCONNECTED};
 use crate::core::auth;
 use crate::core::data::db::Db;
+
+/// Most Management API pushes [`Messenger::send`] keeps in flight at once.
+const SEND_CONCURRENCY: usize = 16;
 
 /// The management client, scoped to one WebSocket API's endpoint. `None`
 /// if `MESSENGER_MANAGEMENT_ENDPOINT` is somehow unset on a Lambda -- every
@@ -133,24 +137,30 @@ impl Messenger {
 
     /// Send `message` on `channel` to each of `to` -- every `apigw`
     /// connection the database knows about. Best effort: a recipient with
-    /// no open socket simply misses it.
+    /// no open socket simply misses it. Every recipient's connections come
+    /// from one query, and the pushes themselves go out concurrently (at
+    /// most [`SEND_CONCURRENCY`] in flight) rather than one after another.
     pub async fn send(&self, channel: Channel, to: &[String], message: Value) {
+        if to.is_empty() {
+            return;
+        }
         let frame = serde_json::json!({ "channel": channel, "message": message });
         let Ok(bytes) = serde_json::to_vec(&frame) else {
             return;
         };
-        for user_id in to {
-            let ids = match connections::for_user(&self.db, user_id).await {
-                Ok(ids) => ids,
-                Err(err) => {
-                    tracing::warn!("messenger: cannot list {user_id}'s sockets: {err:?}");
-                    continue;
-                }
-            };
-            for id in ids {
-                self.deliver(&id, &bytes).await;
+        let ids = match connections::for_users(&self.db, to).await {
+            Ok(ids) => ids,
+            Err(err) => {
+                tracing::warn!("messenger: cannot list recipients' sockets: {err:?}");
+                return;
             }
-        }
+        };
+        let bytes = &bytes;
+        stream::iter(ids)
+            .for_each_concurrent(SEND_CONCURRENCY, |id| async move {
+                self.deliver(&id, bytes).await;
+            })
+            .await;
     }
 
     /// True if `user_id` has at least one open `apigw` connection.

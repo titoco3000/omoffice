@@ -226,23 +226,25 @@ async fn clear_all_map_active(db: &Db, user_id: &str) -> Result<(), MapError> {
 
 /// Members of `org_id` a [`MOVE_CHANNEL`] push should reach: online *and*
 /// map-active -- see the module doc. "Online" comes from `core::rbac`'s own
-/// public roster, not a direct query against `org_users` -- that table is
-/// `core::rbac`'s to own, same as `features::meetings::broadcast_list`
-/// reaches it.
+/// public API ([`rbac::online_member_ids`]), not a direct query against
+/// `org_users` -- that table is `core::rbac`'s to own. The two lookups are
+/// independent, so they run concurrently.
 async fn move_audience(db: &Db, org_id: &str) -> Result<Vec<String>, MapError> {
-    let online: HashSet<String> = rbac::list_members(db, org_id)
-        .await?
-        .into_iter()
-        .filter(|member| member.online)
-        .map(|member| member.id)
-        .collect();
-    let pool = db.pool().await?;
-    let active_ids: Vec<String> = sqlx::query_scalar(
-        "SELECT user_id FROM map_positions WHERE org_id = $1 AND map_active = true",
-    )
-    .bind(org_id)
-    .fetch_all(pool)
-    .await?;
+    let active = async {
+        let pool = db.pool().await?;
+        let ids: Vec<String> = sqlx::query_scalar(
+            "SELECT user_id FROM map_positions WHERE org_id = $1 AND map_active = true",
+        )
+        .bind(org_id)
+        .fetch_all(pool)
+        .await?;
+        Ok::<_, MapError>(ids)
+    };
+    let (online, active_ids) = tokio::try_join!(
+        async { Ok::<_, MapError>(rbac::online_member_ids(db, org_id).await?) },
+        active,
+    )?;
+    let online: HashSet<String> = online.into_iter().collect();
     Ok(active_ids
         .into_iter()
         .filter(|id| online.contains(id))
@@ -253,6 +255,12 @@ async fn move_audience(db: &Db, org_id: &str) -> Result<Vec<String>, MapError> {
 struct MoveBody {
     x: i32,
     y: i32,
+    /// Whether to also write this cell to `map_positions`. Every move is
+    /// broadcast, but only some are stored: the frontend sets this when
+    /// movement stops, at most once a second while moving, and on canvas
+    /// unmount -- so a held key's every step costs a push, not a write.
+    #[serde(default)]
+    persist: bool,
 }
 
 /// `GET /map/org/{org_id}/positions` -- every member's current cell, for
@@ -272,9 +280,10 @@ async fn positions_route(
     Ok(Json(json!({ "positions": positions })))
 }
 
-/// `POST /map/org/{org_id}/move` -- set the caller's cell and push it to
+/// `POST /map/org/{org_id}/move` -- push the caller's (clamped) cell to
 /// whoever's tab is actually watching the canvas right now (online *and*
-/// `map_active`, not the whole org) -- see [`move_audience`].
+/// `map_active`, not the whole org) -- see [`move_audience`] -- and, only
+/// if `persist` is set, store it too, concurrently with the push.
 async fn move_route(
     Extension(db): Extension<Db>,
     Extension(messenger): Extension<Messenger>,
@@ -283,16 +292,28 @@ async fn move_route(
     Json(body): Json<MoveBody>,
 ) -> Result<Json<Value>, MapError> {
     rbac::require_member(&db, &org_id, &claims.sub).await?;
-    let (x, y) = set_position(&db, &org_id, &claims.sub, body.x, body.y).await?;
+    let (x, y) = (clamp(body.x), clamp(body.y));
 
-    let audience = move_audience(&db, &org_id).await?;
-    messenger
-        .send(
-            MOVE_CHANNEL,
-            &audience,
-            json!({ "org_id": org_id, "user_id": claims.sub, "x": x, "y": y }),
-        )
-        .await;
+    let persist = async {
+        if body.persist {
+            set_position(&db, &org_id, &claims.sub, x, y).await?;
+        }
+        Ok::<_, MapError>(())
+    };
+    let broadcast = async {
+        let audience = move_audience(&db, &org_id).await?;
+        messenger
+            .send(
+                MOVE_CHANNEL,
+                &audience,
+                json!({ "org_id": org_id, "user_id": claims.sub, "x": x, "y": y }),
+            )
+            .await;
+        Ok::<_, MapError>(())
+    };
+    let (persisted, broadcasted) = tokio::join!(persist, broadcast);
+    persisted?;
+    broadcasted?;
     Ok(Json(json!({ "x": x, "y": y })))
 }
 

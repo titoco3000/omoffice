@@ -737,6 +737,17 @@ pub async fn list_members(db: &Db, org_id: &str) -> Result<Vec<OrgMember>, RbacE
     Ok(members)
 }
 
+/// Ids of `org_id`'s members who are online in it right now. Unknown org returns empty.
+pub async fn online_member_ids(db: &Db, org_id: &str) -> Result<Vec<String>, RbacError> {
+    let pool = db.pool().await?;
+    let ids: Vec<String> =
+        sqlx::query_scalar("SELECT user_id FROM org_users WHERE org_id = $1 AND online")
+            .bind(org_id)
+            .fetch_all(pool)
+            .await?;
+    Ok(ids)
+}
+
 /// Push `org_id`'s current roster to every member of it who is currently
 /// online, on [`CHANNEL`] -- an offline member has no open socket to reach
 /// anyway, and will see the fresh roster the next time they load it. The
