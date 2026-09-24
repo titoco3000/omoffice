@@ -20,6 +20,9 @@
 //! the way `core::rbac::ACTIVE_CHANNEL` tracks `online` -- this table has no
 //! such notion of its own, and a disconnected socket can't be watching any
 //! org's canvas anyway, so clearing every row is simpler and just as correct.
+//!
+//! [`proximity`] is the map's other half: walking into someone starts or
+//! joins a meeting with them.
 
 use std::collections::{HashMap, HashSet};
 
@@ -34,6 +37,9 @@ use crate::core::auth::Claims;
 use crate::core::communication::web_messenger::{self, Messenger};
 use crate::core::data::db::{retry_on_conflict, Db, DbError};
 use crate::core::rbac::{self, RbacError};
+use crate::features::meetings::MeetingError;
+
+pub mod proximity;
 
 /// Cells per side of the (square) office grid -- a position is always
 /// bound to `0..OFFICE_SIZE`, see [`set_position`].
@@ -54,6 +60,7 @@ fn clamp(value: i32) -> i32 {
 pub enum MapError {
     Database(DbError),
     Rbac(RbacError),
+    Meeting(MeetingError),
 }
 
 impl From<DbError> for MapError {
@@ -65,6 +72,12 @@ impl From<DbError> for MapError {
 impl From<RbacError> for MapError {
     fn from(err: RbacError) -> Self {
         Self::Rbac(err)
+    }
+}
+
+impl From<MeetingError> for MapError {
+    fn from(err: MeetingError) -> Self {
+        Self::Meeting(err)
     }
 }
 
@@ -81,6 +94,7 @@ impl IntoResponse for MapError {
         match self {
             Self::Database(err) => err.into_response(),
             Self::Rbac(err) => err.into_response(),
+            Self::Meeting(err) => err.into_response(),
         }
     }
 }
@@ -116,8 +130,10 @@ async fn list_positions(
             .bind(org_id)
             .fetch_all(pool)
             .await?;
-    let mut by_id: HashMap<String, PositionRow> =
-        rows.into_iter().map(|row| (row.user_id.clone(), row)).collect();
+    let mut by_id: HashMap<String, PositionRow> = rows
+        .into_iter()
+        .map(|row| (row.user_id.clone(), row))
+        .collect();
     Ok(member_ids
         .iter()
         .map(|id| match by_id.remove(id) {
@@ -183,7 +199,12 @@ async fn set_position(
 }
 
 /// Same fallback shape as [`set_position`], for `map_active` instead.
-async fn set_map_active(db: &Db, org_id: &str, user_id: &str, active: bool) -> Result<(), MapError> {
+async fn set_map_active(
+    db: &Db,
+    org_id: &str,
+    user_id: &str,
+    active: bool,
+) -> Result<(), MapError> {
     let pool = db.pool().await?;
     retry_on_conflict(|| async move {
         let updated = sqlx::query(
@@ -323,6 +344,7 @@ pub fn routes() -> Router {
     Router::new()
         .route("/org/{org_id}/positions", get(positions_route))
         .route("/org/{org_id}/move", post(move_route))
+        .route("/org/{org_id}/proximity", post(proximity::route))
 }
 
 /// Wire `map_active` to the messenger: a clean disconnect clears it

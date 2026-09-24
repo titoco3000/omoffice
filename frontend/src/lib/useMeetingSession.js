@@ -38,6 +38,9 @@ import {
   unlockMeeting,
 } from "./meetings";
 
+// How long `expectJoin` shows a meeting nothing has confirmed yet.
+const EXPECT_JOIN_MS = 15000;
+
 export function useMeetingSession(token, orgId) {
   const audioRef = useRef(null);
   // A callback ref, not `useRef` + an effect keyed on `myMeetingId`: the
@@ -98,6 +101,16 @@ export function useMeetingSession(token, orgId) {
   useEffect(() => {
     myMeetingIdRef.current = myMeetingId;
   }, [myMeetingId]);
+
+  // A meeting this tab is showing itself in before the backend has actually
+  // put it there -- see `expectJoin`. `{meetingId, previous: {id, status}}`
+  // while one is outstanding, `null` otherwise.
+  const expectedJoinRef = useRef(null);
+  // The meeting a `MEETING_ROOM_CHANNEL` reconnect last arrived for -- one
+  // can land while an expected join is still outstanding (someone else
+  // joining claims the room and reconnects everyone already in it), and
+  // then the join's own answer has nothing left to connect.
+  const roomPushedForRef = useRef(null);
 
   useEffect(() => {
     chime.onRemoteTiles(setRemoteTiles);
@@ -183,6 +196,9 @@ export function useMeetingSession(token, orgId) {
         if (message.org_id !== orgId) return;
         const next = message.meetings ?? [];
         setMeetings(next);
+        // An expected meeting may not exist yet at all -- `expectJoin`'s own
+        // timeout is what gives up on it, not its absence from a list.
+        if (expectedJoinRef.current?.meetingId === myMeetingId) return;
         if (myMeetingId && !next.some((m) => m.id === myMeetingId)) {
           teardownMedia();
           setMyMeetingId(null);
@@ -207,6 +223,7 @@ export function useMeetingSession(token, orgId) {
         disconnectChime();
         setRoomStatus("waiting");
       } else if (message.connected === true) {
+        roomPushedForRef.current = message.meeting_id;
         setRoomStatus("connecting");
         chime
           .connect(message.Meeting, message.Attendee)
@@ -336,6 +353,7 @@ export function useMeetingSession(token, orgId) {
   // `myMeetingId` is already set by the caller before this runs (optimistic
   // open) -- this only carries `roomStatus` the rest of the way.
   const applyJoinResponse = async (meetingId, data) => {
+    expectedJoinRef.current = null;
     setMyMeetingId(meetingId);
     if (data.connected) {
       setRoomStatus("connecting");
@@ -386,6 +404,10 @@ export function useMeetingSession(token, orgId) {
   const leave = async () => {
     if (!myMeetingId) return;
     const meetingId = myMeetingId;
+    expectedJoinRef.current = null;
+    // Ahead of the effect that would sync it -- see `expectJoin`, which
+    // can run right after this and needs to see this tab as out already.
+    myMeetingIdRef.current = null;
     setMyMeetingId(null);
     setRoomStatus(null);
     await teardownMedia();
@@ -397,19 +419,17 @@ export function useMeetingSession(token, orgId) {
   };
 
   // Forced straight into someone else's meeting, no invite or accept -- see
-  // `features::meetings::force_join` (backend/lib/features/meetings/mod.rs).
-  // Leaves whatever meeting this tab was already in first (same as
-  // switching org does), then connects immediately, always muted and with
-  // the camera off regardless of whatever this tab's own preference was.
+  // `features::meetings::force_join` (backend/lib/features/meetings/mod.rs),
+  // or pulled in by someone walking up on the map
+  // (`features::map::proximity`). The backend has already taken this
+  // user out of whatever meeting they were in before, so there's nothing to
+  // `leave` here -- `chime.connect` drops the old session itself. Connects
+  // immediately, always muted and with the camera off regardless of
+  // whatever this tab's own preference was.
   useEffect(
     () =>
       messenger.on(MEETING_FORCE_CHANNEL, async (message) => {
-        if (
-          myMeetingIdRef.current &&
-          myMeetingIdRef.current !== message.meeting_id
-        ) {
-          await leave();
-        }
+        expectedJoinRef.current = null;
         setMyMeetingId(message.meeting_id);
         setRoomStatus("connecting");
         await chime.setCameraOn(false);
@@ -423,7 +443,6 @@ export function useMeetingSession(token, orgId) {
           setError(err.message);
         }
       }),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     [],
   );
 
@@ -505,6 +524,58 @@ export function useMeetingSession(token, orgId) {
     } catch (err) {
       setError(err.message);
     }
+  };
+
+  // Show this tab in `meetingId` right away, ahead of whatever is actually
+  // going to put it there -- walking up to someone on the map
+  // (`features::map::proximity`) takes a few seconds of room/Chime setup
+  // before anyone is really in anything. Settled by `followJoin` (this
+  // tab's own request answering) or a `MEETING_FORCE_CHANNEL` push (someone
+  // else's request moving this tab); if neither shows up within
+  // `EXPECT_JOIN_MS`, this tab goes back to wherever it was.
+  const expectJoin = (meetingId) => {
+    if (myMeetingIdRef.current === meetingId) return;
+    const expected = {
+      meetingId,
+      previous: { id: myMeetingIdRef.current, status: roomStatus },
+    };
+    expectedJoinRef.current = expected;
+    roomPushedForRef.current = null;
+    myMeetingIdRef.current = meetingId;
+    setMyMeetingId(meetingId);
+    setRoomStatus("connecting");
+    setTimeout(() => {
+      if (expectedJoinRef.current === expected) revertExpectedJoin();
+    }, EXPECT_JOIN_MS);
+  };
+
+  const revertExpectedJoin = () => {
+    const expected = expectedJoinRef.current;
+    if (!expected) return;
+    expectedJoinRef.current = null;
+    setMyMeetingId(expected.previous.id);
+    setRoomStatus(expected.previous.status);
+  };
+
+  // Follow a join the backend already made on this tab's behalf, outside
+  // any of the calls above -- walking up to someone on the map answers with
+  // `join`'s response shape whenever it actually moved this tab, or
+  // `{meeting_id, unchanged: true}` otherwise (`null` for an error, which
+  // counts the same). Everyone else it moved hears about it over
+  // `MEETING_FORCE_CHANNEL`.
+  const followJoin = async (data) => {
+    if (!data || data.unchanged) {
+      // Expected to move, didn't: the guess in `expectJoin` was wrong.
+      revertExpectedJoin();
+      return;
+    }
+    if (roomPushedForRef.current === data.meeting_id) {
+      // Already connected (or connecting) off a room push -- see
+      // `roomPushedForRef`. Connecting again would just drop and redo it.
+      expectedJoinRef.current = null;
+      return;
+    }
+    await applyJoinResponse(data.meeting_id, data);
   };
 
   // Lock/unlock the meeting this tab is in
@@ -622,6 +693,8 @@ export function useMeetingSession(token, orgId) {
     declineInvite,
     inviteUser,
     joinOrForce,
+    expectJoin,
+    followJoin,
     toggleLock,
     toggleCamera,
     toggleMic,

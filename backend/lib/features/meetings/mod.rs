@@ -44,6 +44,8 @@ pub mod meeting_invites;
 pub mod rooms;
 pub use meeting_invites::*;
 
+use std::collections::HashMap;
+
 use axum::extract::{Extension, Path, Query};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -248,7 +250,7 @@ pub(crate) async fn attendee_count(db: &Db, meeting_id: &str) -> Result<i64, DbE
     Ok(count)
 }
 
-async fn attendee_ids(db: &Db, meeting_id: &str) -> Result<Vec<String>, DbError> {
+pub async fn attendee_ids(db: &Db, meeting_id: &str) -> Result<Vec<String>, DbError> {
     let pool = db.pool().await?;
     let ids = sqlx::query_scalar("SELECT user_id FROM meeting_attendees WHERE meeting_id = $1")
         .bind(meeting_id)
@@ -336,6 +338,43 @@ async fn delete_meeting_row(db: &Db, meeting_id: &str) -> Result<(), DbError> {
     .await
 }
 
+#[derive(sqlx::FromRow)]
+struct AttendanceRow {
+    user_id: String,
+    #[sqlx(flatten)]
+    meeting: Meeting,
+}
+
+/// Which live (not idle-expired) meeting in `org_id` each of `user_ids` is
+/// currently an attendee of; anyone in none is simply absent. The frontend
+/// keeps a tab in at most one meeting at a time, so one row per user is
+/// the norm -- should there be more, whichever comes last wins, which is as
+/// good a pick as any.
+pub async fn current_meetings(
+    db: &Db,
+    org_id: &str,
+    user_ids: &[String],
+) -> Result<HashMap<String, Meeting>, DbError> {
+    let pool = db.pool().await?;
+    let rows: Vec<AttendanceRow> = sqlx::query_as(
+        "SELECT a.user_id, m.id, m.created_by, m.created_at, m.org_id, m.invite_only, m.idle_since
+         FROM meeting_attendees a
+         JOIN meetings m ON m.id = a.meeting_id
+         WHERE m.org_id = $1
+           AND a.user_id = ANY($2)
+           AND (m.idle_since IS NULL OR m.idle_since > now() - ($3 * interval '1 second'))",
+    )
+    .bind(org_id)
+    .bind(user_ids)
+    .bind(IDLE_AFTER_SECONDS)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|row| (row.user_id, row.meeting))
+        .collect())
+}
+
 /// Every meeting in `org_id` idle past [`IDLE_AFTER_SECONDS`], for
 /// [`sweep_idle`].
 async fn idle_expired_in_org(db: &Db, org_id: &str) -> Result<Vec<Meeting>, DbError> {
@@ -366,7 +405,21 @@ pub async fn create(
     invite_only: bool,
 ) -> Result<Meeting, MeetingError> {
     let id = Uuid::new_v4().to_string();
-    let id = id.as_str();
+    create_with_id(db, &id, created_by, org_id, invite_only).await
+}
+
+/// [`create`], under an id the caller already picked -- so whoever's going
+/// to end up in it can be told where before it exists (see
+/// `features::map::proximity`, which shows the meeting optimistically
+/// rather than wait on the whole round trip). A taken id fails the insert
+/// like any other key conflict would.
+pub async fn create_with_id(
+    db: &Db,
+    id: &str,
+    created_by: &str,
+    org_id: Option<&str>,
+    invite_only: bool,
+) -> Result<Meeting, MeetingError> {
     let pool = db.pool().await?;
     let meeting = retry_on_conflict(|| async move {
         sqlx::query_as::<_, Meeting>(
@@ -430,11 +483,37 @@ pub async fn force_join(
         return Err(MeetingError::Forbidden);
     }
 
-    let response = join_inner(db, chime, messenger, meeting_id, target_user_id, true).await?;
+    let response = move_into(db, chime, messenger, meeting_id, target_user_id).await?;
     messenger
         .send(FORCE_CHANNEL, &[target_user_id.to_string()], response)
         .await;
     Ok(())
+}
+
+/// Put `user_id` in `meeting_id` past its invite-only gate (the caller has
+/// already decided they belong there -- [`force_join`], or walking up to
+/// someone on the office map, `features::map::proximity`), then [`leave`] every other meeting they were
+/// still an attendee of. Joining first means whoever stays behind in the
+/// old meeting only hears about the room it lost once the mover is already
+/// somewhere else, and the mover's own tab never has to call `leave` on a
+/// meeting it was pulled out of.
+pub async fn move_into(
+    db: &Db,
+    chime: &ChimeState,
+    messenger: &Messenger,
+    meeting_id: &str,
+    user_id: &str,
+) -> Result<Value, MeetingError> {
+    let response = join_inner(db, chime, messenger, meeting_id, user_id, true).await?;
+    for other in attendee_meeting_ids(db, user_id).await? {
+        if other == meeting_id {
+            continue;
+        }
+        if let Err(err) = leave(db, messenger, &other, user_id).await {
+            tracing::warn!("meetings: could not move {user_id} out of {other}: {err:?}");
+        }
+    }
+    Ok(response)
 }
 
 /// Shared body of [`join`] and [`force_join`]: record `user_id` as an

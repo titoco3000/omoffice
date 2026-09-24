@@ -1,4 +1,6 @@
 - Organization chat
 - create client homepage
-- map
 - shared drawing
+- terraria-style navigation
+- map editing
+- 

@@ -38,6 +38,8 @@ import {
   listMapPositions,
   moveInMap,
 } from "./map";
+import { useMapProximity } from "./useMapProximity";
+import { useOrgSession } from "../org/OrgSessionContext";
 
 // Cells per second -- governs both the move cooldown (one cell every
 // `1 / USER_SPEED` seconds) and, so the two stay in sync, how fast
@@ -72,6 +74,9 @@ export function useMapSession(token, orgId, members) {
   // same as the backend's own default for a member with no row.
   const [basePositions, setBasePositions] = useState({}); // user_id -> {x, y}
   const [overrides, setOverrides] = useState({}); // user_id -> {x, y}
+  // Whether `basePositions` has landed -- until then everyone sits at the
+  // (0, 0) default, which says nothing about who's actually near whom.
+  const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
     if (!orgId) return;
@@ -83,19 +88,21 @@ export function useMapSession(token, orgId, members) {
         for (const position of data.positions ?? [])
           next[position.user_id] = { x: position.x, y: position.y };
         setBasePositions(next);
+        setLoaded(true);
       })
       .catch(() => {});
     return () => {
       cancelled = true;
       setBasePositions({});
+      setLoaded(false);
     };
   }, [token, orgId]);
 
   const positions = useMemo(() => {
     const result = {};
     for (const member of members)
-      result[member.id] =
-        overrides[member.id] ?? basePositions[member.id] ?? { x: 0, y: 0 };
+      result[member.id] = overrides[member.id] ??
+        basePositions[member.id] ?? { x: 0, y: 0 };
     return result;
   }, [members, basePositions, overrides]);
 
@@ -233,6 +240,11 @@ export function useMapSession(token, orgId, members) {
     },
     [attempt],
   );
+
+  // Walking up to someone starts or joins a meeting with them -- see
+  // `useMapProximity`.
+  const { session } = useOrgSession();
+  useMapProximity(token, orgId, positions, loaded, members, myId, session);
 
   return { positions, myPosition, moveTo };
 }
