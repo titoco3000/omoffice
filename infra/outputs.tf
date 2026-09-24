@@ -63,6 +63,26 @@ output "media_url" {
   value       = "https://${aws_cloudfront_distribution.media.domain_name}"
 }
 
+output "ecr_repository_url" {
+  description = "ECR repo `backend/make deploy` pushes images to."
+  value       = aws_ecr_repository.api.repository_url
+}
+
+output "ecs_cluster_name" {
+  description = "ECS cluster the always-on API task runs in."
+  value       = aws_ecs_cluster.main.name
+}
+
+output "ecs_service_name" {
+  description = "ECS service `backend/make deploy` force-redeploys."
+  value       = aws_ecs_service.api.name
+}
+
+output "alb_dns_name" {
+  description = "ALB's public DNS name -- not yet the live API_URL, see dev-docs/phase/14.md's cutover step."
+  value       = aws_lb.api.dns_name
+}
+
 output "backend_env_file" {
   description = "Paste this into backend/.env.<stage>."
   value       = <<-EOT
@@ -73,6 +93,9 @@ output "backend_env_file" {
     MESSENGER_MANAGEMENT_ENDPOINT=${local.messenger_management_endpoint}
     MEDIA_BUCKET=${aws_s3_bucket.media.bucket}
     CHIME_WEBHOOK_SECRET=${nonsensitive(random_password.chime_webhook_secret.result)}
+    ECR_REPOSITORY_URL=${aws_ecr_repository.api.repository_url}
+    ECS_CLUSTER=${aws_ecs_cluster.main.name}
+    ECS_SERVICE=${aws_ecs_service.api.name}
   EOT
 }
 

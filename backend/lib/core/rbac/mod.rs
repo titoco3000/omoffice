@@ -30,6 +30,8 @@ mod avatar;
 pub mod org_invites;
 pub use org_invites::*;
 
+use std::collections::HashSet;
+
 use axum::extract::{Extension, Path};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -907,6 +909,23 @@ pub async fn require_member(db: &Db, org_id: &str, user_id: &str) -> Result<(), 
     } else {
         Err(RbacError::Forbidden)
     }
+}
+
+/// Just the online member IDs of `org_id` -- for a caller that only needs
+/// to intersect against `.online` (e.g. `features::map::move_audience`) and
+/// would otherwise pay for [`list_members`]'s full roster join (names,
+/// pictures, email, roles) on a hot, high-frequency path. No `org_exists`
+/// check: an empty result for a real-but-unpopulated org is indistinguishable
+/// from one for a nonexistent org, and every caller already reached this
+/// through a membership check that implies the org exists.
+pub async fn list_online_member_ids(db: &Db, org_id: &str) -> Result<HashSet<String>, RbacError> {
+    let pool = db.pool().await?;
+    let ids: Vec<String> =
+        sqlx::query_scalar("SELECT user_id FROM org_users WHERE org_id = $1 AND online = true")
+            .bind(org_id)
+            .fetch_all(pool)
+            .await?;
+    Ok(ids.into_iter().collect())
 }
 
 /// `org_users.online` is per `(org_id, user_id)` -- see the module doc --

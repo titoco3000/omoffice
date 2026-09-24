@@ -19,7 +19,6 @@ ifeq ($(STAGE),)
 STAGE := dev
 endif
 ENV_FILE := .env.$(STAGE)
-ZIP      := target/lambda/$(BIN)/bootstrap.zip
 
 define REQUIRE_ENV
 @test -n "$$PROJECT" || { \
@@ -56,8 +55,8 @@ dev prod:
 help:
 	@echo "make init                install toolchain + fetch deps"
 	@echo "make run [stage]         run locally on http://localhost:8000 (reloads on src edits; WATCH=0 disables)"
-	@echo "make build [stage]       cross-compile lambda zip ($(ARCH))"
-	@echo "make deploy [stage]      build + push code to the lambda from infra"
+	@echo "make build [stage]       build the docker image ($(ARCH))"
+	@echo "make deploy [stage]      build + push image to ECR, force a new ECS deployment"
 	@echo "make db-generate         diff schema.rs against the last generated migration, write any new one (local only, no stage)"
 	@echo "make db-status [stage]   which migrations are applied, and which are not"
 	@echo "make db-migrate [stage]  apply every pending migration"
@@ -69,11 +68,9 @@ help:
 init:
 	$(REQUIRE_ENV)
 	@command -v cargo >/dev/null || { echo "cargo not found: https://rustup.rs"; exit 1; }
-	@command -v cargo-lambda >/dev/null || cargo install cargo-lambda --locked
 	@command -v cargo-watch >/dev/null || cargo install cargo-watch --locked
-	@command -v zig >/dev/null || { echo "zig not found (cargo-lambda cross-compiles with it): https://ziglang.org/download/"; exit 1; }
+	@command -v docker >/dev/null || { echo "docker not found (needed for 'make build'/'make deploy'): https://docs.docker.com/get-docker/"; exit 1; }
 	@command -v psql >/dev/null || echo "note: psql not found -- 'make db-shell' needs it: https://www.postgresql.org/download/"
-	rustup target add aarch64-unknown-linux-gnu x86_64-unknown-linux-gnu
 	cargo fetch
 	@echo "backend ready."
 
@@ -96,20 +93,23 @@ run:
 .PHONY: build
 build:
 	$(REQUIRE_ENV)
-	cargo lambda build --release --$(ARCH) --output-format zip --features lambda
+	docker buildx build --platform linux/$(ARCH) -t $(BIN):local -f Dockerfile .
 
 .PHONY: deploy
 deploy: build
 	$(REQUIRE_ENV)
 	$(REQUIRE_DB)
 	@set -a; . ./$(ENV_FILE); set +a; \
-	  test -n "$$LAMBDA_FUNCTION_NAME" || { echo "error: LAMBDA_FUNCTION_NAME unset in $(ENV_FILE)"; exit 1; }; \
-	  echo "uploading $(ZIP) -> $$LAMBDA_FUNCTION_NAME"; \
-	  aws lambda update-function-code \
-	    --function-name "$$LAMBDA_FUNCTION_NAME" \
-	    --zip-file "fileb://$(ZIP)" \
-	    --query 'LastUpdateStatus' --output text; \
-	  aws lambda wait function-updated --function-name "$$LAMBDA_FUNCTION_NAME"; \
+	  test -n "$$ECR_REPOSITORY_URL" || { echo "error: ECR_REPOSITORY_URL unset in $(ENV_FILE)"; exit 1; }; \
+	  test -n "$$ECS_CLUSTER" || { echo "error: ECS_CLUSTER unset in $(ENV_FILE)"; exit 1; }; \
+	  test -n "$$ECS_SERVICE" || { echo "error: ECS_SERVICE unset in $(ENV_FILE)"; exit 1; }; \
+	  aws ecr get-login-password --region "$${AWS_REGION:-us-east-1}" | docker login --username AWS --password-stdin "$$ECR_REPOSITORY_URL"; \
+	  docker buildx build --platform linux/$(ARCH) -t "$$ECR_REPOSITORY_URL:$(STAGE)" -f Dockerfile --push .; \
+	  echo "forcing new deployment on $$ECS_CLUSTER/$$ECS_SERVICE"; \
+	  aws ecs update-service --cluster "$$ECS_CLUSTER" --service "$$ECS_SERVICE" --force-new-deployment \
+	    --query 'service.deployments[0].id' --output text; \
+	  echo "waiting for deployment to stabilize..."; \
+	  aws ecs wait services-stable --cluster "$$ECS_CLUSTER" --services "$$ECS_SERVICE"; \
 	  echo "deployed $(STAGE): $$API_URL"
 
 .PHONY: test

@@ -1,6 +1,8 @@
 //! Top-level route table: mounts each module's own routes under its prefix.
-//! `/auth/*` and `/chime/*` (EventBridge's webhook, checked by its own
-//! shared secret instead -- see `core::chime`) are public; `/rbac/*`,
+//! `/auth/*`, `/chime/*` (EventBridge's webhook, checked by its own shared
+//! secret instead -- see `core::chime`) and `/health` (the ALB target
+//! group's check, deliberately no DB dependency so a transient DSQL blip
+//! doesn't flap it) are public; `/rbac/*`,
 //! `/meeting/*` and `/map/*` require a bearer token
 //! (see [`core::auth::require_bearer`]). The websocket route depends on
 //! which transport this build compiled (see the module doc on
@@ -26,10 +28,17 @@ use crate::core::media::{self, MediaState};
 use crate::core::rbac;
 use crate::features::{map, meetings};
 
-pub fn app(db: Db, chime: ChimeState, messenger: Messenger, media: MediaState) -> Router {
+pub fn app(
+    db: Db,
+    chime: ChimeState,
+    messenger: Messenger,
+    media: MediaState,
+    map_state: map::MapState,
+) -> Router {
     let router = Router::new()
         .nest("/auth", auth::routes())
         .nest("/chime", chime::routes())
+        .route("/health", axum::routing::get(|| async { "ok" }))
         .nest(
             "/rbac",
             rbac::routes().layer(middleware::from_fn(auth::require_bearer)),
@@ -60,6 +69,7 @@ pub fn app(db: Db, chime: ChimeState, messenger: Messenger, media: MediaState) -
         .layer(Extension(chime))
         .layer(Extension(messenger))
         .layer(Extension(media))
+        .layer(Extension(map_state))
         // Disable CORS
         .layer(
             CorsLayer::new()
