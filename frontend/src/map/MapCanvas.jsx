@@ -6,7 +6,9 @@
 //! avatar's drawn position eases toward its logical cell at `USER_SPEED`
 //! cells/sec, redrawn every animation frame, rather than jumping the
 //! instant a `MAP_MOVE_CHANNEL` push (or this tab's own optimistic move)
-//! lands.
+//! lands. The exception is someone being *placed* rather than moving --
+//! everyone on the initial load, and anyone who comes online later (see
+//! `useMapSession`'s `placements`): they're drawn straight on their cell.
 //!
 //! The camera follows this tab's own (eased) position, centered, so the
 //! grid scrolls under the avatar rather than the avatar walking off a
@@ -50,8 +52,13 @@ export default function MapCanvas({ token, orgId, members, myId }) {
   const imagesRef = useRef(new Map()); // url -> HTMLImageElement
   const renderedRef = useRef({}); // user_id -> {x, y} (eased, float)
   const renderedOffsetRef = useRef({}); // user_id -> {dx, dy} (eased, float)
+  const seenPlacementsRef = useRef({}); // user_id -> last placement drawn
 
-  const { positions, moveTo } = useMapSession(token, orgId, members);
+  const { positions, moveTo, loaded, placements } = useMapSession(
+    token,
+    orgId,
+    members,
+  );
 
   // The draw loop below reads this every frame instead of closing over
   // `positions`/`members`/`myId` directly -- both `positions` (a fresh
@@ -64,9 +71,9 @@ export default function MapCanvas({ token, orgId, members, myId }) {
   // value. With two or more users the extra websocket traffic (both tabs'
   // online/roster pushes) makes that frequent enough that the canvas can go
   // a long stretch, or indefinitely, without a single stable frame to draw.
-  const stateRef = useRef({ positions, members, myId });
+  const stateRef = useRef({ positions, members, myId, loaded, placements });
   useEffect(() => {
-    stateRef.current = { positions, members, myId };
+    stateRef.current = { positions, members, myId, loaded, placements };
   });
 
   useEffect(() => {
@@ -97,14 +104,30 @@ export default function MapCanvas({ token, orgId, members, myId }) {
     observer.observe(canvas);
 
     const draw = (now) => {
-      const { positions, members, myId } = stateRef.current;
+      const { positions, myId, loaded, placements } = stateRef.current;
+      // Nobody is drawn until the initial positions land -- until then
+      // everyone would sit at the (0, 0) default -- nor anyone whose
+      // placement is still being fetched.
+      const members = loaded
+        ? stateRef.current.members.filter(
+            (member) => placements[member.id] !== null,
+          )
+        : [];
       const dt = Math.max(0, Math.min((now - last) / 1000, 0.1));
       last = now;
       const rendered = renderedRef.current;
+      const seenPlacements = seenPlacementsRef.current;
 
       for (const member of members) {
         const target = positions[member.id];
         if (!target) continue;
+        const placement = placements[member.id];
+        if (placement !== seenPlacements[member.id]) {
+          seenPlacements[member.id] = placement;
+          rendered[member.id] = { x: target.x, y: target.y };
+          delete renderedOffsetRef.current[member.id];
+          continue;
+        }
         const current = rendered[member.id] ?? target;
         const dx = target.x - current.x;
         const dy = target.y - current.y;

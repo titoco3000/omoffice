@@ -82,6 +82,12 @@ const ARROW_DELTA = {
 const clamp = (v) =>
   Number.isFinite(v) ? Math.max(0, Math.min(OFFICE_SIZE - 1, v)) : 0;
 
+function bumpPlacements(prev, ids) {
+  const next = { ...prev };
+  for (const id of ids) next[id] = (prev[id] ?? 0) + 1;
+  return next;
+}
+
 export function useMapSession(token, orgId, members) {
   const myId = decodeJwt(token)?.sub;
   // Fetched once per org -- a member with nothing here yet (the fetch
@@ -92,6 +98,12 @@ export function useMapSession(token, orgId, members) {
   // Whether `basePositions` has landed -- until then everyone sits at the
   // (0, 0) default, which says nothing about who's actually near whom.
   const [loaded, setLoaded] = useState(false);
+  // user_id -> a counter bumped whenever a fetch (re)places someone, so
+  // `MapCanvas` draws them straight there instead of easing over from
+  // wherever they were last drawn: everyone on the initial load, and anyone
+  // who comes online later. `null` while a newcomer's fetch is in flight --
+  // not drawn yet, rather than drawn at a position that may be stale.
+  const [placements, setPlacements] = useState({});
 
   useEffect(() => {
     if (!orgId) return;
@@ -103,6 +115,7 @@ export function useMapSession(token, orgId, members) {
         for (const position of data.positions ?? [])
           next[position.user_id] = { x: position.x, y: position.y };
         setBasePositions(next);
+        setPlacements((prev) => bumpPlacements(prev, Object.keys(next)));
         setLoaded(true);
       })
       .catch(() => {});
@@ -112,6 +125,62 @@ export function useMapSession(token, orgId, members) {
       setLoaded(false);
     };
   }, [token, orgId]);
+
+  // Someone who just came online: this tab's copy of their cell dates from
+  // whenever it was fetched or last pushed, and they may have moved since
+  // (in another session, or before going offline). Fetch it fresh, and
+  // have them placed there rather than seen walking over from the old one.
+  // Any live move of theirs that lands before the fetch does still wins --
+  // it's an override, newer than anything stored.
+  const memberKey = members
+    .map((member) => member.id)
+    .sort()
+    .join(",");
+  const seenMembersRef = useRef(null);
+  const orgIdRef = useRef(orgId);
+  useEffect(() => {
+    orgIdRef.current = orgId;
+  }, [orgId]);
+  useEffect(() => {
+    if (!loaded) {
+      seenMembersRef.current = null;
+      return;
+    }
+    const ids = memberKey ? memberKey.split(",") : [];
+    const seen = seenMembersRef.current;
+    seenMembersRef.current = new Set(ids);
+    // The first roster after a load is exactly what that load placed.
+    if (!seen) return;
+    const arrived = ids.filter((id) => !seen.has(id) && id !== myId);
+    if (arrived.length === 0) return;
+
+    setOverrides((prev) => {
+      const next = { ...prev };
+      for (const id of arrived) delete next[id];
+      return next;
+    });
+    setPlacements((prev) => {
+      const next = { ...prev };
+      for (const id of arrived) next[id] = null;
+      return next;
+    });
+    const fetchedFor = orgId;
+    const place = (fresh) => {
+      if (orgIdRef.current !== fetchedFor) return;
+      setBasePositions((prev) => ({ ...prev, ...fresh }));
+      setPlacements((prev) => bumpPlacements(prev, arrived));
+    };
+    listMapPositions(token, orgId)
+      .then((data) => {
+        const fresh = {};
+        for (const position of data.positions ?? [])
+          if (arrived.includes(position.user_id))
+            fresh[position.user_id] = { x: position.x, y: position.y };
+        place(fresh);
+      })
+      // Placed where this tab last knew them, rather than never drawn.
+      .catch(() => place({}));
+  }, [loaded, memberKey, myId, token, orgId]);
 
   const positions = useMemo(() => {
     const result = {};
@@ -332,5 +401,5 @@ export function useMapSession(token, orgId, members) {
   const { session } = useOrgSession();
   useMapProximity(token, orgId, positions, loaded, members, myId, session);
 
-  return { positions, myPosition, moveTo };
+  return { positions, myPosition, moveTo, loaded, placements };
 }
