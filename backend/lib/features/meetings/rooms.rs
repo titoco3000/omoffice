@@ -87,13 +87,8 @@ pub async fn assign(
     chime: &ChimeState,
     meeting_id: &str,
 ) -> Result<(String, Meeting, bool), RoomError> {
-    let mut laps = crate::core::debug::Laps::new(format!("rooms::assign {meeting_id}"));
-    let current_room = current(db, meeting_id).await?;
-    laps.lap("current");
-    if let Some(room_id) = current_room {
-        let got = chime.get_meeting(&room_id).await;
-        laps.lap("chime get_meeting");
-        match got {
+    if let Some(room_id) = current(db, meeting_id).await? {
+        match chime.get_meeting(&room_id).await {
             Ok(meeting) => return Ok((room_id, meeting, false)),
             Err(ChimeError::MeetingNotFound) => {
                 // Our bookkeeping thought this was still live; Chime had
@@ -106,7 +101,6 @@ pub async fn assign(
         }
     }
     let (room_id, meeting) = claim(db, chime, meeting_id).await?;
-    laps.lap("claim");
     Ok((room_id, meeting, true))
 }
 
@@ -158,13 +152,8 @@ async fn claim(
     chime: &ChimeState,
     meeting_id: &str,
 ) -> Result<(String, Meeting), RoomError> {
-    let mut laps = crate::core::debug::Laps::new(format!("rooms::claim {meeting_id}"));
-    let idle = claim_idle(db, meeting_id).await?;
-    laps.lap("claim_idle (sweep + update)");
-    if let Some(room_id) = idle {
-        let got = chime.get_meeting(&room_id).await;
-        laps.lap("chime get_meeting (pooled)");
-        return match got {
+    if let Some(room_id) = claim_idle(db, meeting_id).await? {
+        return match chime.get_meeting(&room_id).await {
             Ok(meeting) => Ok((room_id, meeting)),
             Err(ChimeError::MeetingNotFound) => {
                 tracing::warn!("pooled chime room {room_id} was already gone; minting a new one");
@@ -195,9 +184,7 @@ async fn mint(
     chime: &ChimeState,
     meeting_id: &str,
 ) -> Result<(String, Meeting), RoomError> {
-    let mut laps = crate::core::debug::Laps::new(format!("rooms::mint {meeting_id}"));
     let meeting = chime.create_meeting().await?;
-    laps.lap("chime create_meeting");
     let room_id = meeting.meeting_id().unwrap_or_default().to_string();
     if insert_if_unclaimed(db, &room_id, meeting_id).await? {
         return Ok((room_id, meeting));

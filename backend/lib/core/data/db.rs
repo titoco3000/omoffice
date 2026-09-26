@@ -17,17 +17,11 @@ use axum::{
     Json,
 };
 use sqlx::postgres::{PgConnectOptions, PgPool, PgPoolOptions, PgSslMode};
-use sqlx::ConnectOptions;
 
 const TOKEN_TTL: Duration = Duration::from_secs(900);
 const TOKEN_REFRESH_AFTER: Duration = Duration::from_secs(600);
 const CONNECTION_MAX_LIFETIME: Duration = Duration::from_secs(30 * 60);
-/// Default pool size, overridable with `DATABASE_MAX_CONNECTIONS`. Sized
-/// for one process serving every tab at once (`make run`): a held arrow key
-/// alone is ~4 moves a second at 3-4 queries each, and a proximity gather
-/// running alongside it must not queue behind them. DSQL's own connection
-/// limit is far above this; connections open lazily, only as needed.
-const DEFAULT_MAX_CONNECTIONS: u32 = 32;
+const MAX_CONNECTIONS: u32 = 5;
 const DEFAULT_DATABASE: &str = "postgres";
 const DEFAULT_USER: &str = "admin";
 const SQLSTATE_SERIALIZATION_FAILURE: &str = "40001";
@@ -95,22 +89,13 @@ impl Db {
         // The password is filled in by the first refresh; `refresh_at` is
         // already in the past, so that happens before the first connection.
         let pool = PgPoolOptions::new()
-            .max_connections(
-                std::env::var("DATABASE_MAX_CONNECTIONS")
-                    .ok()
-                    .and_then(|value| value.parse().ok())
-                    .unwrap_or(DEFAULT_MAX_CONNECTIONS),
-            )
+            .max_connections(MAX_CONNECTIONS)
             .max_lifetime(CONNECTION_MAX_LIFETIME)
             // sqlx pings every connection before handing it out by default
             // -- one extra round trip per query, which from a laptop to
             // DSQL is ~300ms each. A dead connection instead fails its
             // query, which `max_lifetime` keeps rare.
             .test_before_acquire(false)
-            // Latency hunting: waiting on the pool (or opening a new
-            // connection) is logged separately from the statement itself.
-            .acquire_slow_level(log::LevelFilter::Warn)
-            .acquire_slow_threshold(Duration::from_millis(200))
             .connect_lazy_with(connect_options(&host, &user, &database, String::new()));
 
         Self(Some(Arc::new(Inner {
@@ -168,7 +153,6 @@ fn connect_options(host: &str, user: &str, database: &str, token: String) -> PgC
         .password(&token)
         .ssl_mode(PgSslMode::VerifyFull)
         .application_name("omoffice-api")
-        .log_slow_statements(log::LevelFilter::Warn, Duration::from_millis(200))
 }
 
 fn env_or(name: &str, fallback: &str) -> String {

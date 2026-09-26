@@ -28,34 +28,3 @@ pub async fn log_requests(request: Request, next: Next) -> Response {
     next.run(Request::from_parts(parts, Body::from(bytes)))
         .await
 }
-
-/// Step-by-step timing for a slow multi-step operation: each [`lap`](Self::lap)
-/// logs how long that step took and the running total. Meant for chasing
-/// latency, not left in hot paths for good.
-pub struct Laps {
-    label: String,
-    started: std::time::Instant,
-    last: std::time::Instant,
-}
-
-impl Laps {
-    pub fn new(label: impl Into<String>) -> Self {
-        let now = std::time::Instant::now();
-        Self {
-            label: label.into(),
-            started: now,
-            last: now,
-        }
-    }
-
-    pub fn lap(&mut self, step: &str) {
-        let now = std::time::Instant::now();
-        tracing::info!(
-            "timing {}: {step} took {:?} (total {:?})",
-            self.label,
-            now - self.last,
-            now - self.started
-        );
-        self.last = now;
-    }
-}

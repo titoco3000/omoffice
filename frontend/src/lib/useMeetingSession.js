@@ -40,6 +40,9 @@ import {
 
 // How long `expectJoin` shows a meeting nothing has confirmed yet.
 const EXPECT_JOIN_MS = 15000;
+// How long after leaving a meeting a room push for it is still taken as a
+// late echo of that meeting, not as the backend putting this tab back in.
+const LEFT_RECENTLY_MS = 5000;
 
 export function useMeetingSession(token, orgId) {
   const audioRef = useRef(null);
@@ -111,6 +114,9 @@ export function useMeetingSession(token, orgId) {
   // joining claims the room and reconnects everyone already in it), and
   // then the join's own answer has nothing left to connect.
   const roomPushedForRef = useRef(null);
+  // `{meetingId, at}` of this tab's last `leave` -- see the room push
+  // handler below.
+  const leftRef = useRef(null);
 
   useEffect(() => {
     chime.onRemoteTiles(setRemoteTiles);
@@ -211,10 +217,23 @@ export function useMeetingSession(token, orgId) {
 
   // Room reconnects/disconnects for whichever meeting this tab is in -- see
   // `features::meetings::ROOM_CHANNEL` (backend/lib/features/meetings/mod.rs).
+  // A room handed to this user for a meeting this tab isn't showing means
+  // the backend has them in it anyway (this tab lost track, e.g. an
+  // expected join that gave up too early): follow it rather than leave a
+  // connected user with no meeting on screen. Unless this tab only just
+  // left that meeting -- then it's a push that crossed the leave in flight.
   useEffect(() => {
-    if (!myMeetingId) return;
     return messenger.on(MEETING_ROOM_CHANNEL, (message) => {
-      if (message.meeting_id !== myMeetingId) return;
+      if (message.meeting_id !== myMeetingId) {
+        const left = leftRef.current;
+        const leftRecently =
+          left?.meetingId === message.meeting_id &&
+          Date.now() - left.at < LEFT_RECENTLY_MS;
+        if (message.connected !== true || leftRecently) return;
+        expectedJoinRef.current = null;
+        myMeetingIdRef.current = message.meeting_id;
+        setMyMeetingId(message.meeting_id);
+      }
       if (message.ended) {
         teardownMedia();
         setMyMeetingId(null);
@@ -408,6 +427,7 @@ export function useMeetingSession(token, orgId) {
   const leave = async () => {
     if (!myMeetingId) return;
     const meetingId = myMeetingId;
+    leftRef.current = { meetingId, at: Date.now() };
     expectedJoinRef.current = null;
     // Ahead of the effect that would sync it -- see `expectJoin`, which
     // can run right after this and needs to see this tab as out already.

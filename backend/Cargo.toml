@@ -88,8 +88,6 @@ lambda_runtime = { version = "1", optional = true }
 # declaration, in a linker section `orm::generate` reads -- no separate list
 # to keep in sync by hand.
 linkme = "0.3"
-# Only for `LevelFilter`, which sqlx's slow-statement logging takes.
-log = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sqlx = { version = "0.9", default-features = false, features = [

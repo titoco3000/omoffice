@@ -59,8 +59,8 @@ pub const PROXIMITY_RANGE: i32 = 2;
 pub const PENDING_CHANNEL: web_messenger::Channel = "map_meeting_pending";
 
 /// Apply the module doc's rules for `caller` having ended up within range
-/// of `nearby` (already narrowed to online members of `org_id`, caller
-/// excluded). Everyone moved other than the caller is pushed a forced join
+/// of `body.nearby`, narrowed to `online` (every online member of `org_id`,
+/// also who the list push goes to) minus the caller. Everyone moved other than the caller is pushed a forced join
 /// over [`meetings::FORCE_CHANNEL`], same as [`meetings::force_join`]; the
 /// caller gets the same join response [`meetings::join`] would return, or
 /// `{"meeting_id", "unchanged": true}` when they stay where they are
@@ -71,22 +71,31 @@ async fn gather(
     messenger: &Messenger,
     org_id: &str,
     caller: &str,
-    nearby: &[String],
-    proposed_id: Option<&str>,
+    online: &[String],
+    body: ProximityBody,
 ) -> Result<Value, MeetingError> {
-    let started = std::time::Instant::now();
-    let mut laps = crate::core::debug::Laps::new("gather");
-    let mut everyone = nearby.to_vec();
+    let online_set: HashSet<&String> = online.iter().collect();
+    let nearby: Vec<String> = body
+        .nearby
+        .into_iter()
+        .filter(|id| id != caller && online_set.contains(id))
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+    let proposed_id = body
+        .meeting_id
+        .filter(|id| uuid::Uuid::parse_str(id).is_ok());
+
+    let mut everyone = nearby.clone();
     everyone.push(caller.to_string());
     let attending = meetings::current_meetings(db, org_id, &everyone).await?;
-    laps.lap("current_meetings");
     let mine = attending.get(caller).map(|meeting| meeting.id.clone());
 
     // The unlocked meeting, other than the caller's own, that the most
     // nearby people are in -- ties broken by id, so two callers racing over
     // the same crowd at least agree on where it should end up.
     let mut others: HashMap<&str, usize> = HashMap::new();
-    for user in nearby {
+    for user in &nearby {
         if let Some(meeting) = attending.get(user) {
             if !meeting.invite_only && Some(&meeting.id) != mine.as_ref() {
                 *others.entry(meeting.id.as_str()).or_default() += 1;
@@ -116,7 +125,7 @@ async fn gather(
         }
         (None, _) => (
             proposed_id
-                .map(str::to_string)
+                .clone()
                 .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
             true,
         ),
@@ -139,81 +148,48 @@ async fn gather(
             json!({ "org_id": org_id, "meeting_id": target }),
         )
         .await;
-    laps.lap("attendee_ids + pending push");
-    if new {
-        meetings::create_with_id(db, &target, caller, Some(org_id), false).await?;
-        laps.lap("create_with_id");
-    }
 
-    // The first mover goes alone, since it's the one that makes two
-    // attendees and so claims the room; the rest then only mint their own
-    // Chime attendee in it, so can go all at once. The caller still goes
-    // last, see below. Nobody pushes the org's meeting list along the way --
-    // that's once, at the end, not once per join and leave.
-    let move_one = |user: &String| {
-        let target = target.clone();
-        let user = user.clone();
-        async move {
-            match meetings::move_into_deferring_list(
-                db,
-                chime,
-                messenger,
-                &target,
-                &user,
-                Some(org_id),
-            )
-            .await
-            {
-                Ok(response) => {
-                    messenger
-                        .send(
-                            meetings::FORCE_CHANNEL,
-                            std::slice::from_ref(&user),
-                            response,
-                        )
-                        .await
-                }
-                Err(err) => {
-                    tracing::warn!("map: could not move {user} into {target}: {err:?}")
-                }
-            }
-        }
-    };
-    if let Some((first, rest)) = movers.split_first() {
-        move_one(first).await;
-        tracing::info!(
-            "map: gather into {target}: first mover done at {:?}",
-            started.elapsed()
-        );
-        // The meeting now has its room and two attendees: show it to the
-        // org as it is rather than leave every tab looking at a solo
-        // meeting until the whole gather is done.
-        if !rest.is_empty() || mine.as_deref() != Some(target.as_str()) {
-            meetings::broadcast_list(messenger, db, org_id).await;
-        }
-        futures_util::future::join_all(rest.iter().map(move_one)).await;
-        tracing::info!(
-            "map: gather into {target}: {} movers done at {:?}",
-            movers.len(),
-            started.elapsed()
-        );
-    }
-
-    let response = if mine.as_deref() == Some(target.as_str()) {
-        Ok(json!({ "meeting_id": target, "unchanged": true }))
+    let meeting = if new {
+        meetings::insert_meeting(db, &target, caller, Some(org_id), false).await?
     } else {
-        // Last, so the caller's Chime attendee is minted in whatever room
-        // the movers above ended up claiming, rather than one of them
-        // replacing it.
-        meetings::move_into_deferring_list(db, chime, messenger, &target, caller, Some(org_id))
-            .await
+        attending
+            .values()
+            .find(|meeting| meeting.id == target)
+            .cloned()
+            .ok_or(MeetingError::NotFound)?
     };
-    meetings::broadcast_list(messenger, db, org_id).await;
-    tracing::info!(
-        "map: gather into {target}: caller done at {:?}",
-        started.elapsed()
-    );
-    response
+
+    // Everyone in one batch -- one room claim, every Chime attendee minted
+    // at once -- the caller included unless they're already there. The
+    // org's meeting list is pushed once, after.
+    let caller_moves = mine.as_deref() != Some(target.as_str());
+    let mut admitted = movers.clone();
+    if caller_moves {
+        admitted.push(caller.to_string());
+    }
+    let result = meetings::move_many(db, chime, messenger, &meeting, &admitted, Some(org_id)).await;
+    meetings::broadcast_list_to(messenger, db, org_id, Some(online)).await;
+    let mut responses = result?;
+
+    for user in &movers {
+        match responses.remove(user) {
+            Some(response) => {
+                messenger
+                    .send(
+                        meetings::FORCE_CHANNEL,
+                        std::slice::from_ref(user),
+                        response,
+                    )
+                    .await
+            }
+            None => tracing::warn!("map: {user} got no join response for {target}"),
+        }
+    }
+
+    if !caller_moves {
+        return Ok(json!({ "meeting_id": target, "unchanged": true }));
+    }
+    responses.remove(caller).ok_or(MeetingError::NotFound)
 }
 
 #[derive(Deserialize)]
@@ -229,7 +205,7 @@ pub(super) struct ProximityBody {
 
 /// `POST /map/org/{org_id}/proximity` -- the caller just moved within range
 /// of `nearby`: start, join or merge meetings with them, see [`gather`].
-/// `nearby` is taken at the frontend's word, narrowed to online members
+/// `nearby` is taken at the frontend's word, narrowed (by [`gather`]) to online members
 /// other than the caller -- no more trust than `POST /meeting/{id}/force`
 /// already extends to dragging someone into a meeting.
 pub(super) async fn route(
@@ -244,26 +220,6 @@ pub(super) async fn route(
         rbac::require_member(&db, &org_id, &claims.sub),
         rbac::online_member_ids(&db, &org_id),
     )?;
-    let online: HashSet<String> = online.into_iter().collect();
-    let nearby: Vec<String> = body
-        .nearby
-        .into_iter()
-        .filter(|id| *id != claims.sub && online.contains(id))
-        .collect::<HashSet<_>>()
-        .into_iter()
-        .collect();
-    let proposed_id = body
-        .meeting_id
-        .filter(|id| uuid::Uuid::parse_str(id).is_ok());
-    let response = gather(
-        &db,
-        &chime,
-        &messenger,
-        &org_id,
-        &claims.sub,
-        &nearby,
-        proposed_id.as_deref(),
-    )
-    .await?;
+    let response = gather(&db, &chime, &messenger, &org_id, &claims.sub, &online, body).await?;
     Ok(Json(response))
 }

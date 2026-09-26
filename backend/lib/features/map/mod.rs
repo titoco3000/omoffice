@@ -329,7 +329,6 @@ async fn move_route(
     Path(org_id): Path<String>,
     Json(body): Json<MoveBody>,
 ) -> Result<Json<Value>, MapError> {
-    let started = std::time::Instant::now();
     let (x, y) = (clamp(body.x), clamp(body.y));
 
     // The membership check and the audience lookup are both reads, so they
@@ -356,9 +355,6 @@ async fn move_route(
     }
     if body.persist {
         set_position(&db, &org_id, &claims.sub, x, y).await?;
-    }
-    if started.elapsed() > std::time::Duration::from_millis(300) {
-        tracing::warn!("map: slow move for {}: {:?}", claims.sub, started.elapsed());
     }
     Ok(Json(json!({ "x": x, "y": y })))
 }

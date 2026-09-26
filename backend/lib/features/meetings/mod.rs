@@ -272,33 +272,56 @@ async fn attendee_meeting_ids(db: &Db, user_id: &str) -> Result<Vec<String>, DbE
     Ok(ids)
 }
 
-async fn upsert_attendee(db: &Db, meeting_id: &str, user_id: &str) -> Result<(), DbError> {
+/// Record every one of `users` as an attendee of `meeting_id`, in one
+/// statement -- re-recording someone already there just refreshes their
+/// `joined_at`.
+async fn upsert_attendees(db: &Db, meeting_id: &str, users: &[String]) -> Result<(), DbError> {
+    if users.is_empty() {
+        return Ok(());
+    }
     let pool = db.pool().await?;
     retry_on_conflict(|| async move {
-        sqlx::query(
-            "INSERT INTO meeting_attendees (meeting_id, user_id) VALUES ($1, $2)
-             ON CONFLICT (meeting_id, user_id) DO UPDATE SET joined_at = now()",
-        )
-        .bind(meeting_id)
-        .bind(user_id)
-        .execute(pool)
-        .await
-        .map(|_| ())
+        let mut query =
+            sqlx::QueryBuilder::new("INSERT INTO meeting_attendees (meeting_id, user_id) ");
+        query.push_values(users, |mut row, user| {
+            row.push_bind(meeting_id).push_bind(user);
+        });
+        query.push(" ON CONFLICT (meeting_id, user_id) DO UPDATE SET joined_at = now()");
+        query.build().execute(pool).await.map(|_| ())
     })
     .await
 }
 
-async fn remove_attendee(db: &Db, meeting_id: &str, user_id: &str) -> Result<(), DbError> {
+async fn remove_attendees(db: &Db, meeting_id: &str, users: &[String]) -> Result<(), DbError> {
     let pool = db.pool().await?;
     retry_on_conflict(|| async move {
-        sqlx::query("DELETE FROM meeting_attendees WHERE meeting_id = $1 AND user_id = $2")
+        sqlx::query("DELETE FROM meeting_attendees WHERE meeting_id = $1 AND user_id = ANY($2)")
             .bind(meeting_id)
-            .bind(user_id)
+            .bind(users)
             .execute(pool)
             .await
             .map(|_| ())
     })
     .await
+}
+
+/// Every `(user_id, meeting_id)` attendance of `users` in a meeting other
+/// than `except` -- what [`move_many`] takes them out of.
+async fn other_meetings(
+    db: &Db,
+    users: &[String],
+    except: &str,
+) -> Result<Vec<(String, String)>, DbError> {
+    let pool = db.pool().await?;
+    let rows = sqlx::query_as(
+        "SELECT user_id, meeting_id FROM meeting_attendees
+         WHERE user_id = ANY($1) AND meeting_id <> $2",
+    )
+    .bind(users)
+    .bind(except)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
 }
 
 async fn delete_attendees(db: &Db, meeting_id: &str) -> Result<(), DbError> {
@@ -420,6 +443,21 @@ pub async fn create_with_id(
     org_id: Option<&str>,
     invite_only: bool,
 ) -> Result<Meeting, MeetingError> {
+    let meeting = insert_meeting(db, id, created_by, org_id, invite_only).await?;
+    upsert_attendees(db, &meeting.id, std::slice::from_ref(&meeting.created_by)).await?;
+    Ok(meeting)
+}
+
+/// Just the `meetings` row of [`create_with_id`], with nobody in it yet --
+/// for a caller that adds the creator together with everyone else in one
+/// [`move_many`], rather than one round trip ahead of them.
+pub async fn insert_meeting(
+    db: &Db,
+    id: &str,
+    created_by: &str,
+    org_id: Option<&str>,
+    invite_only: bool,
+) -> Result<Meeting, MeetingError> {
     let pool = db.pool().await?;
     let meeting = retry_on_conflict(|| async move {
         sqlx::query_as::<_, Meeting>(
@@ -435,8 +473,6 @@ pub async fn create_with_id(
         .await
     })
     .await?;
-
-    upsert_attendee(db, &meeting.id, created_by).await?;
     Ok(meeting)
 }
 
@@ -460,7 +496,7 @@ pub async fn join(
     meeting_id: &str,
     user_id: &str,
 ) -> Result<Value, MeetingError> {
-    join_inner(db, chime, messenger, meeting_id, user_id, false, None).await
+    join_inner(db, chime, messenger, meeting_id, user_id, false).await
 }
 
 /// Force `target_user_id` straight into `meeting_id`, on `caller`'s say-so
@@ -483,66 +519,64 @@ pub async fn force_join(
         return Err(MeetingError::Forbidden);
     }
 
-    let response = move_into(db, chime, messenger, meeting_id, target_user_id).await?;
-    messenger
-        .send(FORCE_CHANNEL, &[target_user_id.to_string()], response)
-        .await;
+    let target = target_user_id.to_string();
+    let mut responses = move_many(
+        db,
+        chime,
+        messenger,
+        &meeting,
+        std::slice::from_ref(&target),
+        None,
+    )
+    .await?;
+    if let Some(response) = responses.remove(target_user_id) {
+        messenger.send(FORCE_CHANNEL, &[target], response).await;
+    }
     Ok(())
 }
 
-/// Put `user_id` in `meeting_id` past its invite-only gate (the caller has
-/// already decided they belong there -- [`force_join`], or walking up to
-/// someone on the office map, `features::map::proximity`), then [`leave`] every other meeting they were
-/// still an attendee of. Joining first means whoever stays behind in the
-/// old meeting only hears about the room it lost once the mover is already
-/// somewhere else, and the mover's own tab never has to call `leave` on a
-/// meeting it was pulled out of.
-pub async fn move_into(
+/// Put every one of `users` in `meeting` at once, past its invite-only gate
+/// (the caller has already decided they belong there -- [`force_join`], or
+/// walking up to people on the office map, `features::map::proximity`),
+/// then take each of them out of every other meeting they were still in.
+/// Joining first means whoever stays behind in an old meeting only hears
+/// about the room it lost once the movers are already somewhere else, and a
+/// mover's own tab never has to call `leave` on a meeting it was pulled out
+/// of. One [`admit`] for everyone, and one [`leave_many`] per old meeting
+/// for all of its leavers, those running concurrently -- the round trips
+/// stay the same however many people move.
+///
+/// `defer_list` names an org whose [`LIST_CHANNEL`] push the caller sends
+/// itself, once, afterward; meetings in any other org still push their own.
+/// Returns each user's join response, keyed by user id.
+pub async fn move_many(
     db: &Db,
     chime: &ChimeState,
     messenger: &Messenger,
-    meeting_id: &str,
-    user_id: &str,
-) -> Result<Value, MeetingError> {
-    move_into_deferring_list(db, chime, messenger, meeting_id, user_id, None).await
-}
-
-/// [`move_into`], minus [`LIST_CHANNEL`] pushes for `defer_list`'s org --
-/// for a caller moving several people at once (`features::map::proximity`)
-/// that pushes that org's list itself, once, after the last of them,
-/// rather than once per join and leave along the way. Meetings in any other
-/// org still push their own list as usual.
-pub async fn move_into_deferring_list(
-    db: &Db,
-    chime: &ChimeState,
-    messenger: &Messenger,
-    meeting_id: &str,
-    user_id: &str,
+    meeting: &Meeting,
+    users: &[String],
     defer_list: Option<&str>,
-) -> Result<Value, MeetingError> {
-    let response = join_inner(db, chime, messenger, meeting_id, user_id, true, defer_list).await?;
-    let mut laps = crate::core::debug::Laps::new(format!("move_into {user_id} leaving others"));
-    for other in attendee_meeting_ids(db, user_id).await? {
-        if other == meeting_id {
-            continue;
-        }
-        if let Err(err) = leave_inner(db, messenger, &other, user_id, defer_list).await {
-            tracing::warn!("meetings: could not move {user_id} out of {other}: {err:?}");
-        }
+) -> Result<HashMap<String, Value>, MeetingError> {
+    let responses = admit(db, chime, messenger, meeting, users, defer_list).await?;
+
+    let mut leaving: HashMap<String, Vec<String>> = HashMap::new();
+    for (user_id, other) in other_meetings(db, users, &meeting.id).await? {
+        leaving.entry(other).or_default().push(user_id);
     }
-    laps.lap("attendee_meeting_ids + leaves");
-    Ok(response)
+    futures_util::future::join_all(leaving.iter().map(|(other, leavers)| async move {
+        if let Err(err) = leave_many(db, messenger, other, leavers, defer_list).await {
+            tracing::warn!("meetings: could not move {leavers:?} out of {other}: {err:?}");
+        }
+    }))
+    .await;
+    Ok(responses)
 }
 
-/// Shared body of [`join`] and [`force_join`]: record `user_id` as an
-/// attendee, and -- once that makes two or more -- claim the meeting's room
-/// and mint a Chime attendee in it, reconnecting anyone else already in it
-/// whose room turned out to be a fresh one. `bypass_invite_check` is what
-/// tells the two callers apart: [`force_join`] has already checked its own
-/// permission (the caller is the meeting's creator), so `join`'s
-/// invite-only gate does not apply on top of it. `defer_list` names an org
-/// whose [`LIST_CHANNEL`] push the caller will send itself, see
-/// [`move_into_deferring_list`].
+/// Shared body of [`join`] and [`force_join`]: [`admit`] one user, after
+/// the checks a plain join needs -- the meeting must exist and not be idle
+/// past its window, and an invite-only one needs its creator or a pending
+/// invite. `bypass_invite_check` skips that last one for a caller that has
+/// already checked its own permission.
 async fn join_inner(
     db: &Db,
     chime: &ChimeState,
@@ -550,16 +584,13 @@ async fn join_inner(
     meeting_id: &str,
     user_id: &str,
     bypass_invite_check: bool,
-    defer_list: Option<&str>,
 ) -> Result<Value, MeetingError> {
-    let mut laps = crate::core::debug::Laps::new(format!("join {user_id} -> {meeting_id}"));
     let meeting = find(db, meeting_id).await?.ok_or(MeetingError::NotFound)?;
-    laps.lap("find");
     if meeting.idle_expired() {
         // Nobody has swept this one yet -- do it now rather than leave it
         // for the next person who lists or tries to join it. See the
         // module doc: there is no background task for this.
-        if let Err(err) = terminate(db, messenger, &meeting, defer_list).await {
+        if let Err(err) = terminate(db, messenger, &meeting, None).await {
             tracing::warn!("meetings: could not terminate idle meeting {meeting_id}: {err:?}");
         }
         return Err(MeetingError::NotFound);
@@ -572,67 +603,99 @@ async fn join_inner(
         return Err(MeetingError::Forbidden);
     }
 
-    upsert_attendee(db, meeting_id, user_id).await?;
-    laps.lap("upsert_attendee");
-    let count = attendee_count(db, meeting_id).await?;
-    laps.lap("attendee_count");
+    let mut responses = admit(
+        db,
+        chime,
+        messenger,
+        &meeting,
+        std::slice::from_ref(&user_id.to_string()),
+        None,
+    )
+    .await?;
+    Ok(responses.remove(user_id).unwrap_or(Value::Null))
+}
 
-    broadcast_list_unless(messenger, db, &meeting, defer_list).await;
-    laps.lap("broadcast_list");
+/// Record every one of `users` as an attendee of `meeting` and -- once that
+/// makes two or more -- claim its room and mint each of them a Chime
+/// attendee in it, all concurrently. If the room turned out to be a fresh
+/// one, everyone else already in the meeting gets a new Chime attendee too,
+/// pushed over [`ROOM_CHANNEL`]. Below two, nobody gets a room:
+/// `"connected": false`, same shape [`leave`] pushes when a room is
+/// cleared. No checks -- the caller has made them. Returns each of `users`'
+/// join response, keyed by user id.
+async fn admit(
+    db: &Db,
+    chime: &ChimeState,
+    messenger: &Messenger,
+    meeting: &Meeting,
+    users: &[String],
+    defer_list: Option<&str>,
+) -> Result<HashMap<String, Value>, MeetingError> {
+    let meeting_id = meeting.id.as_str();
+    upsert_attendees(db, meeting_id, users).await?;
+    let attendees = attendee_ids(db, meeting_id).await?;
 
-    if count < 2 {
+    broadcast_list_unless(messenger, db, meeting, defer_list).await;
+
+    if attendees.len() < 2 {
         set_idle_since(db, meeting_id, Some(Utc::now())).await?;
-        return Ok(json!({ "meeting_id": meeting_id, "connected": false }));
+        return Ok(users
+            .iter()
+            .map(|user| {
+                let response = json!({ "meeting_id": meeting_id, "connected": false });
+                (user.clone(), response)
+            })
+            .collect());
     }
-    set_idle_since(db, meeting_id, None).await?;
-    laps.lap("set_idle_since");
 
-    let (room_id, session, fresh) = rooms::assign(db, chime, meeting_id).await?;
-    laps.lap(if fresh {
-        "rooms::assign (fresh)"
-    } else {
-        "rooms::assign (existing)"
-    });
+    let (idle_cleared, assigned) = tokio::join!(
+        set_idle_since(db, meeting_id, None),
+        rooms::assign(db, chime, meeting_id),
+    );
+    idle_cleared?;
+    let (room_id, session, fresh) = assigned?;
 
-    if fresh {
-        for other in attendee_ids(db, meeting_id).await? {
-            if other == user_id {
+    // Everyone who needs a Chime attendee: `users` always, and on a fresh
+    // room everyone else already in the meeting too.
+    let minting: Vec<&String> = attendees
+        .iter()
+        .filter(|id| fresh || users.contains(id))
+        .collect();
+    let minted = futures_util::future::join_all(minting.iter().map(|id| async {
+        let attendee = chime
+            .create_attendee(&room_id, &chime::external_user_id(id))
+            .await;
+        (*id, attendee)
+    }))
+    .await;
+
+    let mut responses = HashMap::new();
+    for (id, attendee) in minted {
+        let attendee = match attendee {
+            Ok(attendee) => attendee,
+            Err(err) if users.contains(id) => return Err(err.into()),
+            Err(err) => {
+                tracing::warn!(
+                    "meetings: could not reconnect {id} to the new room for {meeting_id}: {err:?}"
+                );
                 continue;
             }
-            match chime.create_attendee(&room_id, &chime::external_user_id(&other)).await {
-                Ok(attendee) => {
-                    messenger
-                        .send(
-                            ROOM_CHANNEL,
-                            &[other],
-                            json!({
-                                "meeting_id": meeting_id,
-                                "connected": true,
-                                "Meeting": chime::meeting_json(&session),
-                                "Attendee": chime::attendee_json(&attendee),
-                            }),
-                        )
-                        .await;
-                }
-                Err(err) => tracing::warn!(
-                    "meetings: could not reconnect {other} to the new room for {meeting_id}: {err:?}"
-                ),
-            }
+        };
+        let response = json!({
+            "meeting_id": meeting_id,
+            "connected": true,
+            "Meeting": chime::meeting_json(&session),
+            "Attendee": chime::attendee_json(&attendee),
+        });
+        if users.contains(id) {
+            responses.insert(id.clone(), response);
+        } else {
+            messenger
+                .send(ROOM_CHANNEL, std::slice::from_ref(id), response)
+                .await;
         }
     }
-
-    laps.lap("reconnect others");
-    let attendee = chime
-        .create_attendee(&room_id, &chime::external_user_id(user_id))
-        .await?;
-    laps.lap("chime create_attendee");
-
-    Ok(json!({
-        "meeting_id": meeting_id,
-        "connected": true,
-        "Meeting": chime::meeting_json(&session),
-        "Attendee": chime::attendee_json(&attendee),
-    }))
+    Ok(responses)
 }
 
 /// Leave a meeting. Down to zero attendees terminates it outright (see
@@ -647,40 +710,46 @@ pub async fn leave(
     meeting_id: &str,
     user_id: &str,
 ) -> Result<(), MeetingError> {
-    leave_inner(db, messenger, meeting_id, user_id, None).await
+    leave_many(
+        db,
+        messenger,
+        meeting_id,
+        std::slice::from_ref(&user_id.to_string()),
+        None,
+    )
+    .await
 }
 
-/// [`leave`], with `defer_list` as in [`join_inner`].
-async fn leave_inner(
+/// [`leave`] for every one of `users` at once, with `defer_list` as in
+/// [`move_many`].
+async fn leave_many(
     db: &Db,
     messenger: &Messenger,
     meeting_id: &str,
-    user_id: &str,
+    users: &[String],
     defer_list: Option<&str>,
 ) -> Result<(), MeetingError> {
     let meeting = find(db, meeting_id).await?.ok_or(MeetingError::NotFound)?;
-    remove_attendee(db, meeting_id, user_id).await?;
-    let count = attendee_count(db, meeting_id).await?;
+    remove_attendees(db, meeting_id, users).await?;
+    let remaining = attendee_ids(db, meeting_id).await?;
 
-    if count == 0 {
+    if remaining.is_empty() {
         // `terminate` broadcasts the org's list itself -- nothing further
         // to do here.
         terminate(db, messenger, &meeting, defer_list).await?;
         return Ok(());
     }
 
-    if count == 1 {
+    if remaining.len() == 1 {
         rooms::release(db, meeting_id).await?;
         set_idle_since(db, meeting_id, Some(Utc::now())).await?;
-        for remaining in attendee_ids(db, meeting_id).await? {
-            messenger
-                .send(
-                    ROOM_CHANNEL,
-                    &[remaining],
-                    json!({ "meeting_id": meeting_id, "connected": false }),
-                )
-                .await;
-        }
+        messenger
+            .send(
+                ROOM_CHANNEL,
+                &remaining,
+                json!({ "meeting_id": meeting_id, "connected": false }),
+            )
+            .await;
     }
 
     broadcast_list_unless(messenger, db, &meeting, defer_list).await;
@@ -880,21 +949,36 @@ pub async fn list(db: &Db, org_id: &str) -> Result<Vec<MeetingWithAttendees>, Me
 /// than failing, since callers have nothing left to hand a `MeetingError`
 /// back to by the time a meeting was already created or torn down.
 pub(crate) async fn broadcast_list(messenger: &Messenger, db: &Db, org_id: &str) {
-    let meetings = match list(db, org_id).await {
+    broadcast_list_to(messenger, db, org_id, None).await;
+}
+
+/// [`broadcast_list`], to `online` when the caller already knows who's
+/// online in `org_id` -- saving the lookup -- or looked up alongside the
+/// list otherwise.
+pub(crate) async fn broadcast_list_to(
+    messenger: &Messenger,
+    db: &Db,
+    org_id: &str,
+    online: Option<&[String]>,
+) {
+    let online_ids = async {
+        match online {
+            Some(ids) => Ok(ids.to_vec()),
+            None => rbac::online_member_ids(db, org_id).await,
+        }
+    };
+    let (meetings, online_ids) = tokio::join!(list(db, org_id), online_ids);
+    let meetings = match meetings {
         Ok(meetings) => meetings,
         Err(err) => {
             tracing::warn!("meetings: could not list org {org_id} for broadcast: {err:?}");
             return;
         }
     };
-    let online_ids = match rbac::list_members(db, org_id).await {
-        Ok(members) => members
-            .into_iter()
-            .filter(|member| member.online)
-            .map(|member| member.id)
-            .collect::<Vec<_>>(),
+    let online_ids = match online_ids {
+        Ok(ids) => ids,
         Err(err) => {
-            tracing::warn!("meetings: could not list members of org {org_id}: {err:?}");
+            tracing::warn!("meetings: could not list online members of org {org_id}: {err:?}");
             return;
         }
     };
@@ -908,7 +992,7 @@ pub(crate) async fn broadcast_list(messenger: &Messenger, db: &Db, org_id: &str)
 }
 
 /// [`broadcast_list`] for `meeting`'s org, unless that's `defer_list` --
-/// see [`move_into_deferring_list`].
+/// see [`move_many`].
 async fn broadcast_list_unless(
     messenger: &Messenger,
     db: &Db,

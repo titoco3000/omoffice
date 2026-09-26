@@ -15,9 +15,10 @@ dev prod:
 
 .PHONY: help
 help:
-	@echo "make init          run 'make init' in backend, frontend, infra"
-	@echo "make fmt           run 'make fmt' in backend, frontend, infra"
-	@echo "make run [stage]   run backend (dev/prod, default dev) and frontend (local) together, ctrl+c stops both"
+	@echo "make init            run 'make init' in backend, frontend, infra"
+	@echo "make fmt             run 'make fmt' in backend, frontend, infra"
+	@echo "make run [stage]     run backend (dev/prod, default dev) and frontend (local) together, ctrl+c stops both"
+	@echo "make deploy [stage]  deploy backend then frontend to the stage (dev/prod, default dev)"
 
 .PHONY: init
 init:
@@ -37,3 +38,10 @@ run:
 	(cd backend && exec make run $(STAGE)) & backend_pid=$$!; \
 	(cd frontend && exec make run local) & frontend_pid=$$!; \
 	wait
+
+# Backend first: a frontend that expects new routes should never go live
+# ahead of the API that serves them.
+.PHONY: deploy
+deploy:
+	$(MAKE) -C backend deploy $(STAGE)
+	$(MAKE) -C frontend deploy $(STAGE)
