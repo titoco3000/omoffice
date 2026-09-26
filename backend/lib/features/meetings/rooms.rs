@@ -87,8 +87,13 @@ pub async fn assign(
     chime: &ChimeState,
     meeting_id: &str,
 ) -> Result<(String, Meeting, bool), RoomError> {
-    if let Some(room_id) = current(db, meeting_id).await? {
-        match chime.get_meeting(&room_id).await {
+    let mut laps = crate::core::debug::Laps::new(format!("rooms::assign {meeting_id}"));
+    let current_room = current(db, meeting_id).await?;
+    laps.lap("current");
+    if let Some(room_id) = current_room {
+        let got = chime.get_meeting(&room_id).await;
+        laps.lap("chime get_meeting");
+        match got {
             Ok(meeting) => return Ok((room_id, meeting, false)),
             Err(ChimeError::MeetingNotFound) => {
                 // Our bookkeeping thought this was still live; Chime had
@@ -101,6 +106,7 @@ pub async fn assign(
         }
     }
     let (room_id, meeting) = claim(db, chime, meeting_id).await?;
+    laps.lap("claim");
     Ok((room_id, meeting, true))
 }
 
@@ -152,8 +158,13 @@ async fn claim(
     chime: &ChimeState,
     meeting_id: &str,
 ) -> Result<(String, Meeting), RoomError> {
-    if let Some(room_id) = claim_idle(db, meeting_id).await? {
-        return match chime.get_meeting(&room_id).await {
+    let mut laps = crate::core::debug::Laps::new(format!("rooms::claim {meeting_id}"));
+    let idle = claim_idle(db, meeting_id).await?;
+    laps.lap("claim_idle (sweep + update)");
+    if let Some(room_id) = idle {
+        let got = chime.get_meeting(&room_id).await;
+        laps.lap("chime get_meeting (pooled)");
+        return match got {
             Ok(meeting) => Ok((room_id, meeting)),
             Err(ChimeError::MeetingNotFound) => {
                 tracing::warn!("pooled chime room {room_id} was already gone; minting a new one");
@@ -184,7 +195,9 @@ async fn mint(
     chime: &ChimeState,
     meeting_id: &str,
 ) -> Result<(String, Meeting), RoomError> {
+    let mut laps = crate::core::debug::Laps::new(format!("rooms::mint {meeting_id}"));
     let meeting = chime.create_meeting().await?;
+    laps.lap("chime create_meeting");
     let room_id = meeting.meeting_id().unwrap_or_default().to_string();
     if insert_if_unclaimed(db, &room_id, meeting_id).await? {
         return Ok((room_id, meeting));
@@ -198,10 +211,19 @@ async fn mint(
 
 /// Reassign one idle pool row to `meeting_id` and hand back its room id --
 /// atomic and guarded against another row already being `meeting_id`'s, in
-/// one statement (see the module doc). Sweeps rooms too old to trust first.
+/// one statement (see the module doc). Also sweeps rooms too old to trust,
+/// in the background: that sweep is housekeeping, not something this claim
+/// should wait a round trip on. Claiming one it was about to sweep is
+/// harmless -- a room Chime already dropped is noticed and replaced by
+/// [`claim`] either way.
 async fn claim_idle(db: &Db, meeting_id: &str) -> Result<Option<String>, DbError> {
-    if let Err(err) = sweep_expired(db).await {
-        tracing::warn!("rooms: could not sweep expired pool rows: {err:?}");
+    {
+        let db = db.clone();
+        tokio::spawn(async move {
+            if let Err(err) = sweep_expired(&db).await {
+                tracing::warn!("rooms: could not sweep expired pool rows: {err:?}");
+            }
+        });
     }
 
     let pool = db.pool().await?;

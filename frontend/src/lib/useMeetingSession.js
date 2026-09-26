@@ -224,6 +224,10 @@ export function useMeetingSession(token, orgId) {
         setRoomStatus("waiting");
       } else if (message.connected === true) {
         roomPushedForRef.current = message.meeting_id;
+        // Actually in it now, whatever the request that expected it still
+        // has to say -- nothing left to revert to if that runs long.
+        if (expectedJoinRef.current?.meetingId === message.meeting_id)
+          expectedJoinRef.current = null;
         setRoomStatus("connecting");
         chime
           .connect(message.Meeting, message.Attendee)
@@ -573,6 +577,7 @@ export function useMeetingSession(token, orgId) {
       // Already connected (or connecting) off a room push -- see
       // `roomPushedForRef`. Connecting again would just drop and redo it.
       expectedJoinRef.current = null;
+      setMyMeetingId(data.meeting_id);
       return;
     }
     await applyJoinResponse(data.meeting_id, data);

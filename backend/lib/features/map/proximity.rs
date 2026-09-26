@@ -74,9 +74,12 @@ async fn gather(
     nearby: &[String],
     proposed_id: Option<&str>,
 ) -> Result<Value, MeetingError> {
+    let started = std::time::Instant::now();
+    let mut laps = crate::core::debug::Laps::new("gather");
     let mut everyone = nearby.to_vec();
     everyone.push(caller.to_string());
     let attending = meetings::current_meetings(db, org_id, &everyone).await?;
+    laps.lap("current_meetings");
     let mine = attending.get(caller).map(|meeting| meeting.id.clone());
 
     // The unlocked meeting, other than the caller's own, that the most
@@ -136,33 +139,81 @@ async fn gather(
             json!({ "org_id": org_id, "meeting_id": target }),
         )
         .await;
+    laps.lap("attendee_ids + pending push");
     if new {
         meetings::create_with_id(db, &target, caller, Some(org_id), false).await?;
+        laps.lap("create_with_id");
     }
 
-    for user in &movers {
-        match meetings::move_into(db, chime, messenger, &target, user).await {
-            Ok(response) => {
-                messenger
-                    .send(
-                        meetings::FORCE_CHANNEL,
-                        std::slice::from_ref(user),
-                        response,
-                    )
-                    .await
-            }
-            Err(err) => {
-                tracing::warn!("map: could not move {user} into {target}: {err:?}")
+    // The first mover goes alone, since it's the one that makes two
+    // attendees and so claims the room; the rest then only mint their own
+    // Chime attendee in it, so can go all at once. The caller still goes
+    // last, see below. Nobody pushes the org's meeting list along the way --
+    // that's once, at the end, not once per join and leave.
+    let move_one = |user: &String| {
+        let target = target.clone();
+        let user = user.clone();
+        async move {
+            match meetings::move_into_deferring_list(
+                db,
+                chime,
+                messenger,
+                &target,
+                &user,
+                Some(org_id),
+            )
+            .await
+            {
+                Ok(response) => {
+                    messenger
+                        .send(
+                            meetings::FORCE_CHANNEL,
+                            std::slice::from_ref(&user),
+                            response,
+                        )
+                        .await
+                }
+                Err(err) => {
+                    tracing::warn!("map: could not move {user} into {target}: {err:?}")
+                }
             }
         }
+    };
+    if let Some((first, rest)) = movers.split_first() {
+        move_one(first).await;
+        tracing::info!(
+            "map: gather into {target}: first mover done at {:?}",
+            started.elapsed()
+        );
+        // The meeting now has its room and two attendees: show it to the
+        // org as it is rather than leave every tab looking at a solo
+        // meeting until the whole gather is done.
+        if !rest.is_empty() || mine.as_deref() != Some(target.as_str()) {
+            meetings::broadcast_list(messenger, db, org_id).await;
+        }
+        futures_util::future::join_all(rest.iter().map(move_one)).await;
+        tracing::info!(
+            "map: gather into {target}: {} movers done at {:?}",
+            movers.len(),
+            started.elapsed()
+        );
     }
 
-    if mine.as_deref() == Some(target.as_str()) {
-        return Ok(json!({ "meeting_id": target, "unchanged": true }));
-    }
-    // Last, so the caller's Chime attendee is minted in whatever room the
-    // movers above ended up claiming, rather than one of them replacing it.
-    meetings::move_into(db, chime, messenger, &target, caller).await
+    let response = if mine.as_deref() == Some(target.as_str()) {
+        Ok(json!({ "meeting_id": target, "unchanged": true }))
+    } else {
+        // Last, so the caller's Chime attendee is minted in whatever room
+        // the movers above ended up claiming, rather than one of them
+        // replacing it.
+        meetings::move_into_deferring_list(db, chime, messenger, &target, caller, Some(org_id))
+            .await
+    };
+    meetings::broadcast_list(messenger, db, org_id).await;
+    tracing::info!(
+        "map: gather into {target}: caller done at {:?}",
+        started.elapsed()
+    );
+    response
 }
 
 #[derive(Deserialize)]

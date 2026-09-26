@@ -460,7 +460,7 @@ pub async fn join(
     meeting_id: &str,
     user_id: &str,
 ) -> Result<Value, MeetingError> {
-    join_inner(db, chime, messenger, meeting_id, user_id, false).await
+    join_inner(db, chime, messenger, meeting_id, user_id, false, None).await
 }
 
 /// Force `target_user_id` straight into `meeting_id`, on `caller`'s say-so
@@ -504,15 +504,33 @@ pub async fn move_into(
     meeting_id: &str,
     user_id: &str,
 ) -> Result<Value, MeetingError> {
-    let response = join_inner(db, chime, messenger, meeting_id, user_id, true).await?;
+    move_into_deferring_list(db, chime, messenger, meeting_id, user_id, None).await
+}
+
+/// [`move_into`], minus [`LIST_CHANNEL`] pushes for `defer_list`'s org --
+/// for a caller moving several people at once (`features::map::proximity`)
+/// that pushes that org's list itself, once, after the last of them,
+/// rather than once per join and leave along the way. Meetings in any other
+/// org still push their own list as usual.
+pub async fn move_into_deferring_list(
+    db: &Db,
+    chime: &ChimeState,
+    messenger: &Messenger,
+    meeting_id: &str,
+    user_id: &str,
+    defer_list: Option<&str>,
+) -> Result<Value, MeetingError> {
+    let response = join_inner(db, chime, messenger, meeting_id, user_id, true, defer_list).await?;
+    let mut laps = crate::core::debug::Laps::new(format!("move_into {user_id} leaving others"));
     for other in attendee_meeting_ids(db, user_id).await? {
         if other == meeting_id {
             continue;
         }
-        if let Err(err) = leave(db, messenger, &other, user_id).await {
+        if let Err(err) = leave_inner(db, messenger, &other, user_id, defer_list).await {
             tracing::warn!("meetings: could not move {user_id} out of {other}: {err:?}");
         }
     }
+    laps.lap("attendee_meeting_ids + leaves");
     Ok(response)
 }
 
@@ -522,7 +540,9 @@ pub async fn move_into(
 /// whose room turned out to be a fresh one. `bypass_invite_check` is what
 /// tells the two callers apart: [`force_join`] has already checked its own
 /// permission (the caller is the meeting's creator), so `join`'s
-/// invite-only gate does not apply on top of it.
+/// invite-only gate does not apply on top of it. `defer_list` names an org
+/// whose [`LIST_CHANNEL`] push the caller will send itself, see
+/// [`move_into_deferring_list`].
 async fn join_inner(
     db: &Db,
     chime: &ChimeState,
@@ -530,13 +550,16 @@ async fn join_inner(
     meeting_id: &str,
     user_id: &str,
     bypass_invite_check: bool,
+    defer_list: Option<&str>,
 ) -> Result<Value, MeetingError> {
+    let mut laps = crate::core::debug::Laps::new(format!("join {user_id} -> {meeting_id}"));
     let meeting = find(db, meeting_id).await?.ok_or(MeetingError::NotFound)?;
+    laps.lap("find");
     if meeting.idle_expired() {
         // Nobody has swept this one yet -- do it now rather than leave it
         // for the next person who lists or tries to join it. See the
         // module doc: there is no background task for this.
-        if let Err(err) = terminate(db, messenger, &meeting).await {
+        if let Err(err) = terminate(db, messenger, &meeting, defer_list).await {
             tracing::warn!("meetings: could not terminate idle meeting {meeting_id}: {err:?}");
         }
         return Err(MeetingError::NotFound);
@@ -550,19 +573,26 @@ async fn join_inner(
     }
 
     upsert_attendee(db, meeting_id, user_id).await?;
+    laps.lap("upsert_attendee");
     let count = attendee_count(db, meeting_id).await?;
+    laps.lap("attendee_count");
 
-    if let Some(org_id) = &meeting.org_id {
-        broadcast_list(messenger, db, org_id).await;
-    }
+    broadcast_list_unless(messenger, db, &meeting, defer_list).await;
+    laps.lap("broadcast_list");
 
     if count < 2 {
         set_idle_since(db, meeting_id, Some(Utc::now())).await?;
         return Ok(json!({ "meeting_id": meeting_id, "connected": false }));
     }
     set_idle_since(db, meeting_id, None).await?;
+    laps.lap("set_idle_since");
 
     let (room_id, session, fresh) = rooms::assign(db, chime, meeting_id).await?;
+    laps.lap(if fresh {
+        "rooms::assign (fresh)"
+    } else {
+        "rooms::assign (existing)"
+    });
 
     if fresh {
         for other in attendee_ids(db, meeting_id).await? {
@@ -591,9 +621,11 @@ async fn join_inner(
         }
     }
 
+    laps.lap("reconnect others");
     let attendee = chime
         .create_attendee(&room_id, &chime::external_user_id(user_id))
         .await?;
+    laps.lap("chime create_attendee");
 
     Ok(json!({
         "meeting_id": meeting_id,
@@ -615,6 +647,17 @@ pub async fn leave(
     meeting_id: &str,
     user_id: &str,
 ) -> Result<(), MeetingError> {
+    leave_inner(db, messenger, meeting_id, user_id, None).await
+}
+
+/// [`leave`], with `defer_list` as in [`join_inner`].
+async fn leave_inner(
+    db: &Db,
+    messenger: &Messenger,
+    meeting_id: &str,
+    user_id: &str,
+    defer_list: Option<&str>,
+) -> Result<(), MeetingError> {
     let meeting = find(db, meeting_id).await?.ok_or(MeetingError::NotFound)?;
     remove_attendee(db, meeting_id, user_id).await?;
     let count = attendee_count(db, meeting_id).await?;
@@ -622,7 +665,7 @@ pub async fn leave(
     if count == 0 {
         // `terminate` broadcasts the org's list itself -- nothing further
         // to do here.
-        terminate(db, messenger, &meeting).await?;
+        terminate(db, messenger, &meeting, defer_list).await?;
         return Ok(());
     }
 
@@ -640,9 +683,7 @@ pub async fn leave(
         }
     }
 
-    if let Some(org_id) = &meeting.org_id {
-        broadcast_list(messenger, db, org_id).await;
-    }
+    broadcast_list_unless(messenger, db, &meeting, defer_list).await;
     Ok(())
 }
 
@@ -718,7 +759,12 @@ pub fn register(messenger: &Messenger, db: Db) {
 /// [`leave`] (the last attendee just left) and by [`join`]/[`sweep_idle`]
 /// (found the meeting already idle past [`IDLE_AFTER_SECONDS`] and is
 /// terminating it before doing anything else).
-async fn terminate(db: &Db, messenger: &Messenger, meeting: &Meeting) -> Result<(), MeetingError> {
+async fn terminate(
+    db: &Db,
+    messenger: &Messenger,
+    meeting: &Meeting,
+    defer_list: Option<&str>,
+) -> Result<(), MeetingError> {
     for remaining in attendee_ids(db, &meeting.id).await? {
         messenger
             .send(
@@ -734,9 +780,7 @@ async fn terminate(db: &Db, messenger: &Messenger, meeting: &Meeting) -> Result<
     meeting_invites::drop_invites_for_meeting(db, messenger, &meeting.id).await?;
     delete_meeting_row(db, &meeting.id).await?;
 
-    if let Some(org_id) = &meeting.org_id {
-        broadcast_list(messenger, db, org_id).await;
-    }
+    broadcast_list_unless(messenger, db, meeting, defer_list).await;
     Ok(())
 }
 
@@ -757,7 +801,7 @@ async fn sweep_idle(db: &Db, messenger: &Messenger, org_id: &str) {
             "meeting {} idle past {IDLE_AFTER_SECONDS}s, terminating",
             meeting.id
         );
-        if let Err(err) = terminate(db, messenger, &meeting).await {
+        if let Err(err) = terminate(db, messenger, &meeting, None).await {
             tracing::warn!(
                 "meetings: could not terminate idle meeting {}: {err:?}",
                 meeting.id
@@ -861,6 +905,23 @@ pub(crate) async fn broadcast_list(messenger: &Messenger, db: &Db, org_id: &str)
             json!({ "org_id": org_id, "meetings": meetings }),
         )
         .await;
+}
+
+/// [`broadcast_list`] for `meeting`'s org, unless that's `defer_list` --
+/// see [`move_into_deferring_list`].
+async fn broadcast_list_unless(
+    messenger: &Messenger,
+    db: &Db,
+    meeting: &Meeting,
+    defer_list: Option<&str>,
+) {
+    if let Some(org_id) = meeting
+        .org_id
+        .as_deref()
+        .filter(|org| Some(*org) != defer_list)
+    {
+        broadcast_list(messenger, db, org_id).await;
+    }
 }
 
 #[derive(Debug, Deserialize)]

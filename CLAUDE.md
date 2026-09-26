@@ -9,7 +9,7 @@ Omoffice: meetings app for organizations. Three parts, each with its own Makefil
 ```
 backend/    Rust crate (axum). One binary: local HTTP server + Lambda handler.
 frontend/   React + Vite + Tailwind.
-infra/      Terraform stack (Lambda, API Gateway, IAM, CloudWatch, Secrets Manager, S3, CloudFront)
+infra/      Terraform stack (Lambda, API Gateway, AppSync Events, IAM, CloudWatch, Secrets Manager, S3, CloudFront)
 old-backend/  pre-overhaul backend, kept for reference only -- not built or run.
 ```
 
@@ -86,6 +86,7 @@ make plan|deploy|output|destroy [stage]
 - `router/Router.jsx` -- no dependency: History API + context, a handful of top-level pages only.
 - `lib/api.js` -- fetch wrapper: attaches the bearer token, turns non-2xx into `ApiError{status, code}` from the backend's `{error, message}` body. A 401 fires `UNAUTHORIZED_EVENT` (`AuthContext` listens and bounces to `/login`) rather than each caller handling it; a 403 (wrong role) is left for the caller.
 - `lib/messenger.js` -- browser side of `core::communication::web_messenger`.
+- `lib/mapEvents.js` -- browser side of `features::map::realtime`: live map moves go straight to an AppSync Events API (authorized by the crate's separate `map-authorizer` Lambda), not through the API Lambda; the messenger's `map_move` is only the local fallback.
 - `lib/useMeetingSession.js` -- mirrors the backend's idle-meeting rule locally (see `pending_invites` on a listed meeting) so a lone tab leaves proactively instead of waiting to be swept.
 - `pages/` top-level routes (`/`, `/login`, `/in`, `/profile`, `/org`, `/org/new`); `auth/AuthContext.jsx` the JWT/session context.
 - `theme/ThemeContext.jsx` -- system/light/dark, toggled by a `.dark` class on `<html>`; the whole palette lives in `index.css` as CSS variables, so components only ever use semantic Tailwind utilities (`bg-surface`, `text-ink-muted`), never a raw color.

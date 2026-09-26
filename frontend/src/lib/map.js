@@ -37,8 +37,15 @@ export const gatherNearby = (token, orgId, nearby, meetingId) =>
     body: { nearby, meeting_id: meetingId },
   });
 
-// Every move is broadcast; only one with `persist` set is also stored --
-// see `features::map::MoveBody`.
+// `{endpoint, token}` for the map's AppSync Events API (see `mapEvents.js`),
+// both null when the backend has none -- live moves then ride
+// `MAP_MOVE_CHANNEL`, broadcast by `moveInMap` itself. The token lasts 15
+// minutes, see `features::map::realtime::route`.
+export const getMapRealtime = (token, orgId) =>
+  apiFetch(`/map/org/${orgId}/realtime`, { token });
+
+// Only a move with `persist` set is stored; without AppSync, every move is
+// also broadcast -- see `features::map::MoveBody`.
 export const moveInMap = (token, orgId, x, y, persist = false) =>
   apiFetch(`/map/org/${orgId}/move`, {
     method: "POST",

@@ -21,12 +21,32 @@ use crate::core::rbac;
 
 const ALGORITHM: Algorithm = Algorithm::HS256;
 const TOKEN_TTL_SECONDS: u64 = 7 * 24 * 60 * 60;
+/// Lifetime of a [`MapClaims`] token -- short, since nothing can revoke one
+/// early: it's checked by the map's AppSync authorizer alone, with no
+/// database to ask whether its holder is still a member.
+pub const MAP_TOKEN_TTL_SECONDS: u64 = 15 * 60;
 
 /// JWT payload.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Claims {
     /// The `users.id` the token was issued to.
     pub sub: String,
+    pub exp: u64,
+}
+
+/// `aud` of a map token -- what keeps one from also passing as a bearer
+/// token: [`verify`] expects no audience, so it rejects any token that
+/// names one.
+const MAP_AUDIENCE: &str = "map";
+
+/// Payload of a map token: `sub` may publish to, and subscribe to, the
+/// office map's realtime channels for `org_id` only -- see
+/// `features::map::realtime`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MapClaims {
+    pub sub: String,
+    pub org_id: String,
+    pub aud: String,
     pub exp: u64,
 }
 
@@ -95,7 +115,43 @@ pub async fn verify(token: &str) -> Result<Claims, AuthError> {
     })
 }
 
-fn now() -> u64 {
+/// Mint a [`MapClaims`] token for `user_id` in `org_id`, valid for
+/// [`MAP_TOKEN_TTL_SECONDS`]. The caller has already checked membership.
+pub(crate) fn issue_map_token(user_id: &str, org_id: &str) -> Result<String, AuthError> {
+    let claims = MapClaims {
+        sub: user_id.to_string(),
+        org_id: org_id.to_string(),
+        aud: MAP_AUDIENCE.to_string(),
+        exp: now() + MAP_TOKEN_TTL_SECONDS,
+    };
+    encode(
+        &Header::new(ALGORITHM),
+        &claims,
+        &EncodingKey::from_secret(signing_key().as_bytes()),
+    )
+    .map_err(|_| AuthError::InvalidToken)
+}
+
+/// Verify a map token into its [`MapClaims`]: signature and expiry only,
+/// no database -- it runs in the authorizer, on every realtime connect,
+/// subscribe and publish AppSync hasn't cached yet.
+pub fn verify_map_token(token: &str) -> Result<MapClaims, AuthError> {
+    let mut validation = Validation::new(ALGORITHM);
+    validation.set_required_spec_claims(&["exp", "sub", "aud"]);
+    validation.set_audience(&[MAP_AUDIENCE]);
+    decode::<MapClaims>(
+        token,
+        &DecodingKey::from_secret(signing_key().as_bytes()),
+        &validation,
+    )
+    .map(|data| data.claims)
+    .map_err(|err| match err.kind() {
+        jsonwebtoken::errors::ErrorKind::ExpiredSignature => AuthError::ExpiredToken,
+        _ => AuthError::InvalidToken,
+    })
+}
+
+pub fn now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .expect("system clock is before the unix epoch")
@@ -164,5 +220,23 @@ mod tests {
             .await
             .expect("a freshly issued token must verify");
         assert_eq!(claims.sub, "user-123");
+    }
+
+    #[tokio::test]
+    async fn map_tokens_verify_as_map_tokens_only() {
+        let token = issue_map_token("user-123", "org-1").expect("HS256 encode should not fail");
+        let claims = verify_map_token(&token).expect("a fresh map token must verify");
+        assert_eq!(claims.sub, "user-123");
+        assert_eq!(claims.org_id, "org-1");
+        assert!(
+            verify(&token).await.is_err(),
+            "a map token is not a bearer token"
+        );
+
+        let bearer = issue("user-123").expect("HS256 encode should not fail");
+        assert!(
+            verify_map_token(&bearer).is_err(),
+            "a bearer token is not a map token"
+        );
     }
 }

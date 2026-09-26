@@ -71,6 +71,9 @@ resource "aws_lambda_function" "api" {
       # Shared secret POST /chime/events checks the EventBridge API
       # destination's header against -- see chime.tf.
       CHIME_WEBHOOK_SECRET = random_password.chime_webhook_secret.result
+      # AppSync Events host the office map's live moves go through -- see
+      # map_events.tf. Unset (locally), they ride the messenger instead.
+      MAP_EVENTS_ENDPOINT = local.map_events_endpoint
     }
   }
 

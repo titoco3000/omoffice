@@ -27,6 +27,14 @@
 //! stops (a cooldown passes with nothing pending), and whatever cell is
 //! unsaved when the canvas unmounts -- so a held key's every step costs a
 //! push, not a database write.
+//!
+//! Where a move is broadcast depends on the backend: with an AppSync Events
+//! API (`GET .../realtime` answers with an endpoint), every move is
+//! published there directly (`mapEvents.js`) and received from there, and
+//! only the stored ones are posted to `POST .../move` at all. Without one
+//! (a local run), every move is posted, and the backend broadcasts it over
+//! `MAP_MOVE_CHANNEL` -- which is also the path used until `realtime` has
+//! answered.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { decodeJwt } from "./jwt";
@@ -35,9 +43,11 @@ import {
   MAP_ACTIVE_CHANNEL,
   MAP_MOVE_CHANNEL,
   OFFICE_SIZE,
+  getMapRealtime,
   listMapPositions,
   moveInMap,
 } from "./map";
+import { openMapEvents } from "./mapEvents";
 import { useMapProximity } from "./useMapProximity";
 import { useOrgSession } from "../org/OrgSessionContext";
 
@@ -53,6 +63,11 @@ const STEP_MS = 1000 / USER_SPEED;
 const POLL_MS = 30;
 // At most one stored move per this long while moving -- see the module doc.
 const PERSIST_MS = 1000;
+// Fetch a fresh map token this long before the current one expires, and
+// reconnect with it.
+const TOKEN_REFRESH_MARGIN_MS = 60 * 1000;
+// Wait before retrying a failed `realtime` fetch or a dropped socket.
+const REALTIME_RETRY_MS = 3000;
 
 const ARROW_DELTA = {
   ArrowUp: { dx: 0, dy: -1 },
@@ -106,24 +121,92 @@ export function useMapSession(token, orgId, members) {
     return result;
   }, [members, basePositions, overrides]);
 
+  // Someone else's live move, from either transport. Self already applied
+  // its own optimistically in `applyMove`, straight off what was actually
+  // sent -- not off the echo, which can arrive out of order (with no
+  // guarantee an earlier step's echo lands first). Applying it here too
+  // let a late, stale echo stomp a newer optimistic position, which read
+  // as a one-cell rollback mid-walk.
+  const receiveMove = useCallback(
+    (userId, x, y) => {
+      if (userId === myId) return;
+      setOverrides((prev) => ({ ...prev, [userId]: { x, y } }));
+    },
+    [myId],
+  );
+
   useEffect(() => {
     if (!orgId) return;
     return messenger.on(MAP_MOVE_CHANNEL, (message) => {
       if (message.org_id !== orgId) return;
-      // Self already applied this optimistically in `applyMove`, straight
-      // off what was actually sent -- not off this broadcast, which can
-      // arrive out of order (each held-key step fires its own HTTP
-      // request, with no guarantee an earlier one's response/broadcast
-      // lands first). Applying it here too let a late, stale broadcast
-      // stomp a newer optimistic position, which read as a one-cell
-      // rollback mid-walk.
-      if (message.user_id === myId) return;
-      setOverrides((prev) => ({
-        ...prev,
-        [message.user_id]: { x: message.x, y: message.y },
-      }));
+      receiveMove(message.user_id, message.x, message.y);
     });
-  }, [orgId, myId]);
+  }, [orgId, receiveMove]);
+
+  // The AppSync connection moves are published to, once `realtime` says
+  // there is one -- null until then, and for good without one (see the
+  // module doc). A connection is replaced with a fresh token shortly before
+  // the current token expires: the new one opens alongside, and the old one
+  // is closed once the new one is subscribed, so no move goes unheard in
+  // between.
+  const mapEventsRef = useRef(null);
+  useEffect(() => {
+    if (!orgId || !myId) return;
+    let cancelled = false;
+    let timer = null;
+    let current = null;
+    // Connections a newer one is replacing, closed once it's subscribed.
+    let stale = [];
+    const retry = () => {
+      clearTimeout(timer);
+      timer = setTimeout(connect, REALTIME_RETRY_MS);
+    };
+    async function connect() {
+      let realtime;
+      try {
+        realtime = await getMapRealtime(token, orgId);
+      } catch {
+        if (!cancelled) retry();
+        return;
+      }
+      if (cancelled || !realtime.endpoint) return;
+      if (current) stale.push(current);
+      const next = openMapEvents({
+        endpoint: realtime.endpoint,
+        token: realtime.token,
+        orgId,
+        userId: myId,
+        onMove: receiveMove,
+        onReady: () => {
+          stale.forEach((old) => old.close());
+          stale = [];
+        },
+        onClose: () => {
+          if (cancelled || current !== next) return;
+          retry();
+        },
+      });
+      current = next;
+      mapEventsRef.current = next;
+      const expiresAt = (decodeJwt(realtime.token)?.exp ?? 0) * 1000;
+      clearTimeout(timer);
+      timer = setTimeout(
+        connect,
+        Math.max(
+          REALTIME_RETRY_MS,
+          expiresAt - Date.now() - TOKEN_REFRESH_MARGIN_MS,
+        ),
+      );
+    }
+    connect();
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+      current?.close();
+      stale.forEach((old) => old.close());
+      mapEventsRef.current = null;
+    };
+  }, [token, orgId, myId, receiveMove]);
 
   // Report this tab's canvas as actually mounted -- narrows who a move
   // reaches to tabs that would actually render it, see `features::map`'s
@@ -159,7 +242,10 @@ export function useMapSession(token, orgId, members) {
       if (persist) lastPersistAtRef.current = Date.now();
       dirtyRef.current = !persist;
       setOverrides((prev) => ({ ...prev, [myId]: target }));
-      moveInMap(token, orgId, target.x, target.y, persist).catch(() => {});
+      const mapEvents = mapEventsRef.current;
+      mapEvents?.publish(target.x, target.y);
+      if (persist || !mapEvents)
+        moveInMap(token, orgId, target.x, target.y, persist).catch(() => {});
     },
     [token, orgId, myId],
   );

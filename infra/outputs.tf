@@ -73,7 +73,19 @@ output "backend_env_file" {
     MESSENGER_MANAGEMENT_ENDPOINT=${local.messenger_management_endpoint}
     MEDIA_BUCKET=${aws_s3_bucket.media.bucket}
     CHIME_WEBHOOK_SECRET=${nonsensitive(random_password.chime_webhook_secret.result)}
+    MAP_EVENTS_ENDPOINT=${local.map_events_endpoint}
+    MAP_AUTHORIZER_FUNCTION_NAME=${aws_lambda_function.map_authorizer.function_name}
   EOT
+}
+
+output "map_events_endpoint" {
+  description = "AppSync Events HTTP host the office map's live moves go through."
+  value       = local.map_events_endpoint
+}
+
+output "map_authorizer_function_name" {
+  description = "Lambda the backend deploy pushes the map-authorizer binary to."
+  value       = aws_lambda_function.map_authorizer.function_name
 }
 
 output "frontend_bucket" {

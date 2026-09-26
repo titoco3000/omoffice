@@ -20,6 +20,9 @@ STAGE := dev
 endif
 ENV_FILE := .env.$(STAGE)
 ZIP      := target/lambda/$(BIN)/bootstrap.zip
+# The office map's AppSync authorizer -- same crate, same build, its own
+# Lambda (see map_authorizer.rs).
+AUTHORIZER_ZIP := target/lambda/map-authorizer/bootstrap.zip
 
 define REQUIRE_ENV
 @test -n "$$PROJECT" || { \
@@ -57,7 +60,7 @@ help:
 	@echo "make init                install toolchain + fetch deps"
 	@echo "make run [stage]         run locally on http://localhost:8000 (reloads on src edits; WATCH=0 disables)"
 	@echo "make build [stage]       cross-compile lambda zip ($(ARCH))"
-	@echo "make deploy [stage]      build + push code to the lambda from infra"
+	@echo "make deploy [stage]      build + push code to the lambdas from infra (API + map authorizer)"
 	@echo "make db-generate         diff schema.rs against the last generated migration, write any new one (local only, no stage)"
 	@echo "make db-status [stage]   which migrations are applied, and which are not"
 	@echo "make db-migrate [stage]  apply every pending migration"
@@ -110,6 +113,13 @@ deploy: build
 	    --zip-file "fileb://$(ZIP)" \
 	    --query 'LastUpdateStatus' --output text; \
 	  aws lambda wait function-updated --function-name "$$LAMBDA_FUNCTION_NAME"; \
+	  test -n "$$MAP_AUTHORIZER_FUNCTION_NAME" || { echo "error: MAP_AUTHORIZER_FUNCTION_NAME unset in $(ENV_FILE)"; exit 1; }; \
+	  echo "uploading $(AUTHORIZER_ZIP) -> $$MAP_AUTHORIZER_FUNCTION_NAME"; \
+	  aws lambda update-function-code \
+	    --function-name "$$MAP_AUTHORIZER_FUNCTION_NAME" \
+	    --zip-file "fileb://$(AUTHORIZER_ZIP)" \
+	    --query 'LastUpdateStatus' --output text; \
+	  aws lambda wait function-updated --function-name "$$MAP_AUTHORIZER_FUNCTION_NAME"; \
 	  echo "deployed $(STAGE): $$API_URL"
 
 .PHONY: test

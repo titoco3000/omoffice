@@ -2,6 +2,8 @@
 name = "omoffice-api"
 version = "0.1.0"
 edition = "2021"
+# Two binaries (see [[bin]] below): plain `cargo run` means the API server.
+default-run = "omoffice-api"
 
 # No src/ directory in this layout: main.rs sits directly in backend/, and
 # everything else -- core/, features/, router.rs, schema.rs -- is the library
@@ -15,6 +17,14 @@ path = "lib/lib.rs"
 name = "omoffice-api"
 path = "main.rs"
 
+# The office map's AppSync Events authorizer (`features::map::realtime`),
+# deployed as its own Lambda. Lambda-only: there is no AppSync locally, so
+# a plain `cargo build`/`make run` skips it.
+[[bin]]
+name = "map-authorizer"
+path = "map_authorizer.rs"
+required-features = ["lambda"]
+
 # `make run`/`cargo run` builds with no features: `core::communication::
 # web_messenger::local_web_socket` is the whole websocket story, and neither
 # `lambda_http` nor `aws-sdk-apigatewaymanagement` are even compiled in, let
@@ -23,7 +33,7 @@ path = "main.rs"
 # the two transport modules exists in a given binary -- see the module doc
 # on `core::communication::web_messenger`.
 [features]
-lambda = ["dep:lambda_http", "dep:aws-sdk-apigatewaymanagement"]
+lambda = ["dep:lambda_http", "dep:lambda_runtime", "dep:aws-sdk-apigatewaymanagement"]
 
 [dependencies]
 # TLS pinned to rustls/ring: aws-lc-rs (the default) needs cmake and a C
@@ -71,10 +81,15 @@ jsonwebtoken = { version = "11", default-features = false, features = ["rust_cry
 # `lambda_http::run` when the `lambda` feature is on. `optional`, not a
 # plain dependency: a local build has no use for it at all.
 lambda_http = { version = "1", optional = true }
+# `map-authorizer`'s entry point: an AppSync authorizer event is plain JSON,
+# not an HTTP request, so it takes the bare runtime rather than lambda_http.
+lambda_runtime = { version = "1", optional = true }
 # Lets `schema.rs` register each table into `orm::TABLES` at its own
 # declaration, in a linker section `orm::generate` reads -- no separate list
 # to keep in sync by hand.
 linkme = "0.3"
+# Only for `LevelFilter`, which sqlx's slow-statement logging takes.
+log = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sqlx = { version = "0.9", default-features = false, features = [

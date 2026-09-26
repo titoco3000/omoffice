@@ -23,6 +23,11 @@
 //!
 //! [`proximity`] is the map's other half: walking into someone starts or
 //! joins a meeting with them.
+//!
+//! [`realtime`] takes live moves off this Lambda altogether when an AppSync
+//! Events API is configured: clients publish to it and subscribe to it
+//! directly, and `POST .../move` only stores. [`MOVE_CHANNEL`] is then
+//! unused -- it is the fallback for a local run, with no AppSync to reach.
 
 use std::collections::{HashMap, HashSet};
 
@@ -33,13 +38,14 @@ use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::core::auth::Claims;
+use crate::core::auth::{AuthError, Claims};
 use crate::core::communication::web_messenger::{self, Messenger};
 use crate::core::data::db::{retry_on_conflict, Db, DbError};
 use crate::core::rbac::{self, RbacError};
 use crate::features::meetings::MeetingError;
 
 pub mod proximity;
+pub mod realtime;
 
 /// Cells per side of the (square) office grid -- a position is always
 /// bound to `0..OFFICE_SIZE`, see [`set_position`].
@@ -61,6 +67,13 @@ pub enum MapError {
     Database(DbError),
     Rbac(RbacError),
     Meeting(MeetingError),
+    Auth(AuthError),
+}
+
+impl From<AuthError> for MapError {
+    fn from(err: AuthError) -> Self {
+        Self::Auth(err)
+    }
 }
 
 impl From<DbError> for MapError {
@@ -95,6 +108,7 @@ impl IntoResponse for MapError {
             Self::Database(err) => err.into_response(),
             Self::Rbac(err) => err.into_response(),
             Self::Meeting(err) => err.into_response(),
+            Self::Auth(err) => err.into_response(),
         }
     }
 }
@@ -276,10 +290,12 @@ async fn move_audience(db: &Db, org_id: &str) -> Result<Vec<String>, MapError> {
 struct MoveBody {
     x: i32,
     y: i32,
-    /// Whether to also write this cell to `map_positions`. Every move is
-    /// broadcast, but only some are stored: the frontend sets this when
-    /// movement stops, at most once a second while moving, and on canvas
-    /// unmount -- so a held key's every step costs a push, not a write.
+    /// Whether to also write this cell to `map_positions`. Only some moves
+    /// are stored: the frontend sets this when movement stops, at most once
+    /// a second while moving, and on canvas unmount -- so a held key's every
+    /// step costs a push, not a write. With AppSync configured (see
+    /// [`realtime`]) the frontend sends only these; the pushes go to AppSync
+    /// directly.
     #[serde(default)]
     persist: bool,
 }
@@ -301,10 +317,11 @@ async fn positions_route(
     Ok(Json(json!({ "positions": positions })))
 }
 
-/// `POST /map/org/{org_id}/move` -- push the caller's (clamped) cell to
-/// whoever's tab is actually watching the canvas right now (online *and*
-/// `map_active`, not the whole org) -- see [`move_audience`] -- and, only
-/// if `persist` is set, store it too, concurrently with the push.
+/// `POST /map/org/{org_id}/move` -- store the caller's (clamped) cell if
+/// `persist` is set. Only without AppSync (see [`realtime`]) does this also
+/// push it to whoever's tab is actually watching the canvas right now
+/// (online *and* `map_active`, not the whole org) -- see [`move_audience`]
+/// -- before the write, so the push never waits on it.
 async fn move_route(
     Extension(db): Extension<Db>,
     Extension(messenger): Extension<Messenger>,
@@ -312,17 +329,23 @@ async fn move_route(
     Path(org_id): Path<String>,
     Json(body): Json<MoveBody>,
 ) -> Result<Json<Value>, MapError> {
-    rbac::require_member(&db, &org_id, &claims.sub).await?;
+    let started = std::time::Instant::now();
     let (x, y) = (clamp(body.x), clamp(body.y));
 
-    let persist = async {
-        if body.persist {
-            set_position(&db, &org_id, &claims.sub, x, y).await?;
+    // The membership check and the audience lookup are both reads, so they
+    // share one round trip; nothing is sent or written until the check has
+    // passed.
+    let audience = async {
+        if realtime::endpoint().is_some() {
+            return Ok(None);
         }
-        Ok::<_, MapError>(())
+        Ok::<_, MapError>(Some(move_audience(&db, &org_id).await?))
     };
-    let broadcast = async {
-        let audience = move_audience(&db, &org_id).await?;
+    let (_, audience) = tokio::try_join!(
+        async { Ok::<_, MapError>(rbac::require_member(&db, &org_id, &claims.sub).await?) },
+        audience,
+    )?;
+    if let Some(audience) = audience {
         messenger
             .send(
                 MOVE_CHANNEL,
@@ -330,11 +353,13 @@ async fn move_route(
                 json!({ "org_id": org_id, "user_id": claims.sub, "x": x, "y": y }),
             )
             .await;
-        Ok::<_, MapError>(())
-    };
-    let (persisted, broadcasted) = tokio::join!(persist, broadcast);
-    persisted?;
-    broadcasted?;
+    }
+    if body.persist {
+        set_position(&db, &org_id, &claims.sub, x, y).await?;
+    }
+    if started.elapsed() > std::time::Duration::from_millis(300) {
+        tracing::warn!("map: slow move for {}: {:?}", claims.sub, started.elapsed());
+    }
     Ok(Json(json!({ "x": x, "y": y })))
 }
 
@@ -345,6 +370,7 @@ pub fn routes() -> Router {
         .route("/org/{org_id}/positions", get(positions_route))
         .route("/org/{org_id}/move", post(move_route))
         .route("/org/{org_id}/proximity", post(proximity::route))
+        .route("/org/{org_id}/realtime", get(realtime::route))
 }
 
 /// Wire `map_active` to the messenger: a clean disconnect clears it
