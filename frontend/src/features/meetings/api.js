@@ -9,6 +9,7 @@ export const MEETING_CHAT_CHANNEL = "meeting_chat";
 export const MEETING_CONTROL_CHANNEL = "meeting_control";
 export const MEETING_ACCESS_REQUEST_CHANNEL = "meeting_access_request";
 export const MEETING_WAVE_CHANNEL = "meeting_wave";
+export const MEETING_BOARD_CHANNEL = "meeting_board";
 
 export const listMeetings = (token, orgId) =>
   apiFetch(`/meeting?org_id=${encodeURIComponent(orgId)}`, { token });

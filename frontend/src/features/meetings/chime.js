@@ -93,10 +93,14 @@ export function setSelfVideoElement(element) {
   }
 }
 
-/// Called with the current list of `{tileId, attendeeId, isContent}` for
-/// every video tile *other* than this tab's own, whenever one appears,
-/// changes or disappears. `isContent` marks a screen share rather than a
-/// camera.
+/// Called with the current list of `{tileId, attendeeId, externalUserId,
+/// isContent, isSelf}` for every video tile whenever one appears, changes
+/// or disappears -- every *remote* one (camera or screen share), plus this
+/// tab's own screen share if it's currently presenting one (`isSelf: true`,
+/// no `attendeeId`/`externalUserId` reported for it). The camera's own
+/// local tile is never in here -- that one binds straight to
+/// `setSelfVideoElement` instead, same as ever. `isContent` marks a screen
+/// share rather than a camera.
 export function onRemoteTiles(callback) {
   onRemoteTilesChange = callback;
 }
@@ -258,6 +262,16 @@ export async function connect(meetingInfo, attendeeInfo) {
   nextSession.audioVideo.addObserver({
     videoTileDidUpdate: (tileState) => {
       if (tileState.localTile) {
+        // A local *content* tile is this tab's own screen share -- surfaced
+        // through `remoteTiles` too (`isSelf: true`) so a content-tile
+        // overlay (the shared board) can mount over it same as it does over
+        // everyone else's, via `bindRemoteVideo`. The local camera tile
+        // takes the branch below instead, same as always.
+        if (tileState.isContent) {
+          remoteTiles.set(tileState.tileId, { isContent: true, isSelf: true });
+          notifyRemoteTiles();
+          return;
+        }
         if (selfVideoElement) {
           nextSession.audioVideo.bindVideoElement(
             tileState.tileId,

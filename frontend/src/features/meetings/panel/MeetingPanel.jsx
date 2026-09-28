@@ -106,16 +106,25 @@ export default function MeetingPanel({
         },
       };
     }),
-    ...contentTiles.map((tile) => ({
-      id: `content:${tile.tileId}`,
-      key: tile.tileId,
-      props: {
-        name: "Screen share",
-        videoRef: (el) => chime.bindRemoteVideo(tile.tileId, el),
-        hasVideo: true,
-        speaking: false,
-      },
-    })),
+    ...contentTiles.map((tile) => {
+      const ownerId = tile.isSelf
+        ? myId
+        : chime.externalToUserId(tile.externalUserId);
+      return {
+        id: `content:${tile.tileId}`,
+        key: tile.tileId,
+        props: {
+          name: tile.isSelf ? "Your screen" : "Screen share",
+          videoRef: (el) => chime.bindRemoteVideo(tile.tileId, el),
+          hasVideo: true,
+          speaking: false,
+          isContent: true,
+          meetingId: myMeetingId,
+          ownerId,
+          myId,
+        },
+      };
+    }),
   ];
 
   // A new screen share is pinned by default the moment it starts, but only

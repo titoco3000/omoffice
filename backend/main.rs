@@ -50,6 +50,7 @@ async fn main() {
     features::meetings::register(&messenger, db.clone());
     features::meetings::rooms::register(db.clone(), &chime);
     features::meetings::chat::register(&messenger, db.clone());
+    features::meetings::board::register(&messenger, db.clone());
     features::meetings::controls::register(&messenger, db.clone());
     features::meetings::access_requests::register(&messenger, db.clone());
     features::meetings::waves::register(&messenger, db.clone());

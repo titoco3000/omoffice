@@ -13,8 +13,10 @@
 //! small size used for the sidebar list of unpinned tiles once something
 //! is pinned -- see `MeetingPanel`.
 
+import { useRef } from "react";
 import { FiMaximize, FiMicOff, FiMinimize, FiVideoOff } from "react-icons/fi";
 import { useIsTouch } from "../../../core/hooks/useViewport";
+import BoardCanvas from "./BoardCanvas";
 
 export default function MeetingTile({
   name,
@@ -27,12 +29,26 @@ export default function MeetingTile({
   muted,
   pinned,
   fill,
+  isContent,
+  meetingId,
+  ownerId,
+  myId,
   onMute,
   onCameraOff,
   onPin,
 }) {
   const isTouch = useIsTouch();
   const hasControls = onMute || onCameraOff || onPin;
+  // A plain ref to the actual `<video>` element, alongside whatever ref the
+  // caller passed in (Chime's own bind callback) -- `BoardCanvas` reads
+  // `videoWidth`/`videoHeight` off it directly to work out the shared
+  // screen's letterboxed rect. Harmless to keep on every tile; only content
+  // tiles actually use it.
+  const videoElRef = useRef(null);
+  const bindVideoNode = (el) => {
+    videoElRef.current = el;
+    videoRef?.(el);
+  };
 
   // What shows in place of a camera feed: the user's own preferred picture
   // (org-scoped, already falling back to the global one -- see
@@ -91,12 +107,22 @@ export default function MeetingTile({
           {!hasVideo && <div className="absolute inset-0">{placeholder}</div>}
         </>
       ) : hasVideo ? (
-        <video
-          ref={videoRef}
-          autoPlay
-          playsInline
-          className="size-full object-cover"
-        />
+        <>
+          <video
+            ref={bindVideoNode}
+            autoPlay
+            playsInline
+            className={`size-full ${isContent ? "object-contain" : "object-cover"}`}
+          />
+          {isContent && (
+            <BoardCanvas
+              meetingId={meetingId}
+              ownerId={ownerId}
+              myId={myId}
+              videoRef={videoElRef}
+            />
+          )}
+        </>
       ) : (
         placeholder
       )}
@@ -112,7 +138,12 @@ export default function MeetingTile({
 
       {hasControls && (
         <div
-          className={`absolute inset-0 flex items-center justify-center gap-2 bg-black/40 opacity-0 transition-opacity ${
+          // `pointer-events-none` on the wrapper -- it's `inset-0` same as
+          // `BoardCanvas`'s own overlay, so left unset it would eat every
+          // click over the whole tile (blank corners included), not just
+          // its buttons, and a content tile's board toolbar/canvas sit
+          // underneath it in stacking order. Each button opts back in.
+          className={`pointer-events-none absolute inset-0 flex items-center justify-center gap-2 bg-black/40 opacity-0 transition-opacity ${
             isTouch
               ? "group-focus-within:opacity-100"
               : "group-hover:opacity-100"
@@ -123,7 +154,7 @@ export default function MeetingTile({
               onClick={onMute}
               disabled={muted}
               title="Mute"
-              className="flex items-center gap-1 rounded-card bg-surface/90 px-2 py-1 text-xs text-ink hover:bg-surface disabled:opacity-50 disabled:hover:bg-surface/90"
+              className="pointer-events-auto flex items-center gap-1 rounded-card bg-surface/90 px-2 py-1 text-xs text-ink hover:bg-surface disabled:opacity-50 disabled:hover:bg-surface/90"
             >
               <FiMicOff />
             </button>
@@ -133,7 +164,7 @@ export default function MeetingTile({
               onClick={onCameraOff}
               disabled={!hasVideo}
               title="Camera off"
-              className="flex items-center gap-1 rounded-card bg-surface/90 px-2 py-1 text-xs text-ink hover:bg-surface disabled:opacity-50 disabled:hover:bg-surface/90"
+              className="pointer-events-auto flex items-center gap-1 rounded-card bg-surface/90 px-2 py-1 text-xs text-ink hover:bg-surface disabled:opacity-50 disabled:hover:bg-surface/90"
             >
               <FiVideoOff />
             </button>
@@ -142,7 +173,7 @@ export default function MeetingTile({
             <button
               onClick={onPin}
               title={pinned ? "Unpin" : "Pin"}
-              className={`flex items-center gap-1 rounded-card bg-surface/90 px-2 py-1 text-xs hover:bg-surface ${
+              className={`pointer-events-auto flex items-center gap-1 rounded-card bg-surface/90 px-2 py-1 text-xs hover:bg-surface ${
                 pinned ? "text-brand" : "text-ink"
               }`}
             >
