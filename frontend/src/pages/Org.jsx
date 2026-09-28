@@ -1,13 +1,15 @@
 import { useState } from "react";
-import { useAuth } from "../auth/AuthContext";
-import { useOrgSession } from "../org/OrgSessionContext";
-import { navigate } from "../router/Router";
-import { renameOrg, deleteOrg } from "../lib/rbac";
-import { avatarUrl } from "../lib/avatars";
-import UsersManagement from "../components/UsersManagement";
-import AsyncButton from "../components/AsyncButton";
-import Avatar from "../components/Avatar";
-import AvatarUploadPanel from "../components/AvatarUploadPanel";
+import { useAuth } from "../core/auth/AuthContext";
+import { navigate } from "../core/Router";
+import {
+  useOrgSession,
+  UsersManagement,
+  renameOrg,
+  deleteOrg,
+} from "../features/org";
+import { avatarUrl, AvatarUploadPanel } from "../features/avatars";
+import AsyncButton from "../core/ui/AsyncButton";
+import Avatar from "../core/ui/Avatar";
 
 export default function Org() {
   const { token } = useAuth();

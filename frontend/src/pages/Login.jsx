@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import { useAuth } from "../auth/AuthContext";
-import { navigate } from "../router/Router";
-import { requestKey } from "../lib/rbac";
-import AsyncButton from "../components/AsyncButton";
+import { useAuth } from "../core/auth/AuthContext";
+import { navigate } from "../core/Router";
+import { requestKey } from "../features/org";
+import AsyncButton from "../core/ui/AsyncButton";
 
 // How long the explanation sits on screen before continuing on its own --
 // long enough to actually read it, short enough not to feel stuck.

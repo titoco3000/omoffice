@@ -1,14 +1,23 @@
 import { useEffect, useState } from "react";
-import { useAuth } from "../auth/AuthContext";
-import { useOrgSession } from "../org/OrgSessionContext";
-import { Link } from "../router/Router";
-import { me, renameMe, meInOrg, renameMeInOrg, leaveOrg } from "../lib/rbac";
-import { avatarUrl, removeAvatar } from "../lib/avatars";
-import ThemeToggle from "../theme/ThemeToggle";
-import GraphicsToggle from "../theme/GraphicsToggle";
-import AsyncButton from "../components/AsyncButton";
-import Avatar from "../components/Avatar";
-import AvatarUploadPanel from "../components/AvatarUploadPanel";
+import { useAuth } from "../core/auth/AuthContext";
+import { Link } from "../core/Router";
+import {
+  useOrgSession,
+  me,
+  renameMe,
+  meInOrg,
+  renameMeInOrg,
+  leaveOrg,
+} from "../features/org";
+import {
+  avatarUrl,
+  removeAvatar,
+  AvatarUploadPanel,
+} from "../features/avatars";
+import ThemeToggle from "../core/theme/ThemeToggle";
+import { MapModeToggle } from "../features/map";
+import AsyncButton from "../core/ui/AsyncButton";
+import Avatar from "../core/ui/Avatar";
 
 export default function Profile() {
   const { token, logout } = useAuth();
@@ -234,7 +243,7 @@ export default function Profile() {
 
       <section className="rounded-card border bg-surface p-5">
         <label className="block text-sm text-ink-muted">Graphics mode</label>
-        <GraphicsToggle className="mt-2" />
+        <MapModeToggle className="mt-2" />
       </section>
 
       {error && <p className="text-sm text-danger">{error}</p>}

@@ -1,5 +1,5 @@
-import { useAuth } from "../auth/AuthContext";
-import { Link } from "../router/Router";
+import { useAuth } from "../core/auth/AuthContext";
+import { Link } from "../core/Router";
 
 export default function Home() {
   const { token } = useAuth();

@@ -1,9 +1,8 @@
 import { useRef, useState } from "react";
-import { useAuth } from "../auth/AuthContext";
-import { useOrgSession } from "../org/OrgSessionContext";
-import { navigate } from "../router/Router";
-import { createOrg } from "../lib/rbac";
-import AsyncButton from "../components/AsyncButton";
+import { useAuth } from "../core/auth/AuthContext";
+import { navigate } from "../core/Router";
+import { useOrgSession, createOrg } from "../features/org";
+import AsyncButton from "../core/ui/AsyncButton";
 
 export default function OrgNew() {
   const { token } = useAuth();

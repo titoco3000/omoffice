@@ -1,21 +1,21 @@
 import { useState } from "react";
 import { FiUsers, FiX } from "react-icons/fi";
-import { Link } from "../router/Router";
-import { useAuth } from "../auth/AuthContext";
-import { useOrgSession } from "../org/OrgSessionContext";
-import { useGraphics } from "../theme/GraphicsContext";
-import { useIsMobile } from "../layout/useViewport";
-import OrgOnlineView from "../components/OrgOnlineView";
-import AsyncButton from "../components/AsyncButton";
-import MapCanvas from "../map/MapCanvas";
+import { Link } from "../core/Router";
+import { useAuth } from "../core/auth/AuthContext";
+import { useIsMobile } from "../core/hooks/useViewport";
+import AsyncButton from "../core/ui/AsyncButton";
+import { useOrgSession, OrgOnlineView } from "../features/org";
+import { useMapMode, MapCanvas } from "../features/map";
+import { useMeetingSessionContext } from "../features/meetings";
 
-// Graphics mode "map": the canvas is the whole page. Desktop gets the
+// Map mode "map": the canvas is the whole page. Desktop gets the
 // roster in `NavContainer`'s sidebar (see its `mode === "map"` check);
 // mobile has no sidebar, so a floating bottom-right toggle reveals it
 // in an overlay instead.
 function MapView() {
   const { token } = useAuth();
   const { myId, currentOrg, roster } = useOrgSession();
+  const meetingSession = useMeetingSessionContext();
   const isMobile = useIsMobile();
   const [rosterOpen, setRosterOpen] = useState(false);
 
@@ -40,7 +40,7 @@ function MapView() {
           </button>
           {rosterOpen && (
             <div className="absolute bottom-20 right-4 max-h-[70%] w-64 overflow-y-auto rounded-card border bg-surface p-3 shadow-lg">
-              <OrgOnlineView />
+              <OrgOnlineView meetingSession={meetingSession} />
             </div>
           )}
         </>
@@ -50,9 +50,10 @@ function MapView() {
 }
 
 export default function InPage() {
-  const { orgs, currentOrg, session } = useOrgSession();
-  const { mode } = useGraphics();
-  const { myMeetingId, create } = session;
+  const { orgs, currentOrg } = useOrgSession();
+  const { mode } = useMapMode();
+  const meetingSession = useMeetingSessionContext();
+  const { myMeetingId, create } = meetingSession;
 
   if (orgs.length === 0) {
     return (
@@ -95,7 +96,7 @@ export default function InPage() {
             </AsyncButton>
           </div>
           <div className="mt-4">
-            <OrgOnlineView />
+            <OrgOnlineView meetingSession={meetingSession} />
           </div>
         </section>
       ) : (
