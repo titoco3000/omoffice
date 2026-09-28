@@ -1,4 +1,3 @@
-- mobile map controls 
 - shared drawing
 - walls
 - map editing

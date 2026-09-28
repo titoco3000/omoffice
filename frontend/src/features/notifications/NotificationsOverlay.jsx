@@ -17,14 +17,39 @@
 //! its own explicit button, since that's a real, not-undoable action;
 //! dismissing an access request or a wave (both already frontend-only, see
 //! `useMeetingSession`) is where the X and "no thanks" are the same thing.
+//!
+//! Every bubble that newly appears plays `notification.mp3` -- see
+//! `useChime` below.
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { FiX } from "react-icons/fi";
 import { useAuth } from "../../core/auth/AuthContext";
 import { useOrgSession, preferredName, useOrgInvites } from "../org";
 import { useMeetingSessionContext } from "../meetings";
 import { useIsMobile, useIsPortrait } from "../../core/hooks/useViewport";
 import AsyncButton from "../../core/ui/AsyncButton";
+import notificationSoundUrl from "./notification.mp3";
+
+// Plays the notification sound whenever `keys` gains one it didn't have on
+// the previous render -- one sound per batch, however many arrived. Keys
+// already there when the page loads count too; the browser's autoplay
+// policy mutes those anyway until the user has interacted with the page,
+// which is why a rejected `play()` is just swallowed.
+function useChime(keys) {
+  const seenRef = useRef(new Set());
+  const audioRef = useRef(null);
+  const signature = keys.join("|");
+
+  useEffect(() => {
+    const fresh = keys.some((key) => !seenRef.current.has(key));
+    seenRef.current = new Set(keys);
+    if (!fresh) return;
+    audioRef.current ??= new Audio(notificationSoundUrl);
+    audioRef.current.currentTime = 0;
+    audioRef.current.play().catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [signature]);
+}
 
 function Bubble({ onClose, children }) {
   return (
@@ -180,6 +205,16 @@ export default function NotificationsOverlay() {
   const meetingInviteList = meetingInvites.filter(
     (invite) => !dismissedIds.has(invite.id),
   );
+
+  // Access requests and waves are keyed by their timestamp too: a repeat
+  // from the same person refreshes it, and that's worth a sound again. The
+  // URL invite isn't here -- whoever sees it just opened that link.
+  useChime([
+    ...orgInviteList.map((invite) => `org:${invite.id}`),
+    ...meetingInviteList.map((invite) => `meeting:${invite.id}`),
+    ...accessRequests.map((r) => `access:${r.userId}:${r.at}`),
+    ...waves.map((w) => `wave:${w.userId}:${w.at}`),
+  ]);
 
   const empty =
     !showUrlInvite &&
