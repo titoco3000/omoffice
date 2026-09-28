@@ -78,15 +78,18 @@ export function setAudioElement(element) {
 }
 
 /// The `<video>` element this tab's own camera is bound to -- a chimeless
-/// preview if no session is live, the local tile if one is.
+/// preview if no session is live, the local tile if one is. With no session,
+/// the element coming and going is also what acquires and releases the
+/// camera itself (see `syncCamera`).
 export function setSelfVideoElement(element) {
   selfVideoElement = element;
-  if (!cameraOn || !element) return;
+  if (!cameraOn) return;
   if (session) {
     const tile = session.audioVideo.getLocalVideoTile();
-    if (tile) session.audioVideo.bindVideoElement(tile.id(), element);
+    if (tile && element)
+      session.audioVideo.bindVideoElement(tile.id(), element);
   } else {
-    deviceController.startVideoPreviewForVideoInput(element);
+    syncCamera().catch(() => {});
   }
 }
 
@@ -129,8 +132,7 @@ async function ensureAudioInput() {
   if (mics[0]) await deviceController.startAudioInput(mics[0].deviceId);
 }
 
-/// Release this tab's microphone hardware -- called on a full leave, same
-/// as `setCameraOn(false)` releases the camera. Without this the mic device
+/// Release this tab's microphone hardware -- called on a full leave. Without this the mic device
 /// stayed open (browser still shows the tab as using it) even after the
 /// meeting ended, since nothing ever called the matching `stopAudioInput`.
 /// `micMuted` is left alone, same as `cameraOn` is for the camera, so the
@@ -139,30 +141,58 @@ export async function releaseMic() {
   await deviceController.stopAudioInput();
 }
 
+// Whether the camera hardware is currently acquired -- separate from
+// `cameraOn`, which is only the wish: with no session and no element to
+// preview into, nothing would see the camera, so it's released even while
+// `cameraOn` stays true.
+let cameraInputOn = false;
+let cameraQueue = Promise.resolve();
+
+async function applyCamera() {
+  const wanted = cameraOn && (session !== null || selfVideoElement !== null);
+  if (!wanted) {
+    if (session) session.audioVideo.stopLocalVideoTile();
+    if (selfVideoElement)
+      deviceController.stopVideoPreviewForVideoInput(selfVideoElement);
+    if (cameraInputOn) {
+      cameraInputOn = false;
+      await deviceController.stopVideoInput();
+    }
+    return;
+  }
+
+  if (!cameraInputOn) {
+    const cameras = await deviceController.listVideoInputDevices();
+    if (cameras[0]) await deviceController.startVideoInput(cameras[0].deviceId);
+    cameraInputOn = true;
+  }
+
+  if (session) {
+    session.audioVideo.startLocalVideoTile();
+    // The element gets bound once `videoTileDidUpdate` reports the local
+    // tile's id, in `connect`'s observer.
+  } else {
+    deviceController.startVideoPreviewForVideoInput(selfVideoElement);
+  }
+}
+
+// Bring the camera hardware and preview in line with `cameraOn`, `session`
+// and `selfVideoElement` as they are by the time this runs. Queued, so
+// overlapping calls (an element swap mid-`startVideoInput`) settle in
+// order rather than racing each other.
+function syncCamera() {
+  const run = cameraQueue.then(applyCamera);
+  cameraQueue = run.catch(() => {});
+  return run;
+}
+
 /// Turn this tab's own camera on or off -- works the same whether or not a
 /// Chime session is currently live, which is what keeps a chimeless
 /// meeting's preview and a connected meeting's local tile behaving
 /// identically from the caller's point of view.
 export async function setCameraOn(on) {
   cameraOn = on;
-  if (!on) {
-    if (session) session.audioVideo.stopLocalVideoTile();
-    if (selfVideoElement)
-      deviceController.stopVideoPreviewForVideoInput(selfVideoElement);
-    await deviceController.stopVideoInput();
-    return;
-  }
-
-  const cameras = await deviceController.listVideoInputDevices();
-  if (cameras[0]) await deviceController.startVideoInput(cameras[0].deviceId);
-
-  if (session) {
-    session.audioVideo.startLocalVideoTile();
-    // The element gets bound once `videoTileDidUpdate` reports the local
-    // tile's id, in `connect`'s observer.
-  } else if (selfVideoElement) {
-    deviceController.startVideoPreviewForVideoInput(selfVideoElement);
-  }
+  await syncCamera();
 }
 
 export function isCameraOn() {
@@ -257,9 +287,7 @@ export async function connect(meetingInfo, attendeeInfo) {
     // by the time its own stop finishes; a stale resume here would stomp on
     // that new one's already-bound tile instead of the preview.
     audioVideoDidStop: () => {
-      if (!session && cameraOn && selfVideoElement) {
-        deviceController.startVideoPreviewForVideoInput(selfVideoElement);
-      }
+      if (!session && cameraOn) syncCamera().catch(() => {});
     },
   });
   nextSession.audioVideo.addContentShareObserver({
@@ -315,11 +343,7 @@ export async function connect(meetingInfo, attendeeInfo) {
   session.audioVideo.start();
 
   if (micMuted) session.audioVideo.realtimeMuteLocalAudio();
-  if (cameraOn) {
-    const cameras = await deviceController.listVideoInputDevices();
-    if (cameras[0]) await deviceController.startVideoInput(cameras[0].deviceId);
-    session.audioVideo.startLocalVideoTile();
-  }
+  if (cameraOn) await syncCamera();
 
   return session;
 }
@@ -347,9 +371,7 @@ export async function disconnect() {
     // Already torn down (the room was cleared out from under it, say) --
     // nothing left to stop, so `audioVideoDidStop` won't fire either;
     // resume the preview ourselves.
-    if (cameraOn && selfVideoElement) {
-      deviceController.startVideoPreviewForVideoInput(selfVideoElement);
-    }
+    if (cameraOn) syncCamera().catch(() => {});
   }
 }
 

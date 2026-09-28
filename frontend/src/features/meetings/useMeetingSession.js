@@ -19,10 +19,19 @@
 //! `leaveByUser` -- the office map (`features/map`) uses them to walk the
 //! avatar over to whoever was joined, or away from the meeting just left,
 //! whichever layout the click came from.
+//!
+//! Camera on/off and mic muted/unmuted are a standing preference for the
+//! tab, not per-meeting state: carried from one meeting into the next, but
+//! not across a reload (both start off). Only the hardware is released on
+//! leave -- the preference stays whatever it last was. Except that joining
+//! on this user's own initiative (`create`, `join`, `acceptInvite`, walking
+//! up to someone on the map via `followJoin`) always unmutes the mic; a
+//! forced join keeps whatever it was.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { messenger } from "../../core/messenger";
 import { decodeJwt } from "../../core/jwt";
+import { useIsMobile } from "../../core/hooks/useViewport";
 import * as chime from "./chime";
 import {
   IDLE_AFTER_SECONDS,
@@ -51,6 +60,9 @@ const EXPECT_JOIN_MS = 15000;
 // How long after leaving a meeting a room push for it is still taken as a
 // late echo of that meeting, not as the backend putting this tab back in.
 const LEFT_RECENTLY_MS = 5000;
+// Desktop's shorter take on `IDLE_AFTER_SECONDS` for a meeting this tab
+// sits in alone -- see the idle-leave effect at the bottom.
+const DESKTOP_IDLE_AFTER_SECONDS = 3;
 
 export function useMeetingSession(token, orgId) {
   const audioRef = useRef(null);
@@ -79,7 +91,7 @@ export function useMeetingSession(token, orgId) {
   // before there's anything to key state off yet.
   const [creating, setCreating] = useState(false);
   const [cameraOn, setCameraOnState] = useState(false);
-  const [micMuted, setMicMutedState] = useState(false);
+  const [micMuted, setMicMutedState] = useState(true);
   const [sharingScreen, setSharingScreen] = useState(false);
   const [remoteTiles, setRemoteTiles] = useState([]); // [{tileId, attendeeId, externalUserId, isContent}]
   const [speakingUserIds, setSpeakingUserIds] = useState(new Set());
@@ -104,6 +116,19 @@ export function useMeetingSession(token, orgId) {
   // rather than piling up, and the list resets whenever `myMeetingId` does.
   const [accessRequests, setAccessRequests] = useState([]);
   const myId = decodeJwt(token)?.sub;
+  const isMobile = useIsMobile();
+
+  // Camera/mic changes all go through these, whoever asked for them (this
+  // user or a remote mute) -- see the module doc.
+  const applyCamera = async (on) => {
+    await chime.setCameraOn(on);
+    setCameraOnState(on);
+  };
+
+  const applyMicMuted = async (muted) => {
+    await chime.setMicMuted(muted);
+    setMicMutedState(muted);
+  };
 
   // Mirrors `myMeetingId` for the unmount cleanup below, which is set up
   // once and would otherwise only ever see whatever it was at that moment,
@@ -127,6 +152,9 @@ export function useMeetingSession(token, orgId) {
   const leftRef = useRef(null);
 
   useEffect(() => {
+    // Match the initial state above -- `chime.js` outlives this hook across
+    // a logout/login, so it may still hold the last session's values.
+    chime.setMicMuted(true);
     chime.onRemoteTiles(setRemoteTiles);
     chime.onScreenShareStopped(() => setSharingScreen(false));
     chime.onSpeakingChange(setSpeakingUserIds);
@@ -188,14 +216,13 @@ export function useMeetingSession(token, orgId) {
   };
 
   // Drops out of the meeting entirely -- leaving on purpose, the meeting
-  // ending, or it disappearing from under this tab -- so the camera and mic
-  // are released too, not just the Chime session.
+  // ending, or it disappearing from under this tab -- so the mic is
+  // released too, not just the Chime session. The camera follows on its
+  // own once nothing is showing it anymore (see `chime.js`); on desktop the
+  // sidebar keeps previewing it while `cameraOn` stays set.
   const teardownMedia = async () => {
-    await chime.setCameraOn(false);
     await chime.releaseMic();
     await chime.disconnect();
-    setCameraOnState(false);
-    setMicMutedState(false);
     setSharingScreen(false);
   };
 
@@ -336,13 +363,8 @@ export function useMeetingSession(token, orgId) {
     if (!myMeetingId) return;
     return messenger.on(MEETING_CONTROL_CHANNEL, async (message) => {
       if (message.meeting_id !== myMeetingId) return;
-      if (message.action === "mute") {
-        await chime.setMicMuted(true);
-        setMicMutedState(true);
-      } else if (message.action === "camera_off") {
-        await chime.setCameraOn(false);
-        setCameraOnState(false);
-      }
+      if (message.action === "mute") await applyMicMuted(true);
+      else if (message.action === "camera_off") await applyCamera(false);
     });
   }, [myMeetingId]);
 
@@ -373,6 +395,7 @@ export function useMeetingSession(token, orgId) {
   useEffect(() => {
     return () => {
       teardownMedia();
+      chime.setCameraOn(false);
       const meetingId = myMeetingIdRef.current;
       if (meetingId) leaveMeeting(token, meetingId).catch(() => {});
     };
@@ -398,6 +421,7 @@ export function useMeetingSession(token, orgId) {
   const create = async (inviteOnly = false) => {
     setError(null);
     setCreating(true);
+    await applyMicMuted(false);
     try {
       const { meeting } = await createMeeting(token, orgId, inviteOnly);
       // No room yet -- nobody else is in it. The frontend just shows
@@ -422,6 +446,7 @@ export function useMeetingSession(token, orgId) {
     setError(null);
     setMyMeetingId(meetingId);
     setRoomStatus("connecting");
+    await applyMicMuted(false);
     try {
       const data = await joinMeeting(token, meetingId);
       await applyJoinResponse(meetingId, data);
@@ -456,20 +481,16 @@ export function useMeetingSession(token, orgId) {
   // (`features::map::proximity`). The backend has already taken this
   // user out of whatever meeting they were in before, so there's nothing to
   // `leave` here -- `chime.connect` drops the old session itself. Connects
-  // immediately, always muted and with the camera off regardless of
-  // whatever this tab's own preference was.
+  // immediately, with this tab's own camera/mic preference, same as any
+  // other join (see the module doc).
   useEffect(
     () =>
       messenger.on(MEETING_FORCE_CHANNEL, async (message) => {
         expectedJoinRef.current = null;
         setMyMeetingId(message.meeting_id);
         setRoomStatus("connecting");
-        await chime.setCameraOn(false);
-        await chime.setMicMuted(true);
         try {
           await chime.connect(message.Meeting, message.Attendee);
-          setCameraOnState(false);
-          setMicMutedState(true);
           setRoomStatus("connected");
         } catch (err) {
           setError(err.message);
@@ -505,6 +526,7 @@ export function useMeetingSession(token, orgId) {
       setMyMeetingId(meetingId);
       setRoomStatus("connecting");
     }
+    await applyMicMuted(false);
     try {
       const data = await acceptMeetingInvite(token, inviteId);
       await applyJoinResponse(data.meeting_id ?? meetingId, data);
@@ -617,6 +639,8 @@ export function useMeetingSession(token, orgId) {
       revertExpectedJoin();
       return;
     }
+    // Walking up to someone is this user's own doing -- see the module doc.
+    await applyMicMuted(false);
     if (roomPushedForRef.current === data.meeting_id) {
       // Already connected (or connecting) off a room push -- see
       // `roomPushedForRef`. Connecting again would just drop and redo it.
@@ -663,20 +687,14 @@ export function useMeetingSession(token, orgId) {
   };
 
   const toggleCamera = async () => {
-    const next = !cameraOn;
     try {
-      await chime.setCameraOn(next);
-      setCameraOnState(next);
+      await applyCamera(!cameraOn);
     } catch (err) {
       setError(err.message);
     }
   };
 
-  const toggleMic = async () => {
-    const next = !micMuted;
-    await chime.setMicMuted(next);
-    setMicMutedState(next);
-  };
+  const toggleMic = () => applyMicMuted(!micMuted);
 
   const toggleScreenShare = async () => {
     try {
@@ -704,13 +722,18 @@ export function useMeetingSession(token, orgId) {
   // own idle clock the same way, so leaving here too would just mean
   // inviting someone silently kicks the inviter out from under their own
   // invite, then starts a whole new meeting the next time they try.
+  //
+  // Desktop leaves sooner (`DESKTOP_IDLE_AFTER_SECONDS`): a lone meeting
+  // there is mostly a leftover -- someone walked off on the map or everyone
+  // else hung up -- not someone waiting on a phone for others to arrive.
   useEffect(() => {
     if (roomStatus !== "waiting") return;
     if (meetings.find((m) => m.id === myMeetingId)?.pending_invites) return;
-    const timer = setTimeout(() => leave(), IDLE_AFTER_SECONDS * 1000);
+    const seconds = isMobile ? IDLE_AFTER_SECONDS : DESKTOP_IDLE_AFTER_SECONDS;
+    const timer = setTimeout(() => leave(), seconds * 1000);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [roomStatus, myMeetingId, meetings]);
+  }, [roomStatus, myMeetingId, meetings, isMobile]);
 
   return {
     audioRef,

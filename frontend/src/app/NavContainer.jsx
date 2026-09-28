@@ -3,12 +3,16 @@
 //! mobile. `OrgOnlineView` lives in the desktop sidebar only, and is hidden
 //! there while already showing on `/in` itself -- except in map mode
 //! "map", where `/in` is just a canvas and the sidebar is its only home.
+//! The desktop sidebar's footer also holds the camera toggle, and
+//! shows the camera preview in place of the avatar while no meeting dock
+//! is open to show it instead.
 
 import { useState } from "react";
-import { FiHome, FiMenu } from "react-icons/fi";
+import { FiHome, FiMenu, FiVideo, FiVideoOff } from "react-icons/fi";
 import { Link, useLocation } from "../core/Router";
 import { useIsMobile, useIsPortrait } from "../core/hooks/useViewport";
 import Avatar from "../core/ui/Avatar";
+import AsyncButton from "../core/ui/AsyncButton";
 import { useOrgSession, OrgOnlineView } from "../features/org";
 import { useMapMode } from "../features/map";
 import {
@@ -36,12 +40,84 @@ function useMyDisplay() {
   };
 }
 
+function MediaButton({ active, ...props }) {
+  return (
+    <AsyncButton
+      {...props}
+      className={`flex size-8 shrink-0 justify-center rounded-card border text-sm hover:bg-muted ${
+        active ? "text-ink" : "text-ink-muted hover:text-ink"
+      }`}
+    />
+  );
+}
+
+// Profile link plus camera toggle. Chime binds the camera to one
+// `<video>` at a time, so the preview here only mounts while the meeting
+// dock (whose self tile takes it over) is closed.
+function SidebarFooter({ collapsed }) {
+  const me = useMyDisplay();
+  const { selfVideoRef, cameraOn, toggleCamera, myMeetingId, creating } =
+    useMeetingSessionContext();
+  const preview = cameraOn && !myMeetingId && !creating;
+
+  const video = (
+    <video
+      ref={selfVideoRef}
+      autoPlay
+      muted
+      playsInline
+      className="size-8 shrink-0 -scale-x-100 rounded-full bg-muted object-cover"
+    />
+  );
+  const avatar = (
+    <Avatar url={avatarUrl(me.picture)} name={me.name || "?"} size="size-8" />
+  );
+  const toggles = (
+    <>
+      <MediaButton
+        active={cameraOn}
+        onClick={toggleCamera}
+        title={cameraOn ? "Turn camera off" : "Turn camera on"}
+      >
+        {cameraOn ? <FiVideoOff /> : <FiVideo />}
+      </MediaButton>
+    </>
+  );
+
+  if (collapsed) {
+    return (
+      <div className="flex shrink-0 flex-col items-center gap-2 border-t p-3">
+        <Link to="/profile" title={me.name || "Profile"}>
+          {preview ? video : avatar}
+        </Link>
+        {toggles}
+      </div>
+    );
+  }
+
+  return (
+    <div className="shrink-0 border-t p-3">
+      <div className="flex items-center gap-1">
+        <Link
+          to="/profile"
+          className="flex min-w-0 flex-1 items-center gap-2 rounded-card p-1 hover:bg-muted"
+        >
+          {preview ? video : avatar}
+          <span className="truncate text-sm text-ink">
+            {me.name || "Profile"}
+          </span>
+        </Link>
+        {toggles}
+      </div>
+    </div>
+  );
+}
+
 function DesktopSidebar() {
   const path = useLocation();
   const { currentOrg } = useOrgSession();
   const { mode } = useMapMode();
   const meetingSession = useMeetingSessionContext();
-  const me = useMyDisplay();
   const [collapsed, setCollapsed] = useState(
     () => localStorage.getItem(STORAGE_KEY) === "true",
   );
@@ -87,21 +163,7 @@ function DesktopSidebar() {
         )}
       </div>
 
-      <Link
-        to="/profile"
-        className="flex shrink-0 items-center gap-2 border-t p-3 hover:bg-muted"
-      >
-        <Avatar
-          url={avatarUrl(me.picture)}
-          name={me.name || "?"}
-          size="size-8"
-        />
-        {!collapsed && (
-          <span className="truncate text-sm text-ink">
-            {me.name || "Profile"}
-          </span>
-        )}
-      </Link>
+      <SidebarFooter collapsed={collapsed} />
     </aside>
   );
 }
