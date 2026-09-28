@@ -22,20 +22,27 @@
 //! The camera follows this tab's own (eased) position, centered, so the
 //! grid scrolls under the avatar rather than the avatar walking off a
 //! fixed viewport -- `OFFICE_SIZE` cells is far more than any one screen
-//! fits at a legible size.
+//! fits at a legible size. Near an edge it stops following rather than
+//! scroll past the map, and once zoomed out far enough for the map to fit
+//! (along either axis) it just centers the map there -- see `viewOrigin`.
+//! Zoom (`useMapZoom`) sets the cell size; everything drawn scales with it.
 
 import { useEffect, useRef } from "react";
 import { OFFICE_SIZE } from "./api";
 import { useMapSession, USER_SPEED } from "./useMapSession";
 import { avatarUrl } from "../avatars";
+import { FiMinus, FiPlus } from "react-icons/fi";
 import spriteUrl from "./user-sprite.png";
+import { ZOOM_STEP, clampCellPx, easeCellPx, useMapZoom } from "./useMapZoom";
 
-const CELL_PX = 48;
+// Sprites are drawn a whole cell tall -- at the default zoom, 1.5x the
+// source, so pixel-exact on 2x displays (3 device px per sprite px).
 const SPRITE_SRC_PX = 32;
-// Drawn a whole cell tall -- 1.5x the source, so pixel-exact on 2x
-// displays (3 device px per sprite px).
-const SPRITE_PX = CELL_PX;
-const USER_ICON_PX = 16;
+// The user icon's diameter, as a fraction of a cell -- but never smaller
+// than `MIN_USER_ICON_PX`, so it stays a recognizable dot zoomed all the
+// way out.
+const USER_ICON_CELLS = 1 / 3;
+const MIN_USER_ICON_PX = 6;
 // Spritesheet row per facing; "right" reuses "left", drawn mirrored.
 const FACING_ROW = { down: 0, left: 1, up: 2, right: 1 };
 // Spritesheet columns, in walk order: idle -> walk1 -> idle -> walk2.
@@ -48,14 +55,14 @@ const CELLS_PER_WALK_FRAME = 0.5;
 // one cell's easing finishing and the next move landing, which would
 // otherwise flicker to idle mid-walk.
 const WALK_GRACE_MS = 120;
-// How far apart same-cell avatars fan out from the cell's center -- see the
-// module doc on offsetting stacked members.
-const STACK_OFFSET_PX = 10;
-// How fast a stacked avatar eases to its fan-out spot (px/sec) when the
+// How far apart same-cell avatars fan out from the cell's center, in cells
+// -- see the module doc on offsetting stacked members.
+const STACK_OFFSET = 0.2;
+// How fast a stacked avatar eases to its fan-out spot (cells/sec) when the
 // group sharing its cell changes -- someone else arriving or leaving
 // reshuffles everyone's slot in `stackOffset`, and snapping straight to the
 // new one reads as a jump; easing there instead reads as a small step aside.
-const STACK_EASE_PX_PER_SEC = 50;
+const STACK_EASE_PER_SEC = 1;
 
 function cssVar(name) {
   return getComputedStyle(document.documentElement).getPropertyValue(name);
@@ -86,6 +93,17 @@ function easeAlongGrid(current, target, step) {
   return next;
 }
 
+// Canvas px of the map's top-left corner along one axis (`size` px of
+// canvas, the camera on cell `camera`): the camera's cell centered, but
+// clamped so the map still covers the canvas edge to edge -- or, if the
+// whole map fits along this axis, the map centered instead.
+function viewOrigin(size, camera, cellPx) {
+  const mapPx = OFFICE_SIZE * cellPx;
+  if (mapPx <= size) return (size - mapPx) / 2;
+  const centered = size / 2 - (camera + 0.5) * cellPx;
+  return Math.max(size - mapPx, Math.min(0, centered));
+}
+
 // Small deterministic fan-out for members sharing a cell -- same member
 // list always produces the same arrangement, rather than reshuffling every
 // render.
@@ -93,8 +111,8 @@ function stackOffset(index, total) {
   if (total <= 1) return { dx: 0, dy: 0 };
   const angle = (index / total) * Math.PI * 2;
   return {
-    dx: Math.cos(angle) * STACK_OFFSET_PX,
-    dy: Math.sin(angle) * STACK_OFFSET_PX,
+    dx: Math.cos(angle) * STACK_OFFSET,
+    dy: Math.sin(angle) * STACK_OFFSET,
   };
 }
 
@@ -105,6 +123,10 @@ export default function MapCanvas({ token, orgId, members, myId }) {
   const renderedOffsetRef = useRef({}); // user_id -> {dx, dy} (eased, float)
   const seenPlacementsRef = useRef({}); // user_id -> last placement drawn
   const walkRef = useRef({}); // user_id -> {facing, distance, movedAt}
+  // What the last frame was drawn with, for mapping a click back to a cell.
+  const viewRef = useRef({ cellPx: 0, originPxX: 0, originPxY: 0 });
+  const { cellPxRef, zoomBy, atLimit } = useMapZoom(canvasRef);
+  const shownCellPxRef = useRef(null); // eased toward `cellPxRef`
 
   const { positions, moveTo, loaded, placements } = useMapSession(
     token,
@@ -216,15 +238,24 @@ export default function MapCanvas({ token, orgId, members, myId }) {
       ctx.fillStyle = bg;
       ctx.fillRect(0, 0, w, h);
 
+      // Re-clamped every frame, not just when zooming: the limits depend
+      // on the canvas size, which a resize changes under it.
+      const targetCellPx = clampCellPx(cellPxRef.current, w, h);
+      const cellPx =
+        shownCellPxRef.current === null
+          ? targetCellPx
+          : easeCellPx(shownCellPxRef.current, targetCellPx, dt);
+      shownCellPxRef.current = cellPx;
       const camera = rendered[myId] ?? { x: 0, y: 0 };
-      const originPxX = w / 2 - camera.x * CELL_PX;
-      const originPxY = h / 2 - camera.y * CELL_PX;
+      const originPxX = viewOrigin(w, camera.x, cellPx);
+      const originPxY = viewOrigin(h, camera.y, cellPx);
+      viewRef.current = { cellPx, originPxX, originPxY };
 
       // Grid lines, only across whatever range is actually on screen.
-      const firstCol = Math.floor(-originPxX / CELL_PX);
-      const lastCol = Math.ceil((w - originPxX) / CELL_PX);
-      const firstRow = Math.floor(-originPxY / CELL_PX);
-      const lastRow = Math.ceil((h - originPxY) / CELL_PX);
+      const firstCol = Math.floor(-originPxX / cellPx);
+      const lastCol = Math.ceil((w - originPxX) / cellPx);
+      const firstRow = Math.floor(-originPxY / cellPx);
+      const lastRow = Math.ceil((h - originPxY) / cellPx);
 
       ctx.strokeStyle = border;
       ctx.lineWidth = 1;
@@ -234,18 +265,18 @@ export default function MapCanvas({ token, orgId, members, myId }) {
         col <= Math.min(OFFICE_SIZE, lastCol);
         col++
       ) {
-        const x = Math.round(originPxX + col * CELL_PX) + 0.5;
+        const x = Math.round(originPxX + col * cellPx) + 0.5;
         ctx.moveTo(x, Math.max(0, originPxY));
-        ctx.lineTo(x, Math.min(h, originPxY + OFFICE_SIZE * CELL_PX));
+        ctx.lineTo(x, Math.min(h, originPxY + OFFICE_SIZE * cellPx));
       }
       for (
         let row = Math.max(0, firstRow);
         row <= Math.min(OFFICE_SIZE, lastRow);
         row++
       ) {
-        const y = Math.round(originPxY + row * CELL_PX) + 0.5;
+        const y = Math.round(originPxY + row * cellPx) + 0.5;
         ctx.moveTo(Math.max(0, originPxX), y);
-        ctx.lineTo(Math.min(w, originPxX + OFFICE_SIZE * CELL_PX), y);
+        ctx.lineTo(Math.min(w, originPxX + OFFICE_SIZE * cellPx), y);
       }
       ctx.stroke();
 
@@ -270,7 +301,7 @@ export default function MapCanvas({ token, orgId, members, myId }) {
           const odx = target.dx - current.dx;
           const ody = target.dy - current.dy;
           const odist = Math.hypot(odx, ody);
-          const maxOffsetStep = STACK_EASE_PX_PER_SEC * dt;
+          const maxOffsetStep = STACK_EASE_PER_SEC * dt;
           const { dx, dy } =
             odist <= maxOffsetStep
               ? target
@@ -279,13 +310,15 @@ export default function MapCanvas({ token, orgId, members, myId }) {
                   dy: current.dy + (ody / odist) * maxOffsetStep,
                 };
           renderedOffsets[member.id] = { dx, dy };
-          const cx = originPxX + (pos.x + 0.5) * CELL_PX + dx;
-          const cy = originPxY + (pos.y + 0.5) * CELL_PX + dy;
+          const cx = originPxX + (pos.x + 0.5 + dx) * cellPx;
+          const cy = originPxY + (pos.y + 0.5 + dy) * cellPx;
+          const spritePx = cellPx;
+          const iconPx = Math.max(MIN_USER_ICON_PX, cellPx * USER_ICON_CELLS);
 
           // Snapped to whole device pixels so the (unsmoothed) sprite
           // doesn't shimmer as it eases between cells.
-          const left = Math.round((cx - SPRITE_PX / 2) * ratio) / ratio;
-          const top = Math.round((cy - SPRITE_PX / 2) * ratio) / ratio;
+          const left = Math.round((cx - spritePx / 2) * ratio) / ratio;
+          const top = Math.round((cy - spritePx / 2) * ratio) / ratio;
 
           const sprite = getImage(spriteUrl);
           if (sprite) {
@@ -301,7 +334,7 @@ export default function MapCanvas({ token, orgId, members, myId }) {
             ctx.save();
             ctx.imageSmoothingEnabled = false;
             if (facing === "right") {
-              ctx.translate(left + SPRITE_PX, top);
+              ctx.translate(left + spritePx, top);
               ctx.scale(-1, 1);
             } else {
               ctx.translate(left, top);
@@ -314,27 +347,27 @@ export default function MapCanvas({ token, orgId, members, myId }) {
               SPRITE_SRC_PX,
               0,
               0,
-              SPRITE_PX,
-              SPRITE_PX,
+              spritePx,
+              spritePx,
             );
             ctx.restore();
           }
 
-          const ix = left + SPRITE_PX - USER_ICON_PX / 2;
-          const iy = top + USER_ICON_PX / 2;
+          const ix = left + spritePx - iconPx / 2;
+          const iy = top + iconPx / 2;
           const image = getImage(avatarUrl(member.picture));
           ctx.save();
           ctx.beginPath();
-          ctx.arc(ix, iy, USER_ICON_PX / 2, 0, Math.PI * 2);
+          ctx.arc(ix, iy, iconPx / 2, 0, Math.PI * 2);
           ctx.closePath();
           if (image) {
             ctx.clip();
             ctx.drawImage(
               image,
-              ix - USER_ICON_PX / 2,
-              iy - USER_ICON_PX / 2,
-              USER_ICON_PX,
-              USER_ICON_PX,
+              ix - iconPx / 2,
+              iy - iconPx / 2,
+              iconPx,
+              iconPx,
             );
           } else {
             ctx.fillStyle =
@@ -343,7 +376,7 @@ export default function MapCanvas({ token, orgId, members, myId }) {
                 : cssVar("--color-muted") || "#3a4763";
             ctx.fill();
             ctx.fillStyle = "#fff";
-            ctx.font = "600 9px sans-serif";
+            ctx.font = `600 ${Math.round(iconPx * 0.56)}px sans-serif`;
             ctx.textAlign = "center";
             ctx.textBaseline = "middle";
             ctx.fillText((member.name || "?").charAt(0).toUpperCase(), ix, iy);
@@ -364,30 +397,49 @@ export default function MapCanvas({ token, orgId, members, myId }) {
       cancelAnimationFrame(raf);
       observer.disconnect();
     };
-    // Deliberately mount-only -- see `stateRef` above.
-  }, []);
+    // Deliberately mount-only -- see `stateRef` above. (`cellPxRef` is a
+    // ref, so listing it never re-runs this.)
+  }, [cellPxRef]);
 
   const handleClick = (event) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
-    const rendered = renderedRef.current;
-    const camera = rendered[myId] ?? { x: 0, y: 0 };
-    const originPxX = rect.width / 2 - camera.x * CELL_PX;
-    const originPxY = rect.height / 2 - camera.y * CELL_PX;
+    const { cellPx, originPxX, originPxY } = viewRef.current;
+    if (!cellPx) return;
     const px = event.clientX - rect.left;
     const py = event.clientY - rect.top;
-    const x = Math.floor((px - originPxX) / CELL_PX);
-    const y = Math.floor((py - originPxY) / CELL_PX);
+    const x = Math.floor((px - originPxX) / cellPx);
+    const y = Math.floor((py - originPxY) / cellPx);
     moveTo(x, y);
   };
 
   return (
-    <canvas
-      ref={canvasRef}
-      onClick={handleClick}
-      tabIndex={0}
-      className="block size-full cursor-pointer outline-none"
-    />
+    <div className="relative size-full">
+      <canvas
+        ref={canvasRef}
+        onClick={handleClick}
+        tabIndex={0}
+        className="block size-full cursor-pointer touch-none outline-none"
+      />
+      <div className="absolute right-4 top-4 flex flex-col overflow-hidden rounded-card border bg-surface shadow-lg">
+        <button
+          onClick={() => zoomBy(ZOOM_STEP)}
+          disabled={atLimit.max}
+          title="Zoom in"
+          className="flex size-9 items-center justify-center text-ink-muted enabled:hover:text-ink disabled:opacity-40"
+        >
+          <FiPlus />
+        </button>
+        <button
+          onClick={() => zoomBy(1 / ZOOM_STEP)}
+          disabled={atLimit.min}
+          title="Zoom out"
+          className="flex size-9 items-center justify-center border-t text-ink-muted enabled:hover:text-ink disabled:opacity-40"
+        >
+          <FiMinus />
+        </button>
+      </div>
+    </div>
   );
 }
