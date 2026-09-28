@@ -8,12 +8,13 @@
 //! - **Arrow keys** step in whichever direction is currently held, checked
 //!   again each time the cooldown clears -- so holding one down repeats it
 //!   for as long as it stays held, same as a classic tile-grid walk.
-//! - **A click** queues its cell as a one-shot absolute target, applied
-//!   (not walked toward -- a direct move to that cell) the moment the
-//!   cooldown allows; a second click before that happens replaces the
-//!   queued one rather than stacking.
-//! A click takes priority over a held key if both are pending when the
-//! cooldown clears. A steady metronome (every `1 / USER_SPEED` seconds)
+//! - **A click** sets its cell as a destination, walked to one cell per
+//!   cooldown like a held key, along a fixed L-shaped path: the whole
+//!   horizontal leg first, then the vertical one (see `stepToward`). A
+//!   second click replaces the destination, re-pathed from wherever this
+//!   tab has got to; pressing an arrow key abandons it.
+//! A destination takes priority over a held key if both are pending when
+//! the cooldown clears. A steady metronome (every `1 / USER_SPEED` seconds)
 //! drives that check, rather than each move rescheduling the next one
 //! itself, so held-key repeats don't depend on a self-referencing timer.
 //!
@@ -81,6 +82,18 @@ const ARROW_DELTA = {
 // falling back to 0, same as an out-of-range value clamps rather than errors.
 const clamp = (v) =>
   Number.isFinite(v) ? Math.max(0, Math.min(OFFICE_SIZE - 1, v)) : 0;
+
+// One cell from `from` toward `to` -- horizontally until the columns
+// match, then vertically -- or null once there. `MapCanvas` eases a
+// multi-cell jump in the same order, so a click's walk reads the same
+// whether its steps are drawn one by one or arrive bunched up.
+function stepToward(from, to) {
+  if (from.x !== to.x)
+    return { x: from.x + Math.sign(to.x - from.x), y: from.y };
+  if (from.y !== to.y)
+    return { x: from.x, y: from.y + Math.sign(to.y - from.y) };
+  return null;
+}
 
 function bumpPlacements(prev, ids) {
   const next = { ...prev };
@@ -298,7 +311,7 @@ export function useMapSession(token, orgId, members) {
   }, [myPosition.x, myPosition.y]);
 
   const heldKeysRef = useRef([]); // most-recently-pressed direction last
-  const queuedClickRef = useRef(null);
+  const destinationRef = useRef(null); // a clicked cell being walked to
   const lastMoveAtRef = useRef(0);
   const lastPersistAtRef = useRef(0);
   // This tab has moved since its last stored move.
@@ -331,21 +344,24 @@ export function useMapSession(token, orgId, members) {
 
   useEffect(() => flush, [flush]);
 
-  // Apply whichever of a queued click or a held key is pending, preferring
-  // the click -- but only once the cooldown since the last actual move has
-  // elapsed. Safe to call as often as convenient (a poll, a keydown, a
+  // Take one step for whichever of a click's destination or a held key is
+  // pending, preferring the destination -- but only once the cooldown
+  // since the last actual move has elapsed. Safe to call as often as convenient (a poll, a keydown, a
   // click): it's a no-op both when nothing is pending and when the
   // cooldown hasn't cleared yet.
   const attempt = useCallback(() => {
     if (Date.now() - lastMoveAtRef.current < STEP_MS) return;
 
-    let target = queuedClickRef.current;
-    queuedClickRef.current = null;
+    const from = myPositionRef.current;
+    let target = null;
+    if (destinationRef.current) {
+      target = stepToward(from, destinationRef.current);
+      if (!target) destinationRef.current = null;
+    }
     if (!target) {
       const key = heldKeysRef.current[heldKeysRef.current.length - 1];
       const delta = key && ARROW_DELTA[key];
       if (delta) {
-        const from = myPositionRef.current;
         target = { x: from.x + delta.dx, y: from.y + delta.dy };
       }
     }
@@ -371,6 +387,9 @@ export function useMapSession(token, orgId, members) {
       if (!ARROW_DELTA[event.key]) return;
       if (["INPUT", "TEXTAREA"].includes(event.target.tagName)) return;
       event.preventDefault();
+      // A fresh press, not the OS's auto-repeat of a key already held
+      // before the click.
+      if (!event.repeat) destinationRef.current = null;
       if (!heldKeysRef.current.includes(event.key))
         heldKeysRef.current.push(event.key);
       attempt();
@@ -390,7 +409,9 @@ export function useMapSession(token, orgId, members) {
 
   const moveTo = useCallback(
     (x, y) => {
-      queuedClickRef.current = { x, y };
+      // Clamped here, not just in `applyMove`: an off-map destination
+      // would otherwise never be reached, and walked toward forever.
+      destinationRef.current = { x: clamp(x), y: clamp(y) };
       attempt();
     },
     [attempt],

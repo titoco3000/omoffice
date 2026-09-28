@@ -12,7 +12,8 @@
 //! component's own job is turning `positions` (logical, one integer cell
 //! per user) into something that reads as continuous motion -- each
 //! avatar's drawn position eases toward its logical cell at `USER_SPEED`
-//! cells/sec, redrawn every animation frame, rather than jumping the
+//! cells/sec, along the grid (see `easeAlongGrid`), redrawn every
+//! animation frame, rather than jumping the
 //! instant a `MAP_MOVE_CHANNEL` push (or this tab's own optimistic move)
 //! lands. The exception is someone being *placed* rather than moving --
 //! everyone on the initial load, and anyone who comes online later (see
@@ -58,6 +59,32 @@ const STACK_EASE_PX_PER_SEC = 50;
 
 function cssVar(name) {
   return getComputedStyle(document.documentElement).getPropertyValue(name);
+}
+
+// Moves `current` up to `step` cells toward `target` one axis at a time,
+// never diagonally -- a sprite walking diagonally doesn't read as walking.
+// Horizontal first, same order as `useMapSession`'s click path, so remote
+// steps that arrive bunched up (or a jump of more than a cell) still turn
+// the same corner the walker did. The exception is an axis already
+// mid-step (off its grid line): that one is finished first, rather than
+// sliding sideways between two rows.
+function easeAlongGrid(current, target, step) {
+  const yFirst = Number.isInteger(current.x) && !Number.isInteger(current.y);
+  const axes = yFirst ? ["y", "x"] : ["x", "y"];
+  const next = { ...current };
+  let left = step;
+  for (const axis of axes) {
+    const distance = Math.abs(target[axis] - next[axis]);
+    if (distance <= left) {
+      // Assigned, not added, so arriving lands exactly on the grid line.
+      next[axis] = target[axis];
+      left -= distance;
+    } else {
+      next[axis] += Math.sign(target[axis] - next[axis]) * left;
+      left = 0;
+    }
+  }
+  return next;
 }
 
 // Small deterministic fan-out for members sharing a cell -- same member
@@ -155,17 +182,7 @@ export default function MapCanvas({ token, orgId, members, myId }) {
           continue;
         }
         const current = rendered[member.id] ?? target;
-        const dx = target.x - current.x;
-        const dy = target.y - current.y;
-        const dist = Math.hypot(dx, dy);
-        const maxStep = USER_SPEED * dt;
-        const next =
-          dist <= maxStep
-            ? { x: target.x, y: target.y }
-            : {
-                x: current.x + (dx / dist) * maxStep,
-                y: current.y + (dy / dist) * maxStep,
-              };
+        const next = easeAlongGrid(current, target, USER_SPEED * dt);
         rendered[member.id] = next;
 
         const mx = next.x - current.x;
