@@ -1,5 +1,13 @@
 //! The office map itself: an `OFFICE_SIZE` x `OFFICE_SIZE` grid drawn on a
-//! `<canvas>`, one avatar per online org member on its cell. Movement comes
+//! `<canvas>`, one avatar per online org member on its cell. An avatar is a
+//! character sprite from `user-sprite.png` (3x3 frames of `SPRITE_SRC_PX`:
+//! rows face down/left/up, columns are idle/walk1/walk2; facing right is
+//! the left row mirrored) with the member's user icon -- their profile
+//! picture, or a first-letter placeholder -- pinned to its top-right. While
+//! an avatar's drawn position is moving it faces the dominant axis of that
+//! motion and cycles idle -> walk1 -> idle -> walk2, advanced by distance
+//! walked rather than time so the legs keep pace with `USER_SPEED`; once it
+//! stops it drops back to idle, still facing its last direction. Movement comes
 //! from `useMapSession` (arrow keys / click, cooldown-gated); this
 //! component's own job is turning `positions` (logical, one integer cell
 //! per user) into something that reads as continuous motion -- each
@@ -19,9 +27,26 @@ import { useEffect, useRef } from "react";
 import { OFFICE_SIZE } from "./api";
 import { useMapSession, USER_SPEED } from "./useMapSession";
 import { avatarUrl } from "../avatars";
+import spriteUrl from "./user-sprite.png";
 
 const CELL_PX = 48;
-const AVATAR_PX = 34;
+const SPRITE_SRC_PX = 32;
+// Drawn a whole cell tall -- 1.5x the source, so pixel-exact on 2x
+// displays (3 device px per sprite px).
+const SPRITE_PX = CELL_PX;
+const USER_ICON_PX = 16;
+// Spritesheet row per facing; "right" reuses "left", drawn mirrored.
+const FACING_ROW = { down: 0, left: 1, up: 2, right: 1 };
+// Spritesheet columns, in walk order: idle -> walk1 -> idle -> walk2.
+const WALK_CYCLE = [0, 1, 0, 2];
+// Cells walked per walk-cycle frame: at `USER_SPEED` 4, eight frames/sec,
+// one full cycle every two cells.
+const CELLS_PER_WALK_FRAME = 0.5;
+// How long an avatar keeps walking after its drawn position last moved --
+// a held key's steps can leave a frame or two of standing still between
+// one cell's easing finishing and the next move landing, which would
+// otherwise flicker to idle mid-walk.
+const WALK_GRACE_MS = 120;
 // How far apart same-cell avatars fan out from the cell's center -- see the
 // module doc on offsetting stacked members.
 const STACK_OFFSET_PX = 10;
@@ -53,6 +78,7 @@ export default function MapCanvas({ token, orgId, members, myId }) {
   const renderedRef = useRef({}); // user_id -> {x, y} (eased, float)
   const renderedOffsetRef = useRef({}); // user_id -> {dx, dy} (eased, float)
   const seenPlacementsRef = useRef({}); // user_id -> last placement drawn
+  const walkRef = useRef({}); // user_id -> {facing, distance, movedAt}
 
   const { positions, moveTo, loaded, placements } = useMapSession(
     token,
@@ -133,13 +159,34 @@ export default function MapCanvas({ token, orgId, members, myId }) {
         const dy = target.y - current.y;
         const dist = Math.hypot(dx, dy);
         const maxStep = USER_SPEED * dt;
-        rendered[member.id] =
+        const next =
           dist <= maxStep
             ? { x: target.x, y: target.y }
             : {
                 x: current.x + (dx / dist) * maxStep,
                 y: current.y + (dy / dist) * maxStep,
               };
+        rendered[member.id] = next;
+
+        const mx = next.x - current.x;
+        const my = next.y - current.y;
+        if (mx || my) {
+          const walk = (walkRef.current[member.id] ??= {
+            facing: "down",
+            distance: 0,
+            movedAt: 0,
+          });
+          walk.facing =
+            Math.abs(mx) > Math.abs(my)
+              ? mx > 0
+                ? "right"
+                : "left"
+              : my > 0
+                ? "down"
+                : "up";
+          walk.distance += Math.hypot(mx, my);
+          walk.movedAt = now;
+        }
       }
 
       const ctx = canvas.getContext("2d");
@@ -219,19 +266,59 @@ export default function MapCanvas({ token, orgId, members, myId }) {
           const cx = originPxX + (pos.x + 0.5) * CELL_PX + dx;
           const cy = originPxY + (pos.y + 0.5) * CELL_PX + dy;
 
+          // Snapped to whole device pixels so the (unsmoothed) sprite
+          // doesn't shimmer as it eases between cells.
+          const left = Math.round((cx - SPRITE_PX / 2) * ratio) / ratio;
+          const top = Math.round((cy - SPRITE_PX / 2) * ratio) / ratio;
+
+          const sprite = getImage(spriteUrl);
+          if (sprite) {
+            const walk = walkRef.current[member.id];
+            const facing = walk?.facing ?? "down";
+            const column =
+              walk && now - walk.movedAt < WALK_GRACE_MS
+                ? WALK_CYCLE[
+                    Math.floor(walk.distance / CELLS_PER_WALK_FRAME) %
+                      WALK_CYCLE.length
+                  ]
+                : 0;
+            ctx.save();
+            ctx.imageSmoothingEnabled = false;
+            if (facing === "right") {
+              ctx.translate(left + SPRITE_PX, top);
+              ctx.scale(-1, 1);
+            } else {
+              ctx.translate(left, top);
+            }
+            ctx.drawImage(
+              sprite,
+              column * SPRITE_SRC_PX,
+              FACING_ROW[facing] * SPRITE_SRC_PX,
+              SPRITE_SRC_PX,
+              SPRITE_SRC_PX,
+              0,
+              0,
+              SPRITE_PX,
+              SPRITE_PX,
+            );
+            ctx.restore();
+          }
+
+          const ix = left + SPRITE_PX - USER_ICON_PX / 2;
+          const iy = top + USER_ICON_PX / 2;
           const image = getImage(avatarUrl(member.picture));
           ctx.save();
           ctx.beginPath();
-          ctx.arc(cx, cy, AVATAR_PX / 2, 0, Math.PI * 2);
+          ctx.arc(ix, iy, USER_ICON_PX / 2, 0, Math.PI * 2);
           ctx.closePath();
           if (image) {
             ctx.clip();
             ctx.drawImage(
               image,
-              cx - AVATAR_PX / 2,
-              cy - AVATAR_PX / 2,
-              AVATAR_PX,
-              AVATAR_PX,
+              ix - USER_ICON_PX / 2,
+              iy - USER_ICON_PX / 2,
+              USER_ICON_PX,
+              USER_ICON_PX,
             );
           } else {
             ctx.fillStyle =
@@ -240,10 +327,10 @@ export default function MapCanvas({ token, orgId, members, myId }) {
                 : cssVar("--color-muted") || "#3a4763";
             ctx.fill();
             ctx.fillStyle = "#fff";
-            ctx.font = "600 14px sans-serif";
+            ctx.font = "600 9px sans-serif";
             ctx.textAlign = "center";
             ctx.textBaseline = "middle";
-            ctx.fillText((member.name || "?").charAt(0).toUpperCase(), cx, cy);
+            ctx.fillText((member.name || "?").charAt(0).toUpperCase(), ix, iy);
           }
           ctx.restore();
           ctx.lineWidth = member.id === myId ? 2 : 1;
