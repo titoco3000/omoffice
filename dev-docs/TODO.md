@@ -3,3 +3,4 @@
 - map editing
 - avatar editing
 - gong
+- raise hands

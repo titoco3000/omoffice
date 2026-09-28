@@ -33,10 +33,36 @@ import { useMapSession, USER_SPEED } from "./useMapSession";
 import { avatarUrl } from "../avatars";
 import { FiMinus, FiPlus } from "react-icons/fi";
 import spriteUrl from "./user-sprite.png";
+import mapUrl from "./map.png";
+import grassUrl from "./tiles/grass.png";
+import sandUrl from "./tiles/sand.png";
+import waterUrl from "./tiles/water.png";
 import { ZOOM_STEP, clampCellPx, easeCellPx, useMapZoom } from "./useMapZoom";
 
-// Sprites are drawn a whole cell tall -- at the default zoom, 1.5x the
-// source, so pixel-exact on 2x displays (3 device px per sprite px).
+// One pixel of `map.png` per cell -- its color picks the terrain drawn
+// under that cell. Anything not explicitly grass/sand (including black)
+// is water, so an unassigned color reads as water rather than crashing.
+const TILE_GRASS = "grass";
+const TILE_SAND = "sand";
+const TILE_WATER = "water";
+const TILE_URLS = {
+  [TILE_GRASS]: grassUrl,
+  [TILE_SAND]: sandUrl,
+  [TILE_WATER]: waterUrl,
+};
+
+function tileForColor(r, g, b) {
+  if (r === 0 && g === 255 && b === 0) return TILE_GRASS;
+  if (r === 255 && g === 255 && b === 0) return TILE_SAND;
+  return TILE_WATER;
+}
+
+// Sprites are drawn taller than one cell -- a cell is a finer unit of
+// movement/terrain than a person's footprint, so the avatar spans this many
+// of them.
+const SPRITE_CELLS = 1.5;
+// At the default zoom, 1.5x the source, so pixel-exact on 2x displays (3
+// device px per sprite px).
 const SPRITE_SRC_PX = 32;
 // The user icon's diameter, as a fraction of a cell -- but never smaller
 // than `MIN_USER_ICON_PX`, so it stays a recognizable dot zoomed all the
@@ -119,6 +145,7 @@ function stackOffset(index, total) {
 export default function MapCanvas({ token, orgId, members, myId }) {
   const canvasRef = useRef(null);
   const imagesRef = useRef(new Map()); // url -> HTMLImageElement
+  const tileMapRef = useRef(null); // {width, height, tiles: Uint8Array-like of TILE_*} once map.png is decoded
   const renderedRef = useRef({}); // user_id -> {x, y} (eased, float)
   const renderedOffsetRef = useRef({}); // user_id -> {dx, dy} (eased, float)
   const seenPlacementsRef = useRef({}); // user_id -> last placement drawn
@@ -149,6 +176,28 @@ export default function MapCanvas({ token, orgId, members, myId }) {
   useEffect(() => {
     stateRef.current = { positions, members, myId, loaded, placements };
   });
+
+  // Decode `map.png` into a per-cell terrain grid once: an offscreen canvas
+  // is the only way to read pixel colors back out of an `<img>`. The draw
+  // loop below just polls `tileMapRef` each frame rather than waiting on
+  // this, so the grid/avatars still render before the map image loads.
+  useEffect(() => {
+    const img = new Image();
+    img.onload = () => {
+      const off = document.createElement("canvas");
+      off.width = img.width;
+      off.height = img.height;
+      const octx = off.getContext("2d");
+      octx.drawImage(img, 0, 0);
+      const { data } = octx.getImageData(0, 0, off.width, off.height);
+      const tiles = new Array(off.width * off.height);
+      for (let i = 0; i < tiles.length; i++) {
+        tiles[i] = tileForColor(data[i * 4], data[i * 4 + 1], data[i * 4 + 2]);
+      }
+      tileMapRef.current = { width: off.width, height: off.height, tiles };
+    };
+    img.src = mapUrl;
+  }, []);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -257,8 +306,39 @@ export default function MapCanvas({ token, orgId, members, myId }) {
       const firstRow = Math.floor(-originPxY / cellPx);
       const lastRow = Math.ceil((h - originPxY) / cellPx);
 
+      const tileMap = tileMapRef.current;
+      if (tileMap) {
+        ctx.imageSmoothingEnabled = false;
+        const tileSizePx = Math.ceil(cellPx) + 1; // 1px overlap so eased scroll never shows a seam
+        for (
+          let row = Math.max(0, firstRow);
+          row < Math.min(tileMap.height, lastRow);
+          row++
+        ) {
+          for (
+            let col = Math.max(0, firstCol);
+            col < Math.min(tileMap.width, lastCol);
+            col++
+          ) {
+            const tile = tileMap.tiles[row * tileMap.width + col];
+            const image = getImage(TILE_URLS[tile]);
+            if (!image) continue;
+            ctx.drawImage(
+              image,
+              Math.round(originPxX + col * cellPx),
+              Math.round(originPxY + row * cellPx),
+              tileSizePx,
+              tileSizePx,
+            );
+          }
+        }
+      }
+
       ctx.strokeStyle = border;
       ctx.lineWidth = 1;
+      // Faint over the tiles -- a full-opacity grid reads as a fence, not a
+      // hint of where cells fall.
+      ctx.globalAlpha = tileMap ? 0.01 : 1;
       ctx.beginPath();
       for (
         let col = Math.max(0, firstCol);
@@ -279,6 +359,7 @@ export default function MapCanvas({ token, orgId, members, myId }) {
         ctx.lineTo(Math.min(w, originPxX + OFFICE_SIZE * cellPx), y);
       }
       ctx.stroke();
+      ctx.globalAlpha = 1;
 
       // Group members by cell for the stacking offset.
       const byCell = new Map();
@@ -312,13 +393,17 @@ export default function MapCanvas({ token, orgId, members, myId }) {
           renderedOffsets[member.id] = { dx, dy };
           const cx = originPxX + (pos.x + 0.5 + dx) * cellPx;
           const cy = originPxY + (pos.y + 0.5 + dy) * cellPx;
-          const spritePx = cellPx;
+          const spritePx = cellPx * SPRITE_CELLS;
           const iconPx = Math.max(MIN_USER_ICON_PX, cellPx * USER_ICON_CELLS);
 
           // Snapped to whole device pixels so the (unsmoothed) sprite
-          // doesn't shimmer as it eases between cells.
+          // doesn't shimmer as it eases between cells. Anchored to the
+          // bottom of the tile (feet on the ground) rather than centered,
+          // so a sprite taller than one cell grows upward out of it instead
+          // of sinking half into the tile behind.
           const left = Math.round((cx - spritePx / 2) * ratio) / ratio;
-          const top = Math.round((cy - spritePx / 2) * ratio) / ratio;
+          const bottom = cy + cellPx / 2;
+          const top = Math.round((bottom - spritePx) * ratio) / ratio;
 
           const sprite = getImage(spriteUrl);
           if (sprite) {

@@ -64,7 +64,7 @@ import { useMeetingSessionContext } from "../meetings";
 // Cells per second -- governs both the move cooldown (one cell every
 // `1 / USER_SPEED` seconds) and, so the two stay in sync, how fast
 // `MapCanvas` animates a translation to a new cell.
-export const USER_SPEED = 4;
+export const USER_SPEED = 5;
 const STEP_MS = 1000 / USER_SPEED;
 // How often the cooldown is polled -- finer than `STEP_MS` so a move fires
 // right when the cooldown clears rather than up to one metronome period
