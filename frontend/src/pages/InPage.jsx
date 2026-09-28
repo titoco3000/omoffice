@@ -4,6 +4,7 @@ import { Link } from "../core/Router";
 import { useAuth } from "../core/auth/AuthContext";
 import { useIsMobile } from "../core/hooks/useViewport";
 import AsyncButton from "../core/ui/AsyncButton";
+import Spinner from "../core/ui/Spinner";
 import { useOrgSession, OrgOnlineView } from "../features/org";
 import { useMapMode, MapCanvas } from "../features/map";
 import { useMeetingSessionContext } from "../features/meetings";
@@ -50,10 +51,19 @@ function MapView() {
 }
 
 export default function InPage() {
-  const { orgs, currentOrg } = useOrgSession();
+  const { orgs, orgsLoading, currentOrg, selectOrg } = useOrgSession();
   const { mode } = useMapMode();
   const meetingSession = useMeetingSessionContext();
   const { myMeetingId, create } = meetingSession;
+
+  if (orgsLoading) {
+    return (
+      <main className="mx-auto flex max-w-md flex-col items-center gap-4 px-6 py-16 text-center">
+        <Spinner className="size-5" />
+        <p className="text-ink-muted">Loading organizations...</p>
+      </main>
+    );
+  }
 
   if (orgs.length === 0) {
     return (
@@ -100,13 +110,21 @@ export default function InPage() {
           </div>
         </section>
       ) : (
-        <p className="text-ink-muted">
-          Choose an organization from your{" "}
-          <Link to="/profile" className="text-brand hover:underline">
-            profile
-          </Link>
-          .
-        </p>
+        <section className="flex flex-col gap-3">
+          <p className="text-ink-muted">Choose an organization:</p>
+          <ul className="flex flex-col gap-2">
+            {orgs.map((org) => (
+              <li key={org.id}>
+                <button
+                  onClick={() => selectOrg(org.id)}
+                  className="w-full rounded-card border bg-surface px-4 py-2 text-left text-ink hover:bg-muted"
+                >
+                  {org.name}
+                </button>
+              </li>
+            ))}
+          </ul>
+        </section>
       )}
     </main>
   );

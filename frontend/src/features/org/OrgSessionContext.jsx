@@ -19,6 +19,7 @@ export function OrgSessionProvider({ children }) {
   const myId = decodeJwt(token)?.sub;
 
   const [orgs, setOrgs] = useState([]);
+  const [orgsLoading, setOrgsLoading] = useState(true);
   const [orgId, setOrgId] = useState(() =>
     localStorage.getItem(CURRENT_ORG_KEY),
   );
@@ -38,7 +39,8 @@ export function OrgSessionProvider({ children }) {
         setOrgs(data.orgs ?? []);
         setProfile({ name: data.name, picture: data.picture });
       })
-      .catch((err) => setError(err.message));
+      .catch((err) => setError(err.message))
+      .finally(() => setOrgsLoading(false));
   const reloadOrgs = reloadMe;
   const reloadProfile = reloadMe;
 
@@ -87,6 +89,7 @@ export function OrgSessionProvider({ children }) {
   const value = {
     myId,
     orgs,
+    orgsLoading,
     orgId,
     currentOrg,
     selectOrg,
