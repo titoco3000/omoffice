@@ -54,13 +54,13 @@ export default function MeetingControls({
       ></ControlButton>
       <ControlButton
         active={cameraOn}
-        icon={cameraOn ? <FiVideoOff /> : <FiVideo />}
+        icon={cameraOn ? <FiVideo /> : <FiVideoOff />}
         onClick={onToggleCamera}
         title={cameraOn ? "Turn camera off" : "Turn camera on"}
       ></ControlButton>
       <ControlButton
         active={!micMuted}
-        icon={micMuted ? <FiMic /> : <FiMicOff />}
+        icon={micMuted ? <FiMicOff /> : <FiMic />}
         onClick={onToggleMic}
         title={micMuted ? "Unmute" : "Mute"}
       ></ControlButton>

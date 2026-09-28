@@ -79,7 +79,7 @@ function SidebarFooter({ collapsed }) {
         onClick={toggleCamera}
         title={cameraOn ? "Turn camera off" : "Turn camera on"}
       >
-        {cameraOn ? <FiVideoOff /> : <FiVideo />}
+        {cameraOn ? <FiVideo /> : <FiVideoOff />}
       </MediaButton>
     </>
   );
