@@ -63,9 +63,8 @@ function cssVar(name) {
 
 // Moves `current` up to `step` cells toward `target` one axis at a time,
 // never diagonally -- a sprite walking diagonally doesn't read as walking.
-// Horizontal first, same order as `useMapSession`'s click path, so remote
-// steps that arrive bunched up (or a jump of more than a cell) still turn
-// the same corner the walker did. The exception is an axis already
+// Horizontal first, so a click's jump of several cells (applied in one
+// move, see `useMapSession`) walks the same L-shaped path on every tab. The exception is an axis already
 // mid-step (off its grid line): that one is finished first, rather than
 // sliding sideways between two rows.
 function easeAlongGrid(current, target, step) {

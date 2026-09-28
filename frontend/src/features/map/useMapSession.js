@@ -8,13 +8,20 @@
 //! - **Arrow keys** step in whichever direction is currently held, checked
 //!   again each time the cooldown clears -- so holding one down repeats it
 //!   for as long as it stays held, same as a classic tile-grid walk.
-//! - **A click** sets its cell as a destination, walked to one cell per
-//!   cooldown like a held key, along a fixed L-shaped path: the whole
-//!   horizontal leg first, then the vertical one (see `stepToward`). A
-//!   second click replaces the destination, re-pathed from wherever this
-//!   tab has got to; pressing an arrow key abandons it.
-//! A destination takes priority over a held key if both are pending when
-//! the cooldown clears. A steady metronome (every `1 / USER_SPEED` seconds)
+//! - **A click** queues its cell as a one-shot absolute target, applied
+//!   (and broadcast) as a single move the moment the cooldown allows -- the
+//!   cells in between are never reported, so walking past someone on the
+//!   way doesn't count as meeting them, and clicking on someone meets them
+//!   straight away. `MapCanvas` is what shows the walk there, easing along
+//!   an L-shaped path at `USER_SPEED`. A second click before the cooldown
+//!   clears replaces the queued one rather than stacking.
+//! Mid-walk, this hook tracks roughly where the avatar has visibly got to
+//! (`walkRef`), and both inputs start from there rather than from the
+//! logical cell already reached: another click re-targets from that spot,
+//! and an arrow key cancels the walk, stepping from the nearest cell to it
+//! -- the same as clicking the cell next to that one.
+//! A click takes priority over a held key if both are pending when the
+//! cooldown clears. A steady metronome (every `1 / USER_SPEED` seconds)
 //! drives that check, rather than each move rescheduling the next one
 //! itself, so held-key repeats don't depend on a self-referencing timer.
 //!
@@ -83,16 +90,22 @@ const ARROW_DELTA = {
 const clamp = (v) =>
   Number.isFinite(v) ? Math.max(0, Math.min(OFFICE_SIZE - 1, v)) : 0;
 
-// One cell from `from` toward `to` -- horizontally until the columns
-// match, then vertically -- or null once there. `MapCanvas` eases a
-// multi-cell jump in the same order, so a click's walk reads the same
-// whether its steps are drawn one by one or arrive bunched up.
-function stepToward(from, to) {
-  if (from.x !== to.x)
-    return { x: from.x + Math.sign(to.x - from.x), y: from.y };
-  if (from.y !== to.y)
-    return { x: from.x, y: from.y + Math.sign(to.y - from.y) };
-  return null;
+const gridDistance = (a, b) => Math.abs(a.x - b.x) + Math.abs(a.y - b.y);
+
+// Roughly where `MapCanvas` has drawn this tab mid-walk: `walk.from` ->
+// `walk.to` at `USER_SPEED`, horizontal leg first. Used to time a
+// re-targeted walk and to pick the cell an arrow key steps from, so it
+// needs the distance left right, not the exact corner taken.
+function walkPosition(walk, now) {
+  let left = (now - walk.startedAt) / STEP_MS;
+  const at = { ...walk.from };
+  for (const axis of ["x", "y"]) {
+    const distance = Math.abs(walk.to[axis] - at[axis]);
+    const move = Math.min(distance, left);
+    at[axis] += Math.sign(walk.to[axis] - at[axis]) * move;
+    left -= move;
+  }
+  return at;
 }
 
 function bumpPlacements(prev, ids) {
@@ -311,7 +324,10 @@ export function useMapSession(token, orgId, members) {
   }, [myPosition.x, myPosition.y]);
 
   const heldKeysRef = useRef([]); // most-recently-pressed direction last
-  const destinationRef = useRef(null); // a clicked cell being walked to
+  const queuedClickRef = useRef(null);
+  // The walk `MapCanvas` is drawing toward the last move's cell:
+  // {from, to, startedAt, endsAt} -- see the module doc.
+  const walkRef = useRef(null);
   const lastMoveAtRef = useRef(0);
   const lastPersistAtRef = useRef(0);
   // This tab has moved since its last stored move.
@@ -344,33 +360,44 @@ export function useMapSession(token, orgId, members) {
 
   useEffect(() => flush, [flush]);
 
-  // Take one step for whichever of a click's destination or a held key is
-  // pending, preferring the destination -- but only once the cooldown
-  // since the last actual move has elapsed. Safe to call as often as convenient (a poll, a keydown, a
-  // click): it's a no-op both when nothing is pending and when the
-  // cooldown hasn't cleared yet.
+  // Apply whichever of a queued click or a held key is pending, preferring
+  // the click -- but only once the cooldown since the last actual move has
+  // elapsed. Safe to call
+  // as often as convenient (a poll, a keydown, a click): it's a no-op both
+  // when nothing is pending and when the cooldown hasn't cleared yet.
   const attempt = useCallback(() => {
-    if (Date.now() - lastMoveAtRef.current < STEP_MS) return;
+    const now = Date.now();
+    if (now - lastMoveAtRef.current < STEP_MS) return;
 
-    const from = myPositionRef.current;
-    let target = null;
-    if (destinationRef.current) {
-      target = stepToward(from, destinationRef.current);
-      if (!target) destinationRef.current = null;
-    }
+    const walk = walkRef.current;
+    const from =
+      walk && now < walk.endsAt
+        ? walkPosition(walk, now)
+        : myPositionRef.current;
+    let target = queuedClickRef.current;
+    queuedClickRef.current = null;
     if (!target) {
       const key = heldKeysRef.current[heldKeysRef.current.length - 1];
       const delta = key && ARROW_DELTA[key];
       if (delta) {
-        target = { x: from.x + delta.dx, y: from.y + delta.dy };
+        target = {
+          x: clamp(Math.round(from.x) + delta.dx),
+          y: clamp(Math.round(from.y) + delta.dy),
+        };
       }
     }
     // Nothing pending a full cooldown after the last move: movement has
     // stopped, so store where it stopped.
     if (!target) return flush();
 
+    walkRef.current = {
+      from,
+      to: target,
+      startedAt: now,
+      endsAt: now + gridDistance(from, target) * STEP_MS,
+    };
     applyMove(target.x, target.y);
-    lastMoveAtRef.current = Date.now();
+    lastMoveAtRef.current = now;
   }, [applyMove, flush]);
 
   // Polls `attempt` so a held key keeps repeating and a click queued during
@@ -387,9 +414,6 @@ export function useMapSession(token, orgId, members) {
       if (!ARROW_DELTA[event.key]) return;
       if (["INPUT", "TEXTAREA"].includes(event.target.tagName)) return;
       event.preventDefault();
-      // A fresh press, not the OS's auto-repeat of a key already held
-      // before the click.
-      if (!event.repeat) destinationRef.current = null;
       if (!heldKeysRef.current.includes(event.key))
         heldKeysRef.current.push(event.key);
       attempt();
@@ -409,9 +433,9 @@ export function useMapSession(token, orgId, members) {
 
   const moveTo = useCallback(
     (x, y) => {
-      // Clamped here, not just in `applyMove`: an off-map destination
-      // would otherwise never be reached, and walked toward forever.
-      destinationRef.current = { x: clamp(x), y: clamp(y) };
+      // Clamped here, not just in `applyMove`, so the walk is timed to
+      // the cell actually moved to.
+      queuedClickRef.current = { x: clamp(x), y: clamp(y) };
       attempt();
     },
     [attempt],
