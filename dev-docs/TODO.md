@@ -1,6 +1,6 @@
-- Organization chat
-- create client homepage
+- mobile map controls 
 - shared drawing
-- terraria-style navigation
+- walls
 - map editing
-- 
+- avatar editing
+- gong

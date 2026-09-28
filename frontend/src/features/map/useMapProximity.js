@@ -23,6 +23,11 @@
 //! step ago, which only this tab does. A meeting joined from far away (the
 //! roster's join button) isn't left just because its attendees are out of
 //! range -- only by walking away from an attendee who was in range.
+//!
+//! A move the map made on the user's behalf after they joined or left a
+//! meeting some other way (`relocation.js`, flagged through
+//! `silentCellRef`) isn't an encounter either: arriving on that cell only
+//! records who's nearby there, the same as loading the map.
 
 import { useEffect, useRef } from "react";
 import { messenger } from "../../core/messenger";
@@ -62,6 +67,7 @@ export function useMapProximity(
   members,
   myId,
   session,
+  silentCellRef,
 ) {
   const me = positions[myId];
 
@@ -108,7 +114,10 @@ export function useMapProximity(
       );
       const previous = previousNearRef.current;
       previousNearRef.current = near;
+      const silent = silentCellRef.current;
+      silentCellRef.current = null;
       if (!previous) return;
+      if (silent && silent.x === here.x && silent.y === here.y) return;
 
       const { meetings, myMeetingId, leave, expectJoin, followJoin } = session;
       const mine = meetings.find((m) => m.id === myMeetingId);

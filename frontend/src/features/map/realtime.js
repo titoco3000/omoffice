@@ -165,3 +165,21 @@ export function openMapEvents({
     close,
   };
 }
+
+/// Publish one move as `userId` in `orgId` over AppSync's HTTP endpoint,
+/// without opening (or subscribing on) a socket -- for a tab that isn't
+/// showing the map, and so has no connection, but still has to tell those
+/// that are where it went (`MapRelocationProvider`). Same channel, and so
+/// the same authorizer check, as `openMapEvents`' own publish.
+export async function publishMapMove({ endpoint, token, orgId, userId, x, y }) {
+  const { http } = hosts(endpoint);
+  const response = await fetch(`https://${http}/event`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: token },
+    body: JSON.stringify({
+      channel: `/map/${orgId}/${userId}`,
+      events: [JSON.stringify({ x, y })],
+    }),
+  });
+  if (!response.ok) throw new Error(`publish failed: ${response.status}`);
+}

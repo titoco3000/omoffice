@@ -57,6 +57,8 @@ import {
 } from "./api";
 import { openMapEvents } from "./realtime";
 import { useMapProximity } from "./useMapProximity";
+import { relocationCell } from "./relocation";
+import { useMapRelocationClaim } from "./MapRelocationContext";
 import { useMeetingSessionContext } from "../meetings";
 
 // Cells per second -- governs both the move cooldown (one cell every
@@ -442,9 +444,49 @@ export function useMapSession(token, orgId, members) {
   );
 
   // Walking up to someone starts or joins a meeting with them -- see
-  // `useMapProximity`.
+  // `useMapProximity`. `silentCellRef` is the cell a relocation below is
+  // headed for, which proximity doesn't treat as walking up to anyone.
   const session = useMeetingSessionContext();
-  useMapProximity(token, orgId, positions, loaded, members, myId, session);
+  const silentCellRef = useRef(null);
+  useMapProximity(
+    token,
+    orgId,
+    positions,
+    loaded,
+    members,
+    myId,
+    session,
+    silentCellRef,
+  );
+
+  // A meeting joined or left by an explicit click (roster, dock) while the
+  // map is open: move there as a click on the map would -- walked, one move
+  // over the wire -- but silently, since the meeting side is already
+  // handled. Claimed from `MapRelocationProvider`, which covers the same
+  // clicks while no map is open. See `relocation.js` for where.
+  const relocationRef = useRef(null);
+  useEffect(() => {
+    relocationRef.current = { positions, members, myId, loaded, session };
+  });
+  useMapRelocationClaim((intent) => {
+    const { positions, members, myId, loaded, session } = relocationRef.current;
+    if (!loaded) return;
+    const walk = walkRef.current;
+    const now = Date.now();
+    const cell = relocationCell(intent, {
+      from:
+        walk && now < walk.endsAt
+          ? walkPosition(walk, now)
+          : myPositionRef.current,
+      myId,
+      positions,
+      members,
+      meetings: session.meetings,
+    });
+    if (!cell) return;
+    silentCellRef.current = cell;
+    moveTo(cell.x, cell.y);
+  });
 
   return { positions, myPosition, moveTo, loaded, placements };
 }

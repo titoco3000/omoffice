@@ -48,7 +48,7 @@ export default function MeetingPanel({
     sendChatMessage,
     muteAttendee,
     turnOffAttendeeCamera,
-    leave,
+    leaveByUser,
     toggleCamera,
     toggleMic,
     toggleScreenShare,
@@ -220,7 +220,7 @@ export default function MeetingPanel({
           sharingScreen={sharingScreen}
           locked={locked}
           canShareScreen={roomStatus === "connected"}
-          onLeave={leave}
+          onLeave={leaveByUser}
           onToggleCamera={toggleCamera}
           onToggleMic={toggleMic}
           onToggleScreenShare={toggleScreenShare}

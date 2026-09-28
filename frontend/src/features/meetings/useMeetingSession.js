@@ -11,6 +11,14 @@
 //! org. The backend itself has no notion of "current org" and hands back
 //! every pending invite regardless -- filtering to `orgId` happens here,
 //! client-side, on every render.
+//!
+//! `onIntent` lets something else follow what the user deliberately asked
+//! for, as opposed to everything else that moves this tab between meetings
+//! (proximity, the idle timeout, an org switch, a forced join): currently
+//! `{type: "join", userId}` from `joinOrForce` and `{type: "leave"}` from
+//! `leaveByUser` -- the office map (`features/map`) uses them to walk the
+//! avatar over to whoever was joined, or away from the meeting just left,
+//! whichever layout the click came from.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { messenger } from "../../core/messenger";
@@ -531,11 +539,27 @@ export function useMeetingSession(token, orgId) {
     }
   };
 
+  const intentListenersRef = useRef(new Set());
+  const onIntent = useCallback((listener) => {
+    intentListenersRef.current.add(listener);
+    return () => intentListenersRef.current.delete(listener);
+  }, []);
+  const emitIntent = (intent) =>
+    intentListenersRef.current.forEach((listener) => listener(intent));
+
+  // `leave`, as the user's own explicit choice -- see `onIntent`.
+  const leaveByUser = async () => {
+    if (!myMeetingId) return;
+    emitIntent({ type: "leave" });
+    await leave();
+  };
+
   const joinOrForce = async (userId, meetingId) => {
     if (myMeetingId) {
       if (!window.confirm("Leave your current meeting?")) return;
       await leave();
     }
+    emitIntent({ type: "join", userId });
     if (meetingId) {
       await join(meetingId);
       return;
@@ -714,6 +738,8 @@ export function useMeetingSession(token, orgId) {
     create,
     join,
     leave,
+    leaveByUser,
+    onIntent,
     acceptInvite,
     declineInvite,
     inviteUser,
