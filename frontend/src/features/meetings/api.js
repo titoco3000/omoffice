@@ -1,13 +1,14 @@
 import { apiFetch } from "../../core/api";
 
-export const MEETING_LIST_CHANNEL = "meeting_list";
 export const IDLE_AFTER_SECONDS = 55;
+export const MEETING_LIST_CHANNEL = "meeting_list";
 export const MEETING_ROOM_CHANNEL = "meeting_room";
 export const MEETING_INVITES_CHANNEL = "meeting_invites";
 export const MEETING_FORCE_CHANNEL = "meeting_force";
 export const MEETING_CHAT_CHANNEL = "meeting_chat";
 export const MEETING_CONTROL_CHANNEL = "meeting_control";
 export const MEETING_ACCESS_REQUEST_CHANNEL = "meeting_access_request";
+export const MEETING_WAVE_CHANNEL = "meeting_wave";
 
 export const listMeetings = (token, orgId) =>
   apiFetch(`/meeting?org_id=${encodeURIComponent(orgId)}`, { token });

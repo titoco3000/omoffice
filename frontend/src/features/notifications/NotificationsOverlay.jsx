@@ -1,5 +1,5 @@
 //! Global "wants a yes/no, or just wants to be seen" feed -- pending org
-//! invites, pending meeting invites, and meeting access requests -- as one
+//! invites, pending meeting invites, meeting access requests and waves -- as one
 //! floating column of bubbles over the content area. Mounted once by
 //! `NavContainer`, so it's above every authenticated page, and above the
 //! meeting dock (`z-[60]` beats `MeetingDock`'s `z-50`) rather than
@@ -15,9 +15,8 @@
 //! A bubble's X only ever hides it from this tab -- `dismissedIds` is local
 //! state, not a request to the backend. Declining an org/meeting invite is
 //! its own explicit button, since that's a real, not-undoable action;
-//! dismissing an access request (which is already frontend-only, see
-//! `useMeetingSession.dismissAccessRequest`) is the one case where the X
-//! and "no thanks" are the same thing.
+//! dismissing an access request or a wave (both already frontend-only, see
+//! `useMeetingSession`) is where the X and "no thanks" are the same thing.
 
 import { useState } from "react";
 import { FiX } from "react-icons/fi";
@@ -130,6 +129,23 @@ function AccessRequestBubble({ userId, members, onAdmit, onDismiss }) {
   );
 }
 
+function WaveBubble({ userId, members, onAnswer, onDismiss }) {
+  return (
+    <Bubble onClose={onDismiss}>
+      <p className="text-sm text-ink">
+        <span className="font-medium">{preferredName(userId, members)}</span>{" "}
+        waved at you.
+      </p>
+      <AsyncButton
+        onClick={onAnswer}
+        className="mt-3 rounded-card bg-brand px-3 py-1 text-sm font-medium text-on-brand hover:bg-brand-strong"
+      >
+        Go talk
+      </AsyncButton>
+    </Bubble>
+  );
+}
+
 export default function NotificationsOverlay() {
   const { token } = useAuth();
   const { reloadOrgs, selectOrg, roster } = useOrgSession();
@@ -142,6 +158,9 @@ export default function NotificationsOverlay() {
     accessRequests,
     admitAccessRequest,
     dismissAccessRequest,
+    waves,
+    answerWave,
+    dismissWave,
   } = useMeetingSessionContext();
   const isMobile = useIsMobile();
   const isPortrait = useIsPortrait();
@@ -166,7 +185,8 @@ export default function NotificationsOverlay() {
     !showUrlInvite &&
     orgInviteList.length === 0 &&
     meetingInviteList.length === 0 &&
-    accessRequests.length === 0;
+    accessRequests.length === 0 &&
+    waves.length === 0;
   if (empty) return null;
 
   // Which edge/bottom the bar currently claiming "navbar" sits on -- see
@@ -230,6 +250,15 @@ export default function NotificationsOverlay() {
           members={roster.members}
           onAdmit={() => admitAccessRequest(request.userId)}
           onDismiss={() => dismissAccessRequest(request.userId)}
+        />
+      ))}
+      {waves.map((w) => (
+        <WaveBubble
+          key={w.userId}
+          userId={w.userId}
+          members={roster.members}
+          onAnswer={() => answerWave(w.userId)}
+          onDismiss={() => dismissWave(w.userId)}
         />
       ))}
       {orgInvites.error && (

@@ -42,6 +42,7 @@ pub mod chat;
 pub mod controls;
 pub mod meeting_invites;
 pub mod rooms;
+pub mod waves;
 pub use meeting_invites::*;
 
 use std::collections::HashMap;

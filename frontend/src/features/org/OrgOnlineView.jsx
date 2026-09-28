@@ -1,6 +1,6 @@
 //! Everyone online in the current org, grouped by whichever meeting (if
 //! any) they're in, plus who's offline. Clicking an online member reveals
-//! whichever of join/invite/ask-to-join actually make sense for them --
+//! whichever of join/wave/invite/ask-to-join actually make sense for them --
 //! see `actionsFor` below, which is the one place that decision is made.
 //! Offline members are listed but inert -- there's nothing to do with them
 //! yet. A member already sharing this tab's own meeting gets no actions
@@ -43,16 +43,20 @@ function Avatar({ name, picture, online }) {
   );
 }
 
-// Which actions to offer upon clicking on other org member
+// Which actions to offer upon clicking on other org member. Already in a
+// meeting, "invite" says it better than "wave" -- there's somewhere to
+// bring them already -- so only one of the two is offered.
 function actionsFor(myMeetingId, meetingId, locked) {
-  if (meetingId && locked) return ["ask", "invite"];
-  return myMeetingId ? ["join", "invite"] : ["join"];
+  if (meetingId && locked)
+    return myMeetingId ? ["ask", "invite"] : ["ask", "wave"];
+  return myMeetingId ? ["join", "invite"] : ["join", "wave"];
 }
 
 const ACTION_LABEL = {
   join: "Join",
   invite: "Invite",
   ask: "Ask to join",
+  wave: "Wave",
 };
 
 function MemberRow({
@@ -60,10 +64,12 @@ function MemberRow({
   meetingId,
   meetingLocked,
   myMeetingId,
+  waved,
   compact,
   onJoin,
   onRequestAccess,
   onInvite,
+  onWave,
 }) {
   const [open, setOpen] = useState(false);
   const sameMeeting = !!meetingId && meetingId === myMeetingId;
@@ -81,6 +87,7 @@ function MemberRow({
     join: () => onJoin(member.id, meetingId),
     invite: () => onInvite(member.id),
     ask: () => onRequestAccess(meetingId),
+    wave: () => onWave(member.id),
   };
 
   return (
@@ -99,6 +106,16 @@ function MemberRow({
         />
         {!compact && (
           <span className="truncate text-sm text-ink">{member.name}</span>
+        )}
+        {waved && (
+          <span
+            title="Wave sent"
+            className={
+              compact ? "-ml-3 text-xs" : "ml-auto text-xs text-ink-muted"
+            }
+          >
+            {compact ? "👋" : "👋 Waved"}
+          </span>
         )}
       </button>
       {open && (
@@ -120,8 +137,15 @@ function MemberRow({
 
 export default function OrgOnlineView({ meetingSession }) {
   const { myId, roster } = useOrgSession();
-  const { meetings, myMeetingId, joinOrForce, requestAccess, inviteUser } =
-    meetingSession;
+  const {
+    meetings,
+    myMeetingId,
+    joinOrForce,
+    requestAccess,
+    inviteUser,
+    wave,
+    wavedUserIds,
+  } = meetingSession;
   const containerRef = useRef(null);
   const [compact, setCompact] = useState(false);
 
@@ -166,10 +190,12 @@ export default function OrgOnlineView({ meetingSession }) {
       meetingId={meetingId}
       meetingLocked={!!meetingById.get(meetingId)?.invite_only}
       myMeetingId={myMeetingId}
+      waved={wavedUserIds.has(member.id)}
       compact={compact}
       onJoin={joinOrForce}
       onRequestAccess={requestAccess}
       onInvite={inviteUser}
+      onWave={wave}
     />
   );
 

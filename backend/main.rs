@@ -52,6 +52,7 @@ async fn main() {
     features::meetings::chat::register(&messenger, db.clone());
     features::meetings::controls::register(&messenger, db.clone());
     features::meetings::access_requests::register(&messenger, db.clone());
+    features::meetings::waves::register(&messenger, db.clone());
 
     let app = router::app(db, chime, messenger, media);
     serve(app).await;

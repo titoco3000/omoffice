@@ -15,8 +15,8 @@
 //! `onIntent` lets something else follow what the user deliberately asked
 //! for, as opposed to everything else that moves this tab between meetings
 //! (proximity, the idle timeout, an org switch, a forced join): currently
-//! `{type: "join", userId}` from `joinOrForce` and `{type: "leave"}` from
-//! `leaveByUser` -- the office map (`features/map`) uses them to walk the
+//! `{type: "join", userId}` from `joinOrForce` and `acceptInvite`, and
+//! `{type: "leave"}` from `leaveByUser` -- the office map (`features/map`) uses them to walk the
 //! avatar over to whoever was joined, or away from the meeting just left,
 //! whichever layout the click came from.
 //!
@@ -27,6 +27,11 @@
 //! on this user's own initiative (`create`, `join`, `acceptInvite`, walking
 //! up to someone on the map via `followJoin`) always unmutes the mic; a
 //! forced join keeps whatever it was.
+//!
+//! Waves (`wave`/`waves`) are a nudge with no meeting behind them -- see
+//! `features::meetings::waves` (backend/lib/features/meetings/waves.rs).
+//! Answering one (`answerWave`) is the same as clicking the waver in the
+//! roster: `joinOrForce`, so the map walks this user over to them too.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { messenger } from "../../core/messenger";
@@ -42,6 +47,7 @@ import {
   MEETING_INVITES_CHANNEL,
   MEETING_LIST_CHANNEL,
   MEETING_ROOM_CHANNEL,
+  MEETING_WAVE_CHANNEL,
   acceptMeetingInvite,
   createMeeting,
   declineMeetingInvite,
@@ -60,6 +66,10 @@ const EXPECT_JOIN_MS = 15000;
 // How long after leaving a meeting a room push for it is still taken as a
 // late echo of that meeting, not as the backend putting this tab back in.
 const LEFT_RECENTLY_MS = 5000;
+// How long a wave's bubble stays up without an answer.
+const WAVE_TTL_MS = 60000;
+// How long the waver's own "waved" mark shows after the wave is delivered.
+const WAVED_MARK_MS = 5000;
 // Desktop's shorter take on `IDLE_AFTER_SECONDS` for a meeting this tab
 // sits in alone -- see the idle-leave effect at the bottom.
 const DESKTOP_IDLE_AFTER_SECONDS = 3;
@@ -115,6 +125,15 @@ export function useMeetingSession(token, orgId) {
   // a repeat request from the same person just refreshes its timestamp
   // rather than piling up, and the list resets whenever `myMeetingId` does.
   const [accessRequests, setAccessRequests] = useState([]);
+  // Waves at this user, `[{userId, orgId, at}]` -- frontend-only, same as
+  // `accessRequests`: the backend relays a wave but never stores it, so a
+  // repeat wave from the same person just refreshes its timestamp. Every
+  // org's, narrowed to `orgId` before this hook hands them back, same as
+  // `invites`.
+  const [allWaves, setAllWaves] = useState([]);
+  // This user's own waves the other side just received -- same shape, same
+  // org narrowing.
+  const [allSentWaves, setAllSentWaves] = useState([]);
   const myId = decodeJwt(token)?.sub;
   const isMobile = useIsMobile();
 
@@ -334,6 +353,45 @@ export function useMeetingSession(token, orgId) {
     };
   }, [myMeetingId]);
 
+  // Both sides of a wave: `wave` lands in `allWaves` (at this user), `sent`
+  // in `allSentWaves` (from this user, once the backend confirms the other
+  // side got it). Each entry expires on its own -- the bubble after
+  // `WAVE_TTL_MS`, the waver's mark after `WAVED_MARK_MS` -- not on
+  // anything the other side does.
+  useEffect(() => {
+    const add = (setList, userId, orgId, ttl) => {
+      const entry = { userId, orgId, at: Date.now() };
+      setList((prev) => [...prev.filter((w) => w.userId !== userId), entry]);
+      setTimeout(() => setList((prev) => prev.filter((w) => w !== entry)), ttl);
+    };
+    return messenger.on(MEETING_WAVE_CHANNEL, (message) => {
+      if (message.action === "wave")
+        add(setAllWaves, message.from, message.org_id, WAVE_TTL_MS);
+      else if (message.action === "sent")
+        add(setAllSentWaves, message.to, message.org_id, WAVED_MARK_MS);
+    });
+  }, []);
+
+  const waves = allWaves.filter((w) => w.orgId === orgId);
+  const wavedUserIds = new Set(
+    allSentWaves.filter((w) => w.orgId === orgId).map((w) => w.userId),
+  );
+
+  // Fire-and-forget over the messenger, same as `requestAccess` -- the
+  // `sent` ack above is what marks it in `wavedUserIds`.
+  const wave = (userId) => {
+    if (!orgId) return;
+    messenger.send(MEETING_WAVE_CHANNEL, {
+      action: "wave",
+      org_id: orgId,
+      to: userId,
+    });
+  };
+
+  const dismissWave = (userId) => {
+    setAllWaves((prev) => prev.filter((w) => w.userId !== userId));
+  };
+
   // No HTTP route behind this -- a chat message is nothing but a frame on
   // the wire, so it goes straight out over the messenger. The backend
   // relays it to every other attendee but never back to the sender (see
@@ -529,6 +587,16 @@ export function useMeetingSession(token, orgId) {
     await applyMicMuted(false);
     try {
       const data = await acceptMeetingInvite(token, inviteId);
+      // Accepting is this user's own choice to go there -- walk over to the
+      // meeting (see `onIntent`): next to the inviter if they're still in
+      // it, else whoever is.
+      const attendees =
+        meetings.find((m) => m.id === (data.meeting_id ?? meetingId))
+          ?.attendees ?? [];
+      const target = attendees.includes(invite?.invited_by)
+        ? invite.invited_by
+        : attendees.find((id) => id !== myId);
+      if (target) emitIntent({ type: "join", userId: target });
       await applyJoinResponse(data.meeting_id ?? meetingId, data);
     } catch (err) {
       setError(err.message);
@@ -651,6 +719,20 @@ export function useMeetingSession(token, orgId) {
     await applyJoinResponse(data.meeting_id, data);
   };
 
+  // Go to whoever waved: into their meeting if they're in one (asking
+  // first if it's locked, same as the roster would), else a new one with
+  // them forced in -- see `joinOrForce`.
+  const answerWave = async (userId) => {
+    dismissWave(userId);
+    const meeting = meetings.find((m) => m.attendees?.includes(userId));
+    if (meeting && meeting.id === myMeetingId) return;
+    if (meeting?.invite_only) {
+      requestAccess(meeting.id);
+      return;
+    }
+    await joinOrForce(userId, meeting?.id ?? null);
+  };
+
   // Lock/unlock the meeting this tab is in
   const toggleLock = async () => {
     if (!myMeetingId) return;
@@ -752,6 +834,11 @@ export function useMeetingSession(token, orgId) {
     error,
     chatMessages,
     accessRequests,
+    waves,
+    wavedUserIds,
+    wave,
+    answerWave,
+    dismissWave,
     sendChatMessage,
     requestAccess,
     admitAccessRequest,
