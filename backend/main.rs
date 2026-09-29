@@ -71,7 +71,7 @@ async fn serve(app: axum::Router) {
 /// Code that runs locally
 #[cfg(not(feature = "lambda"))]
 async fn serve(app: axum::Router) {
-    let port = std::env::var("PORT").unwrap_or_else(|_| "8000".to_string());
+    let port = std::env::var("PORT").unwrap_or_else(|_| "8003".to_string());
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}"))
         .await
         .expect("port is free");

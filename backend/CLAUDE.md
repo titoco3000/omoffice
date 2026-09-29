@@ -5,7 +5,7 @@ Rust crate (axum). One binary: local HTTP server + Lambda handler. See the root 
 ## Commands
 
 ```sh
-make run [stage]      # http://localhost:8000, reloads on src edits (cargo-watch; WATCH=0 to disable)
+make run [stage]      # http://localhost:8003, reloads on src edits (cargo-watch; WATCH=0 to disable)
 make test | fmt | lint   # cargo test / fmt / clippy --all-targets -D warnings
 cargo test --lib some_test_name   # single test, headless (no socket, no binary)
 ```

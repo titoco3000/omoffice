@@ -8,5 +8,5 @@ pub mod rbac;
 
 /// Where the SPA is served, for a magic-link invite URL.
 pub fn frontend_base_url() -> String {
-    std::env::var("FRONTEND_URL").unwrap_or_else(|_| "http://localhost:5173".to_string())
+    std::env::var("FRONTEND_URL").unwrap_or_else(|_| "http://localhost:5175".to_string())
 }

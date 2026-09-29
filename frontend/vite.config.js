@@ -18,7 +18,7 @@ export default defineConfig({
     esbuildOptions: { define: { global: "globalThis" } },
   },
   server: {
-    port: Number(process.env.PORT ?? 5173),
+    port: Number(process.env.PORT ?? 5175),
     strictPort: true,
   },
 });

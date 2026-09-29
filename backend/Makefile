@@ -58,7 +58,7 @@ dev prod:
 .PHONY: help
 help:
 	@echo "make init                install toolchain + fetch deps"
-	@echo "make run [stage]         run locally on http://localhost:8000 (reloads on src edits; WATCH=0 disables)"
+	@echo "make run [stage]         run locally on http://localhost:8003 (reloads on src edits; WATCH=0 disables)"
 	@echo "make build [stage]       cross-compile lambda zip ($(ARCH))"
 	@echo "make deploy [stage]      build + push code to the lambdas from infra (API + map authorizer)"
 	@echo "make db-generate         diff schema.rs against the last generated migration, write any new one (local only, no stage)"
@@ -84,7 +84,7 @@ init:
 run:
 	$(REQUIRE_ENV)
 	@set -a; if [ -f $(ENV_FILE) ]; then . ./$(ENV_FILE); fi; set +a; \
-	  export PORT=$${PORT:-8000}; \
+	  export PORT=$${PORT:-8003}; \
 	  if [ "$(WATCH)" = "1" ]; then \
 	    command -v cargo-watch >/dev/null || { \
 	      echo "error: cargo-watch not found (needed for hot reload)."; \

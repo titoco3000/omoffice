@@ -8,7 +8,7 @@ frontend/   React + Vite + Tailwind.                                            
 infra/      Terraform stack (Lambda, API Gateway, AppSync Events, IAM, CloudWatch, Secrets Manager, S3, CloudFront)
 ```
 
-Stages are `dev` and `prod`, each its own Terraform workspace (separate state). Most `make` targets take the stage as a bare second word: `make run dev`, `make deploy prod`. `backend`/`infra` default to `dev`; `frontend` always runs as `local` (talks to `localhost:8000`) regardless of what stage the backend is on.
+Stages are `dev` and `prod`, each its own Terraform workspace (separate state). Most `make` targets take the stage as a bare second word: `make run dev`, `make deploy prod`. `backend`/`infra` default to `dev`; `frontend` always runs as `local` (talks to `localhost:8003`) regardless of what stage the backend is on.
 
 Root `.env` holds `AWS_PROFILE`, `AWS_REGION`, `PROJECT` and is sourced by every sub-Makefile automatically.
 

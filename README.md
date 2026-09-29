@@ -69,7 +69,7 @@ Lambda handler using the same router.
 ```sh
 cd backend
 make init                 # install dependencies
-make run <stage>          # http://localhost:8000, reloads on src/ edits (WATCH=0 to disable)
+make run <stage>          # http://localhost:8003, reloads on src/ edits (WATCH=0 to disable)
 make build <stage>        # cross-compile the lambda zip (cargo-lambda, ARCH default arm64)
 make deploy <stage>       # build + push the zip to the lambda named in .env.<stage>
 make test | fmt | lint
@@ -107,7 +107,7 @@ make db-shell <stage>    # psql against the stage, with a fresh IAM token
 ```sh
 cd frontend
 make init            # npm install
-make run <stage>     # runs on http://localhost:5173, talks to API from the stage (local/dev/prod)
+make run <stage>     # runs on http://localhost:5175, talks to API from the stage (local/dev/prod)
 make build <stage>   # production build into dist/
 make deploy <stage>  # build + sync dist/ to S3 + invalidate CloudFront
 make preview <stage> # serve the built dist/ locally

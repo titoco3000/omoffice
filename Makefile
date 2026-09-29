@@ -2,7 +2,7 @@ SHELL := /bin/bash
 .DEFAULT_GOAL := help
 
 # Allow `make run dev` / `make run prod` -- picks the backend stage.
-# Frontend always runs as `local` (talks to localhost:8000) regardless.
+# Frontend always runs as `local` (talks to localhost:8003) regardless.
 STAGE := $(word 2,$(MAKECMDGOALS))
 ifeq ($(STAGE),)
 STAGE := dev
@@ -33,9 +33,12 @@ fmt:
 	$(MAKE) -C infra fmt
 
 .PHONY: run
+# Frontend starts only once the backend port is up (max 120s, or backend died),
+# so startup logs don't interleave.
 run:
-	@trap 'kill $$backend_pid $$frontend_pid 2>/dev/null; fuser -k 8000/tcp 5173/tcp 2>/dev/null; true' EXIT INT TERM; \
+	@trap 'kill $$backend_pid $$frontend_pid 2>/dev/null; fuser -k 8003/tcp 5175/tcp 2>/dev/null; true' EXIT INT TERM; \
 	(cd backend && exec make run $(STAGE)) & backend_pid=$$!; \
+	for _ in $$(seq 240); do (echo > /dev/tcp/localhost/8003) 2>/dev/null && break; kill -0 $$backend_pid 2>/dev/null || break; sleep 0.5; done; \
 	(cd frontend && exec make run local) & frontend_pid=$$!; \
 	wait
 

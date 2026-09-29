@@ -5,7 +5,7 @@ React + Vite + Tailwind. See the root `CLAUDE.md` for stages and the infra hando
 ## Commands
 
 ```sh
-make run [stage]     # http://localhost:5173, talks to the given stage's API (local/dev/prod)
+make run [stage]     # http://localhost:5175, talks to the given stage's API (local/dev/prod)
 make build [stage] | make preview [stage] | make lint
 ```
 

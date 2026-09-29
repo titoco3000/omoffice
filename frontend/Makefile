@@ -50,12 +50,12 @@ local dev prod:
 .PHONY: help
 help:
 	@echo "make init            install node dependencies"
-	@echo "make run [stage]     vite dev server on http://localhost:5173 (PORT overrides)"
+	@echo "make run [stage]     vite dev server on http://localhost:5175 (PORT overrides)"
 	@echo "make build [stage]   production build into $(DIST)/"
 	@echo "make deploy [stage]  build + sync to S3 + invalidate CloudFront"
 	@echo "make preview [stage] serve the built $(DIST)/ locally"
 	@echo "make fmt | lint | clean"
-	@echo "stages: local (backend on localhost:8000), dev, prod"
+	@echo "stages: local (backend on localhost:8003), dev, prod"
 
 .PHONY: init
 init:
