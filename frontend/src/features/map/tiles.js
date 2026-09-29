@@ -3,6 +3,12 @@ import sandUrl from "./assets/tiles/sand.png";
 import waterUrl from "./assets/tiles/water.png";
 import plankLightUrl from "./assets/tiles/plank-light.png";
 import plankMediumUrl from "./assets/tiles/plank-medium.png";
+import wallBlueTopUrl from "./assets/tiles/wall/blue/top.png";
+import wallBlueMidUrl from "./assets/tiles/wall/blue/mid.png";
+import wallBlueBottomUrl from "./assets/tiles/wall/blue/bottom.png";
+import wallCreamTopUrl from "./assets/tiles/wall/cream/top.png";
+import wallCreamMidUrl from "./assets/tiles/wall/cream/mid.png";
+import wallCreamBottomUrl from "./assets/tiles/wall/cream/bottom.png";
 import topUrl from "./assets/transitions/top.png";
 import topLeftUrl from "./assets/transitions/top-left.png";
 import outerTopLeftUrl from "./assets/transitions/outer-top-left.png";
@@ -33,6 +39,26 @@ export const TILES = {
     organic: false,
     color: [128, 64, 0],
     src: [1, 0, 16, 16],
+  },
+  // Wall variants: one map color each, drawn as `top`/`mid`/`bottom` by
+  // what sits below the cell (see `wallPart`). They carry no edge lines.
+  "wall-blue": {
+    organic: false,
+    color: [0, 0, 255],
+    wall: {
+      top: wallBlueTopUrl,
+      mid: wallBlueMidUrl,
+      bottom: wallBlueBottomUrl,
+    },
+  },
+  "wall-cream": {
+    organic: false,
+    color: [255, 255, 128],
+    wall: {
+      top: wallCreamTopUrl,
+      mid: wallCreamMidUrl,
+      bottom: wallCreamBottomUrl,
+    },
   },
 };
 
@@ -155,9 +181,19 @@ export function createTileRenderer(getImage) {
       ([dx, dy]) => tileAt(tileMap, col + dx, row + dy) ?? own,
     );
 
+  // A wall column reads bottom-up: the cell with no same wall below is the
+  // bottom, the one above a bottom is the mid, every cell above that a top.
+  const wallPart = (tileMap, col, row, tile) => {
+    if (tileAt(tileMap, col, row + 1) !== tile) return "bottom";
+    return tileAt(tileMap, col, row + 2) !== tile ? "mid" : "top";
+  };
+
   const drawBase = (ctx, tileMap, col, row, x0, y0, x1, y1) => {
     const tile = tileAt(tileMap, col, row);
-    const image = getImage(TILES[tile].url);
+    const wall = TILES[tile].wall;
+    const image = getImage(
+      wall ? wall[wallPart(tileMap, col, row, tile)] : TILES[tile].url,
+    );
     if (!image) return;
     const src = TILES[tile].src;
     if (src) {
@@ -169,6 +205,7 @@ export function createTileRenderer(getImage) {
 
   const drawTransitions = (ctx, tileMap, col, row, x0, y0, x1, y1) => {
     const tile = tileAt(tileMap, col, row);
+    if (TILES[tile].wall) return;
     const around = neighbors(tileMap, col, row, tile);
 
     if (TILES[tile].organic) {
