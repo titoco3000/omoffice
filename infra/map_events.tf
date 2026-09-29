@@ -108,7 +108,7 @@ resource "aws_lambda_permission" "map_authorizer_appsync" {
 # `/map/{org_id}/{user_id}`. A subscriber's data frame carries no channel,
 # so `onPublish` stamps the sender -- the channel's last segment, which the
 # authorizer has already pinned to the publisher's own id -- onto each
-# event, and passes only `x`/`y` through from what the client sent.
+# event, and passes only `x`/`y`/`facing` through from what the client sent.
 resource "aws_appsync_channel_namespace" "map" {
   name   = "map"
   api_id = aws_appsync_api.map_events.api_id
@@ -119,7 +119,7 @@ resource "aws_appsync_channel_namespace" "map" {
       const userId = segments[segments.length - 1];
       return ctx.events.map((event) => ({
         id: event.id,
-        payload: { user_id: userId, x: event.payload.x, y: event.payload.y },
+        payload: { user_id: userId, x: event.payload.x, y: event.payload.y, facing: event.payload.facing },
       }));
     }
   EOT

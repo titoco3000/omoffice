@@ -12,9 +12,17 @@
 //!   (and broadcast) as a single move the moment the cooldown allows -- the
 //!   cells in between are never reported, so walking past someone on the
 //!   way doesn't count as meeting them, and clicking on someone meets them
-//!   straight away. `MapCanvas` is what shows the walk there, easing along
-//!   an L-shaped path at `USER_SPEED`. A second click before the cooldown
-//!   clears replaces the queued one rather than stacking.
+//!   straight away. `MapCanvas` is what shows the walk there, along the
+//!   shortest route around the walls (`navigation.js`) at `USER_SPEED`.
+//!   A click on a wall is ignored; a cell no route reaches (walled in) is
+//!   teleported to instead of walked to. A second click before the
+//!   cooldown clears replaces the queued one rather than stacking.
+//! - **Walls** also stop arrow keys: a step into one moves nothing, it only
+//!   turns the avatar to face it.
+//! Every move carries which way the avatar now faces (`facing`), so turning
+//! in place reaches everyone else too. It is only ever broadcast, never
+//! stored: whoever loads the map afresh sees everyone facing down.
+//!
 //! Mid-walk, this hook tracks roughly where the avatar has visibly got to
 //! (`walkRef`), and both inputs start from there rather than from the
 //! logical cell already reached: another click re-targets from that spot,
@@ -60,6 +68,13 @@ import { useMapProximity } from "./useMapProximity";
 import { relocationCell } from "./relocation";
 import { useMapRelocationClaim } from "./MapRelocationContext";
 import { useMeetingSessionContext } from "../meetings";
+import {
+  facingBetween,
+  findRoute,
+  routeLength,
+  routePosition,
+} from "./navigation";
+import { isBlocked } from "./tileMap";
 
 // Cells per second -- governs both the move cooldown (one cell every
 // `1 / USER_SPEED` seconds) and, so the two stay in sync, how fast
@@ -80,10 +95,10 @@ const TOKEN_REFRESH_MARGIN_MS = 60 * 1000;
 const REALTIME_RETRY_MS = 3000;
 
 const ARROW_DELTA = {
-  ArrowUp: { dx: 0, dy: -1 },
-  ArrowDown: { dx: 0, dy: 1 },
-  ArrowLeft: { dx: -1, dy: 0 },
-  ArrowRight: { dx: 1, dy: 0 },
+  ArrowUp: { dx: 0, dy: -1, facing: "up" },
+  ArrowDown: { dx: 0, dy: 1, facing: "down" },
+  ArrowLeft: { dx: -1, dy: 0, facing: "left" },
+  ArrowRight: { dx: 1, dy: 0, facing: "right" },
 };
 
 // `Math.min`/`max` pass a NaN straight through -- guard against ever
@@ -94,21 +109,12 @@ const clamp = (v) =>
 
 const gridDistance = (a, b) => Math.abs(a.x - b.x) + Math.abs(a.y - b.y);
 
-// Roughly where `MapCanvas` has drawn this tab mid-walk: `walk.from` ->
-// `walk.to` at `USER_SPEED`, horizontal leg first. Used to time a
-// re-targeted walk and to pick the cell an arrow key steps from, so it
-// needs the distance left right, not the exact corner taken.
-function walkPosition(walk, now) {
-  let left = (now - walk.startedAt) / STEP_MS;
-  const at = { ...walk.from };
-  for (const axis of ["x", "y"]) {
-    const distance = Math.abs(walk.to[axis] - at[axis]);
-    const move = Math.min(distance, left);
-    at[axis] += Math.sign(walk.to[axis] - at[axis]) * move;
-    left -= move;
-  }
-  return at;
-}
+// Roughly where `MapCanvas` has drawn this tab mid-walk: `walk.route` at
+// `USER_SPEED`. Used to time a re-targeted walk and to pick the cell an
+// arrow key steps from, so it needs the distance left right, not the exact
+// corner taken.
+const walkPosition = (walk, now) =>
+  routePosition(walk.route, (now - walk.startedAt) / STEP_MS);
 
 function bumpPlacements(prev, ids) {
   const next = { ...prev };
@@ -116,7 +122,9 @@ function bumpPlacements(prev, ids) {
   return next;
 }
 
-export function useMapSession(token, orgId, members) {
+// `tileMap` (see `tileMap.js`) is `null` until `map.png` has loaded, and
+// everything is walkable until then.
+export function useMapSession(token, orgId, members, tileMap) {
   const myId = decodeJwt(token)?.sub;
   // Fetched once per org -- a member with nothing here yet (the fetch
   // hasn't landed, or they've simply never moved) just defaults to (0, 0),
@@ -225,9 +233,12 @@ export function useMapSession(token, orgId, members) {
   // let a late, stale echo stomp a newer optimistic position, which read
   // as a one-cell rollback mid-walk.
   const receiveMove = useCallback(
-    (userId, x, y) => {
+    (userId, x, y, facing) => {
       if (userId === myId) return;
-      setOverrides((prev) => ({ ...prev, [userId]: { x, y } }));
+      setOverrides((prev) => ({
+        ...prev,
+        [userId]: { x, y, facing: facing ?? prev[userId]?.facing },
+      }));
     },
     [myId],
   );
@@ -236,7 +247,7 @@ export function useMapSession(token, orgId, members) {
     if (!orgId) return;
     return messenger.on(MAP_MOVE_CHANNEL, (message) => {
       if (message.org_id !== orgId) return;
-      receiveMove(message.user_id, message.x, message.y);
+      receiveMove(message.user_id, message.x, message.y, message.facing);
     });
   }, [orgId, receiveMove]);
 
@@ -325,10 +336,16 @@ export function useMapSession(token, orgId, members) {
     myPositionRef.current = { x: myPosition.x, y: myPosition.y };
   }, [myPosition.x, myPosition.y]);
 
+  const tileMapRef = useRef(tileMap);
+  useEffect(() => {
+    tileMapRef.current = tileMap;
+  }, [tileMap]);
+  const myFacingRef = useRef("down");
+
   const heldKeysRef = useRef([]); // most-recently-pressed direction last
   const queuedClickRef = useRef(null);
   // The walk `MapCanvas` is drawing toward the last move's cell:
-  // {from, to, startedAt, endsAt} -- see the module doc.
+  // {route, startedAt, endsAt} -- see the module doc.
   const walkRef = useRef(null);
   const lastMoveAtRef = useRef(0);
   const lastPersistAtRef = useRef(0);
@@ -336,16 +353,19 @@ export function useMapSession(token, orgId, members) {
   const dirtyRef = useRef(false);
 
   const applyMove = useCallback(
-    (x, y) => {
+    (x, y, facing) => {
       const target = { x: clamp(x), y: clamp(y) };
+      myFacingRef.current = facing;
       const persist = Date.now() - lastPersistAtRef.current >= PERSIST_MS;
       if (persist) lastPersistAtRef.current = Date.now();
       dirtyRef.current = !persist;
-      setOverrides((prev) => ({ ...prev, [myId]: target }));
+      setOverrides((prev) => ({ ...prev, [myId]: { ...target, facing } }));
       const mapEvents = mapEventsRef.current;
-      mapEvents?.publish(target.x, target.y);
+      mapEvents?.publish(target.x, target.y, facing);
       if (persist || !mapEvents)
-        moveInMap(token, orgId, target.x, target.y, persist).catch(() => {});
+        moveInMap(token, orgId, target.x, target.y, persist, facing).catch(
+          () => {},
+        );
     },
     [token, orgId, myId],
   );
@@ -357,7 +377,7 @@ export function useMapSession(token, orgId, members) {
     dirtyRef.current = false;
     lastPersistAtRef.current = Date.now();
     const { x, y } = myPositionRef.current;
-    moveInMap(token, orgId, x, y, true).catch(() => {});
+    moveInMap(token, orgId, x, y, true, myFacingRef.current).catch(() => {});
   }, [token, orgId]);
 
   useEffect(() => flush, [flush]);
@@ -376,29 +396,57 @@ export function useMapSession(token, orgId, members) {
       walk && now < walk.endsAt
         ? walkPosition(walk, now)
         : myPositionRef.current;
-    let target = queuedClickRef.current;
+    let click = queuedClickRef.current;
     queuedClickRef.current = null;
-    if (!target) {
-      const key = heldKeysRef.current[heldKeysRef.current.length - 1];
-      const delta = key && ARROW_DELTA[key];
-      if (delta) {
-        target = {
-          x: clamp(Math.round(from.x) + delta.dx),
-          y: clamp(Math.round(from.y) + delta.dy),
+    const map = tileMapRef.current;
+    if (click && isBlocked(map, click.x, click.y)) click = null;
+
+    if (click) {
+      const route = findRoute(map, from, click);
+      let facing = myFacingRef.current;
+      if (route) {
+        walkRef.current = {
+          route,
+          startedAt: now,
+          endsAt: now + routeLength(route) * STEP_MS,
         };
+        if (route.length >= 2)
+          facing = facingBetween(route[route.length - 2], click, facing);
+      } else {
+        // Walled in: nothing to walk, so the avatar just appears there.
+        walkRef.current = null;
       }
+      applyMove(click.x, click.y, facing);
+      lastMoveAtRef.current = now;
+      return;
     }
+
+    const key = heldKeysRef.current[heldKeysRef.current.length - 1];
+    const delta = key && ARROW_DELTA[key];
     // Nothing pending a full cooldown after the last move: movement has
     // stopped, so store where it stopped.
-    if (!target) return flush();
+    if (!delta) return flush();
 
+    const cell = { x: Math.round(from.x), y: Math.round(from.y) };
+    const step = { x: clamp(cell.x + delta.dx), y: clamp(cell.y + delta.dy) };
+    if (
+      isBlocked(map, step.x, step.y) ||
+      (step.x === cell.x && step.y === cell.y)
+    ) {
+      // A wall (or the edge): turn to face it, don't move. Already facing
+      // it means there's nothing to report.
+      if (delta.facing === myFacingRef.current) return flush();
+      walkRef.current = null;
+      applyMove(cell.x, cell.y, delta.facing);
+      lastMoveAtRef.current = now;
+      return;
+    }
     walkRef.current = {
-      from,
-      to: target,
+      route: [from, step],
       startedAt: now,
-      endsAt: now + gridDistance(from, target) * STEP_MS,
+      endsAt: now + gridDistance(from, step) * STEP_MS,
     };
-    applyMove(target.x, target.y);
+    applyMove(step.x, step.y, delta.facing);
     lastMoveAtRef.current = now;
   }, [applyMove, flush]);
 
@@ -482,6 +530,7 @@ export function useMapSession(token, orgId, members) {
       positions,
       members,
       meetings: session.meetings,
+      blocked: (x, y) => isBlocked(tileMapRef.current, x, y),
     });
     if (!cell) return;
     silentCellRef.current = cell;

@@ -6,7 +6,7 @@
 import { apiFetch } from "../../core/api";
 
 // Mirrors `features::map`: cells per side of the (square) office grid,
-// `MAP_MOVE_CHANNEL` for one live cell change (`{org_id, user_id, x, y}`),
+// `MAP_MOVE_CHANNEL` for one live cell change (`{org_id, user_id, x, y, facing}`),
 // `MAP_ACTIVE_CHANNEL` sent (not received) to report the canvas
 // mounting/unmounting, same shape/reasoning as `rbac.js`'s
 // `ORG_ACTIVE_CHANNEL` but for "is this tab actually watching the map"
@@ -45,10 +45,11 @@ export const getMapRealtime = (token, orgId) =>
   apiFetch(`/map/org/${orgId}/realtime`, { token });
 
 // Only a move with `persist` set is stored; without AppSync, every move is
-// also broadcast -- see `features::map::MoveBody`.
-export const moveInMap = (token, orgId, x, y, persist = false) =>
+// also broadcast -- see `features::map::MoveBody`. `facing` ("up" | "down" |
+// "left" | "right") is never stored, only broadcast along with the cell.
+export const moveInMap = (token, orgId, x, y, persist = false, facing) =>
   apiFetch(`/map/org/${orgId}/move`, {
     method: "POST",
     token,
-    body: { x, y, persist },
+    body: { x, y, persist, facing },
   });

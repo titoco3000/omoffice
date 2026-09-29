@@ -38,6 +38,9 @@ function square(center, radius) {
   return cells.filter(inBounds);
 }
 
+// Every cell-picking function below takes `blocked(x, y)` -- walls, which
+// nobody can be moved onto.
+//
 // A cell within `PROXIMITY_RANGE` of `target` -- so the map agrees this tab
 // is with them -- that nobody else stands on, and, if at all possible, out
 // of range of everyone in `strangers` (anyone not already in the meeting
@@ -46,13 +49,14 @@ function square(center, radius) {
 // a cell, and within it the shortest walk from `from`. Failing that, any
 // free cell in range; failing that, `target` itself (stacked, same as
 // walking onto someone). `others` is everyone else's cell.
-function cellNextTo(target, from, others, strangers) {
+function cellNextTo(target, from, others, strangers, blocked) {
   const taken = new Set(others.map(({ x, y }) => `${x},${y}`));
   const free = (ring) =>
     square(target, ring).filter(
       (cell) =>
         ringDistance(cell, target) === ring &&
-        !taken.has(`${cell.x},${cell.y}`),
+        !taken.has(`${cell.x},${cell.y}`) &&
+        !blocked(cell.x, cell.y),
     );
   for (let ring = 1; ring <= PROXIMITY_RANGE; ring++) {
     const safe = free(ring).filter((cell) =>
@@ -72,9 +76,11 @@ function cellNextTo(target, from, others, strangers) {
 // would count as a newcomer on the very next step, and pull this tab
 // straight back into a meeting. `null` if there's no such cell within
 // `CLEAR_SEARCH_RADIUS`.
-function clearCell(from, others) {
-  const clear = square(from, CLEAR_SEARCH_RADIUS).filter((cell) =>
-    others.every((other) => ringDistance(cell, other) > PROXIMITY_RANGE),
+function clearCell(from, others, blocked) {
+  const clear = square(from, CLEAR_SEARCH_RADIUS).filter(
+    (cell) =>
+      !blocked(cell.x, cell.y) &&
+      others.every((other) => ringDistance(cell, other) > PROXIMITY_RANGE),
   );
   return closest(clear, from);
 }
@@ -84,14 +90,14 @@ function clearCell(from, others) {
 // `meetings` the org's meeting list. `null` to stay put.
 export function relocationCell(
   intent,
-  { from, myId, positions, members, meetings },
+  { from, myId, positions, members, meetings, blocked = () => false },
 ) {
   const here = { x: Math.round(from.x), y: Math.round(from.y) };
   const others = members.filter(
     (member) => member.id !== myId && positions[member.id],
   );
   const cells = others.map((member) => positions[member.id]);
-  if (intent.type === "leave") return clearCell(here, cells);
+  if (intent.type === "leave") return clearCell(here, cells, blocked);
   if (intent.type !== "join") return null;
   const target = positions[intent.userId];
   if (!target) return null;
@@ -102,5 +108,5 @@ export function relocationCell(
   const strangers = others
     .filter((member) => !group.has(member.id))
     .map((member) => positions[member.id]);
-  return cellNextTo(target, here, cells, strangers);
+  return cellNextTo(target, here, cells, strangers, blocked);
 }

@@ -7,17 +7,21 @@
 //! an avatar's drawn position is moving it faces the dominant axis of that
 //! motion and cycles idle -> walk1 -> idle -> walk2, advanced by distance
 //! walked rather than time so the legs keep pace with `USER_SPEED`; once it
-//! stops it drops back to idle, still facing its last direction. Movement comes
+//! stops it drops back to idle, facing the direction its last move reported
+//! (`positions[id].facing` -- which is how turning against a wall, with no
+//! motion to show, reaches everyone). Movement comes
 //! from `useMapSession` (arrow keys / click, cooldown-gated); this
 //! component's own job is turning `positions` (logical, one integer cell
 //! per user) into something that reads as continuous motion -- each
 //! avatar's drawn position eases toward its logical cell at `USER_SPEED`
-//! cells/sec, along the grid (see `easeAlongGrid`), redrawn every
-//! animation frame, rather than jumping the
+//! cells/sec, along the shortest route around the walls (`findRoute`, so
+//! every tab draws the same walk), redrawn every animation frame, rather
+//! than jumping the
 //! instant a `MAP_MOVE_CHANNEL` push (or this tab's own optimistic move)
-//! lands. The exception is someone being *placed* rather than moving --
+//! lands. The exceptions are someone being *placed* rather than moving --
 //! everyone on the initial load, and anyone who comes online later (see
-//! `useMapSession`'s `placements`): they're drawn straight on their cell.
+//! `useMapSession`'s `placements`) -- and a move to a cell no route
+//! reaches: both are drawn straight on their cell.
 //!
 //! The camera follows this tab's own (eased) position, centered, so the
 //! grid scrolls under the avatar rather than the avatar walking off a
@@ -33,8 +37,9 @@ import { useMapSession, USER_SPEED } from "./useMapSession";
 import { avatarUrl } from "../avatars";
 import { FiMinus, FiPlus } from "react-icons/fi";
 import spriteUrl from "./assets/user-sprite.png";
-import mapUrl from "./assets/map.png";
-import { createTileRenderer, tileForColor } from "./tiles";
+import { createTileRenderer } from "./tiles";
+import { findRoute } from "./navigation";
+import { useTileMap } from "./tileMap";
 import { ZOOM_STEP, clampCellPx, easeCellPx, useMapZoom } from "./useMapZoom";
 
 // Sprites are drawn taller than one cell -- a cell is a finer unit of
@@ -74,29 +79,31 @@ function cssVar(name) {
   return getComputedStyle(document.documentElement).getPropertyValue(name);
 }
 
-// Moves `current` up to `step` cells toward `target` one axis at a time,
-// never diagonally -- a sprite walking diagonally doesn't read as walking.
-// Horizontal first, so a click's jump of several cells (applied in one
-// move, see `useMapSession`) walks the same L-shaped path on every tab. The exception is an axis already
-// mid-step (off its grid line): that one is finished first, rather than
-// sliding sideways between two rows.
-function easeAlongGrid(current, target, step) {
-  const yFirst = Number.isInteger(current.x) && !Number.isInteger(current.y);
-  const axes = yFirst ? ["y", "x"] : ["x", "y"];
-  const next = { ...current };
+// Advances `plan` (`{x, y, points, next}`: the route to the cell (x, y),
+// and which of its points is being walked to) by up to `step` cells from
+// `current`, one axis at a time -- a sprite walking diagonally doesn't read
+// as walking. Returns the new position.
+function walkPlan(plan, current, step) {
+  const pos = { ...current };
   let left = step;
-  for (const axis of axes) {
-    const distance = Math.abs(target[axis] - next[axis]);
+  while (left > 0 && plan.next < plan.points.length) {
+    const goal = plan.points[plan.next];
+    const dx = goal.x - pos.x;
+    const dy = goal.y - pos.y;
+    const distance = Math.abs(dx) + Math.abs(dy);
     if (distance <= left) {
       // Assigned, not added, so arriving lands exactly on the grid line.
-      next[axis] = target[axis];
+      pos.x = goal.x;
+      pos.y = goal.y;
       left -= distance;
+      plan.next++;
     } else {
-      next[axis] += Math.sign(target[axis] - next[axis]) * left;
+      pos.x += Math.sign(dx) * left;
+      pos.y += Math.sign(dy) * left;
       left = 0;
     }
   }
-  return next;
+  return pos;
 }
 
 // Canvas px of the map's top-left corner along one axis (`size` px of
@@ -125,7 +132,7 @@ function stackOffset(index, total) {
 export default function MapCanvas({ token, orgId, members, myId }) {
   const canvasRef = useRef(null);
   const imagesRef = useRef(new Map()); // url -> HTMLImageElement
-  const tileMapRef = useRef(null); // {width, height, tiles: Uint8Array-like of TILE_*} once map.png is decoded
+  const plansRef = useRef({}); // user_id -> the route being walked, see `walkPlan`
   const renderedRef = useRef({}); // user_id -> {x, y} (eased, float)
   const renderedOffsetRef = useRef({}); // user_id -> {dx, dy} (eased, float)
   const seenPlacementsRef = useRef({}); // user_id -> last placement drawn
@@ -135,10 +142,12 @@ export default function MapCanvas({ token, orgId, members, myId }) {
   const { cellPxRef, zoomBy, atLimit } = useMapZoom(canvasRef);
   const shownCellPxRef = useRef(null); // eased toward `cellPxRef`
 
+  const tileMap = useTileMap(); // null until map.png is decoded
   const { positions, moveTo, loaded, placements } = useMapSession(
     token,
     orgId,
     members,
+    tileMap,
   );
 
   // The draw loop below reads this every frame instead of closing over
@@ -152,32 +161,24 @@ export default function MapCanvas({ token, orgId, members, myId }) {
   // value. With two or more users the extra websocket traffic (both tabs'
   // online/roster pushes) makes that frequent enough that the canvas can go
   // a long stretch, or indefinitely, without a single stable frame to draw.
-  const stateRef = useRef({ positions, members, myId, loaded, placements });
-  useEffect(() => {
-    stateRef.current = { positions, members, myId, loaded, placements };
+  const stateRef = useRef({
+    positions,
+    members,
+    myId,
+    loaded,
+    placements,
+    tileMap,
   });
-
-  // Decode `map.png` into a per-cell terrain grid once: an offscreen canvas
-  // is the only way to read pixel colors back out of an `<img>`. The draw
-  // loop below just polls `tileMapRef` each frame rather than waiting on
-  // this, so the grid/avatars still render before the map image loads.
   useEffect(() => {
-    const img = new Image();
-    img.onload = () => {
-      const off = document.createElement("canvas");
-      off.width = img.width;
-      off.height = img.height;
-      const octx = off.getContext("2d");
-      octx.drawImage(img, 0, 0);
-      const { data } = octx.getImageData(0, 0, off.width, off.height);
-      const tiles = new Array(off.width * off.height);
-      for (let i = 0; i < tiles.length; i++) {
-        tiles[i] = tileForColor(data[i * 4], data[i * 4 + 1], data[i * 4 + 2]);
-      }
-      tileMapRef.current = { width: off.width, height: off.height, tiles };
+    stateRef.current = {
+      positions,
+      members,
+      myId,
+      loaded,
+      placements,
+      tileMap,
     };
-    img.src = mapUrl;
-  }, []);
+  });
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -209,7 +210,7 @@ export default function MapCanvas({ token, orgId, members, myId }) {
     observer.observe(canvas);
 
     const draw = (now) => {
-      const { positions, myId, loaded, placements } = stateRef.current;
+      const { positions, myId, loaded, placements, tileMap } = stateRef.current;
       // Nobody is drawn until the initial positions land -- until then
       // everyone would sit at the (0, 0) default -- nor anyone whose
       // placement is still being fetched.
@@ -231,10 +232,35 @@ export default function MapCanvas({ token, orgId, members, myId }) {
           seenPlacements[member.id] = placement;
           rendered[member.id] = { x: target.x, y: target.y };
           delete renderedOffsetRef.current[member.id];
+          delete plansRef.current[member.id];
           continue;
         }
-        const current = rendered[member.id] ?? target;
-        const next = easeAlongGrid(current, target, USER_SPEED * dt);
+        let current = rendered[member.id] ?? target;
+
+        // A new destination (or the map finishing loading) is planned from
+        // wherever the avatar has got to -- the same route on every tab.
+        let plan = plansRef.current[member.id];
+        if (
+          !plan ||
+          plan.x !== target.x ||
+          plan.y !== target.y ||
+          plan.tileMap !== tileMap
+        ) {
+          const route =
+            current.x === target.x && current.y === target.y
+              ? [current]
+              : findRoute(tileMap, current, target);
+          // No route: teleport.
+          plan = plansRef.current[member.id] = {
+            x: target.x,
+            y: target.y,
+            tileMap,
+            points: route ?? [{ x: target.x, y: target.y }],
+            next: 1,
+          };
+          if (!route) current = { x: target.x, y: target.y };
+        }
+        const next = walkPlan(plan, current, USER_SPEED * dt);
         rendered[member.id] = next;
 
         const mx = next.x - current.x;
@@ -288,7 +314,6 @@ export default function MapCanvas({ token, orgId, members, myId }) {
       const firstRow = Math.floor(-originPxY / cellPx);
       const lastRow = Math.ceil((h - originPxY) / cellPx);
 
-      const tileMap = tileMapRef.current;
       if (tileMap) {
         ctx.imageSmoothingEnabled = false;
         const rows = [Math.max(0, firstRow), Math.min(tileMap.height, lastRow)];
@@ -393,14 +418,20 @@ export default function MapCanvas({ token, orgId, members, myId }) {
           const sprite = getImage(spriteUrl);
           if (sprite) {
             const walk = walkRef.current[member.id];
-            const facing = walk?.facing ?? "down";
-            const column =
-              walk && now - walk.movedAt < WALK_GRACE_MS
-                ? WALK_CYCLE[
-                    Math.floor(walk.distance / CELLS_PER_WALK_FRAME) %
-                      WALK_CYCLE.length
-                  ]
-                : 0;
+            const moving = walk && now - walk.movedAt < WALK_GRACE_MS;
+            const declared = positions[member.id]?.facing;
+            // Walking faces where it's going; at rest, whichever way the
+            // last move said (which is how turning in place shows up).
+            const facing =
+              (moving ? walk.facing : declared in FACING_ROW && declared) ||
+              walk?.facing ||
+              "down";
+            const column = moving
+              ? WALK_CYCLE[
+                  Math.floor(walk.distance / CELLS_PER_WALK_FRAME) %
+                    WALK_CYCLE.length
+                ]
+              : 0;
             ctx.save();
             ctx.imageSmoothingEnabled = false;
             if (facing === "right") {

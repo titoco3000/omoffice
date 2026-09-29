@@ -44,14 +44,14 @@ function parseEvents(event) {
 /// Connect to the map's AppSync Events API (`endpoint`, from
 /// `GET /map/org/{org_id}/realtime`) as `userId` in `orgId`.
 ///
-/// - `onMove(userId, x, y)` for every move published in the org, this
+/// - `onMove(userId, x, y, facing)` for every move published in the org, this
 ///   user's own included (the caller filters).
 /// - `onReady()` once subscribed -- the moment a replacement connection can
 ///   take over from the one before it.
 /// - `onClose()` once, if the socket goes away without `close()` being
 ///   called (network drop, AppSync's 24h cap, a missed keep-alive).
 ///
-/// Returns `{publish(x, y), close()}`. A `publish` before the socket is
+/// Returns `{publish(x, y, facing), close()}`. A `publish` before the socket is
 /// open is held and sent on open -- only the latest, since an older cell
 /// is no use to anyone once a newer one exists.
 export function openMapEvents({
@@ -77,12 +77,12 @@ export function openMapEvents({
   let keepAliveMs = 300000;
 
   const send = (frame) => socket.send(JSON.stringify(frame));
-  const sendMove = ({ x, y }) =>
+  const sendMove = ({ x, y, facing }) =>
     send({
       type: "publish",
       id: crypto.randomUUID(),
       channel: `/map/${orgId}/${userId}`,
-      events: [JSON.stringify({ x, y })],
+      events: [JSON.stringify({ x, y, facing })],
       authorization,
     });
 
@@ -136,7 +136,7 @@ export function openMapEvents({
             Number.isFinite(move.x) &&
             Number.isFinite(move.y)
           )
-            onMove(move.user_id, move.x, move.y);
+            onMove(move.user_id, move.x, move.y, move.facing);
         }
         break;
       case "subscribe_error":
@@ -158,9 +158,10 @@ export function openMapEvents({
   };
 
   return {
-    publish(x, y) {
-      if (open && socket.readyState === WebSocket.OPEN) sendMove({ x, y });
-      else heldMove = { x, y };
+    publish(x, y, facing) {
+      if (open && socket.readyState === WebSocket.OPEN)
+        sendMove({ x, y, facing });
+      else heldMove = { x, y, facing };
     },
     close,
   };
@@ -171,14 +172,22 @@ export function openMapEvents({
 /// showing the map, and so has no connection, but still has to tell those
 /// that are where it went (`MapRelocationProvider`). Same channel, and so
 /// the same authorizer check, as `openMapEvents`' own publish.
-export async function publishMapMove({ endpoint, token, orgId, userId, x, y }) {
+export async function publishMapMove({
+  endpoint,
+  token,
+  orgId,
+  userId,
+  x,
+  y,
+  facing,
+}) {
   const { http } = hosts(endpoint);
   const response = await fetch(`https://${http}/event`, {
     method: "POST",
     headers: { "content-type": "application/json", authorization: token },
     body: JSON.stringify({
       channel: `/map/${orgId}/${userId}`,
-      events: [JSON.stringify({ x, y })],
+      events: [JSON.stringify({ x, y, facing })],
     }),
   });
   if (!response.ok) throw new Error(`publish failed: ${response.status}`);

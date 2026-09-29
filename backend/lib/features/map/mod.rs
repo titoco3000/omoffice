@@ -51,7 +51,11 @@ pub mod realtime;
 /// bound to `0..OFFICE_SIZE`, see [`set_position`].
 pub const OFFICE_SIZE: i32 = 100;
 
-/// One live cell change: `{"org_id", "user_id", "x", "y"}`.
+/// One live cell change: `{"org_id", "user_id", "x", "y", "facing"}`.
+/// `facing` is `"up"`, `"down"`, `"left"` or `"right"` -- a move to the cell
+/// the sender already stands on is a turn in place -- and is left out when
+/// the sender didn't say (or said something else). Broadcast only, never
+/// stored.
 pub const MOVE_CHANNEL: web_messenger::Channel = "map_move";
 
 /// The frontend's own report of the canvas mounting/unmounting:
@@ -298,6 +302,14 @@ struct MoveBody {
     /// directly.
     #[serde(default)]
     persist: bool,
+    /// Which way the avatar now faces; see [`MOVE_CHANNEL`].
+    #[serde(default)]
+    facing: Option<String>,
+}
+
+/// `facing` if it is one of the four directions the frontend draws.
+fn valid_facing(facing: Option<&str>) -> Option<&str> {
+    facing.filter(|facing| matches!(*facing, "up" | "down" | "left" | "right"))
 }
 
 /// `GET /map/org/{org_id}/positions` -- every member's current cell, for
@@ -330,6 +342,7 @@ async fn move_route(
     Json(body): Json<MoveBody>,
 ) -> Result<Json<Value>, MapError> {
     let (x, y) = (clamp(body.x), clamp(body.y));
+    let facing = valid_facing(body.facing.as_deref());
 
     // The membership check and the audience lookup are both reads, so they
     // share one round trip; nothing is sent or written until the check has
@@ -349,7 +362,13 @@ async fn move_route(
             .send(
                 MOVE_CHANNEL,
                 &audience,
-                json!({ "org_id": org_id, "user_id": claims.sub, "x": x, "y": y }),
+                json!({
+                    "org_id": org_id,
+                    "user_id": claims.sub,
+                    "x": x,
+                    "y": y,
+                    "facing": facing,
+                }),
             )
             .await;
     }

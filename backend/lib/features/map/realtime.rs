@@ -6,7 +6,7 @@
 //! Persistence still goes through `POST /map/org/{org_id}/move`.
 //!
 //! One channel per member per org, `/map/{org_id}/{user_id}`: a member
-//! publishes `{"x", "y"}` to their own and subscribes to `/map/{org_id}/*`.
+//! publishes `{"x", "y", "facing"}` to their own and subscribes to `/map/{org_id}/*`.
 //! Who moved comes from the channel path, never the payload -- the `map`
 //! namespace's `onPublish` handler (`infra/map_events.tf`) stamps it on as
 //! `user_id`, since a subscriber's data frame carries no channel of its own.

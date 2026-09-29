@@ -19,7 +19,9 @@ import { useOrgSession } from "../org";
 import { useMeetingSessionContext } from "../meetings";
 import { getMapRealtime, listMapPositions, moveInMap } from "./api";
 import { publishMapMove } from "./realtime";
+import { facingBetween } from "./navigation";
 import { relocationCell } from "./relocation";
+import { isBlocked, loadTileMap } from "./tileMap";
 
 const MapRelocationContext = createContext(null);
 
@@ -47,6 +49,7 @@ export function MapRelocationProvider({ children }) {
           const positions = {};
           for (const position of data.positions ?? [])
             positions[position.user_id] = { x: position.x, y: position.y };
+          const tileMap = await loadTileMap();
           const from = positions[myId] ?? { x: 0, y: 0 };
           const cell = relocationCell(intent, {
             from,
@@ -54,11 +57,13 @@ export function MapRelocationProvider({ children }) {
             positions,
             members: roster.members.filter((member) => member.online),
             meetings: session.meetings,
+            blocked: (x, y) => isBlocked(tileMap, x, y),
           });
           if (!cell || (cell.x === from.x && cell.y === from.y)) return;
           // Stored either way; without AppSync this same request is also
           // what broadcasts it (see `moveInMap`).
-          await moveInMap(token, orgId, cell.x, cell.y, true);
+          const facing = facingBetween(from, cell);
+          await moveInMap(token, orgId, cell.x, cell.y, true, facing);
           const realtime = await getMapRealtime(token, orgId);
           if (realtime.endpoint)
             await publishMapMove({
@@ -68,6 +73,7 @@ export function MapRelocationProvider({ children }) {
               userId: myId,
               x: cell.x,
               y: cell.y,
+              facing,
             });
         } catch {
           // Best-effort: the meeting itself is unaffected, and the avatar
