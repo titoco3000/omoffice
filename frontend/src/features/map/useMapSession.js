@@ -5,7 +5,7 @@
 //!
 //! Movement is one cell per `1 / USER_SPEED` seconds, gated by a single
 //! cooldown shared by both input methods:
-//! - **Arrow keys** step in whichever direction is currently held, checked
+//! - **Arrow keys** (or WASD) step in whichever direction is currently held, checked
 //!   again each time the cooldown clears -- so holding one down repeats it
 //!   for as long as it stays held, same as a classic tile-grid walk.
 //! - **A click** queues its cell as a one-shot absolute target, applied
@@ -105,6 +105,21 @@ const ARROW_DELTA = {
   ArrowDown: { dx: 0, dy: 1, facing: "down" },
   ArrowLeft: { dx: -1, dy: 0, facing: "left" },
   ArrowRight: { dx: 1, dy: 0, facing: "right" },
+};
+// WASD is the same four directions under the arrow keys' names, so held-key
+// tracking treats either set alike.
+const KEY_ALIAS = {
+  w: "ArrowUp",
+  s: "ArrowDown",
+  a: "ArrowLeft",
+  d: "ArrowRight",
+};
+// The `ARROW_DELTA` key an event stands for, if any. Case-folded, so a
+// held Shift or Caps Lock doesn't turn `w` into a different key -- and
+// keyup, which may differ in case from its keydown, still matches.
+const movementKey = (event) => {
+  const key = KEY_ALIAS[event.key.toLowerCase()] ?? event.key;
+  return ARROW_DELTA[key] ? key : null;
 };
 
 // `Math.min`/`max` pass a NaN straight through -- guard against ever
@@ -469,17 +484,17 @@ export function useMapSession(token, orgId, members, tileMap) {
 
   useEffect(() => {
     const onKeyDown = (event) => {
-      if (!ARROW_DELTA[event.key]) return;
+      const key = movementKey(event);
+      if (!key) return;
+      if (event.ctrlKey || event.metaKey || event.altKey) return;
       if (["INPUT", "TEXTAREA"].includes(event.target.tagName)) return;
       event.preventDefault();
-      if (!heldKeysRef.current.includes(event.key))
-        heldKeysRef.current.push(event.key);
+      if (!heldKeysRef.current.includes(key)) heldKeysRef.current.push(key);
       attempt();
     };
     const onKeyUp = (event) => {
-      heldKeysRef.current = heldKeysRef.current.filter(
-        (key) => key !== event.key,
-      );
+      const key = movementKey(event);
+      heldKeysRef.current = heldKeysRef.current.filter((held) => held !== key);
     };
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("keyup", onKeyUp);
