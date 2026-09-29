@@ -293,10 +293,14 @@ export default function MapCanvas({ token, orgId, members, myId }) {
         ctx.imageSmoothingEnabled = false;
         const rows = [Math.max(0, firstRow), Math.min(tileMap.height, lastRow)];
         const cols = [Math.max(0, firstCol), Math.min(tileMap.width, lastCol)];
-        // Cell edges are rounded from the exact position, so neighbors share
-        // one boundary and eased scroll never shows a seam.
-        const edgeX = (col) => Math.round(originPxX + col * cellPx);
-        const edgeY = (row) => Math.round(originPxY + row * cellPx);
+        // Cell edges are rounded from the exact position, to whole *device*
+        // pixels, so neighbors share one boundary and eased scroll never
+        // shows a seam -- at a fractional pixel ratio, rounding in CSS px
+        // leaves edges mid-device-pixel, antialiased against the background.
+        const edgeX = (col) =>
+          Math.round((originPxX + col * cellPx) * ratio) / ratio;
+        const edgeY = (row) =>
+          Math.round((originPxY + row * cellPx) * ratio) / ratio;
         for (const pass of [tiles.drawBase, tiles.drawTransitions]) {
           for (let row = rows[0]; row < rows[1]; row++) {
             for (let col = cols[0]; col < cols[1]; col++) {
@@ -319,7 +323,7 @@ export default function MapCanvas({ token, orgId, members, myId }) {
       ctx.lineWidth = 1;
       // Faint over the tiles -- a full-opacity grid reads as a fence, not a
       // hint of where cells fall.
-      ctx.globalAlpha = tileMap ? 0.01 : 1;
+      ctx.globalAlpha = tileMap ? 0.1 : 1;
       ctx.beginPath();
       for (
         let col = Math.max(0, firstCol);
