@@ -17,8 +17,10 @@
 //!   A click on a wall is ignored; a cell no route reaches (walled in) is
 //!   teleported to instead of walked to. A second click before the
 //!   cooldown clears replaces the queued one rather than stacking.
-//! - **Walls** also stop arrow keys: a step into one moves nothing, it only
-//!   turns the avatar to face it.
+//! - **Turning** costs a short pause (`TURN_MS`): an arrow key toward a way
+//!   the avatar isn't facing only turns it, and it walks once that pause
+//!   ends with the key still held -- so a tap turns in place. Already facing that way, it steps at
+//!   once -- unless a wall is there, when nothing moves.
 //! Every move carries which way the avatar now faces (`facing`), so turning
 //! in place reaches everyone else too. It is only ever broadcast, never
 //! stored: whoever loads the map afresh sees everyone facing down.
@@ -86,6 +88,10 @@ const STEP_MS = 1000 / USER_SPEED;
 // late; the cooldown itself is still enforced by `lastMoveAtRef`, not by
 // this interval's period.
 const POLL_MS = 30;
+// After turning on the spot, how long a held key waits before walking -- much
+// shorter than a step, so a tap turns and a hold gets going without feeling
+// sluggish.
+const TURN_MS = 50;
 // At most one stored move per this long while moving -- see the module doc.
 const PERSIST_MS = 1000;
 // Fetch a fresh map token this long before the current one expires, and
@@ -429,18 +435,20 @@ export function useMapSession(token, orgId, members, tileMap) {
 
     const cell = { x: Math.round(from.x), y: Math.round(from.y) };
     const step = { x: clamp(cell.x + delta.dx), y: clamp(cell.y + delta.dy) };
+    // Facing another way first: turn on the spot, and step only once the
+    // cooldown clears with the key still held -- a tap just turns.
+    if (delta.facing !== myFacingRef.current) {
+      walkRef.current = null;
+      applyMove(cell.x, cell.y, delta.facing);
+      lastMoveAtRef.current = now - STEP_MS + TURN_MS;
+      return;
+    }
+    // Already facing it, but a wall (or the edge) is in the way.
     if (
       isBlocked(map, step.x, step.y) ||
       (step.x === cell.x && step.y === cell.y)
-    ) {
-      // A wall (or the edge): turn to face it, don't move. Already facing
-      // it means there's nothing to report.
-      if (delta.facing === myFacingRef.current) return flush();
-      walkRef.current = null;
-      applyMove(cell.x, cell.y, delta.facing);
-      lastMoveAtRef.current = now;
-      return;
-    }
+    )
+      return flush();
     walkRef.current = {
       route: [from, step],
       startedAt: now,
