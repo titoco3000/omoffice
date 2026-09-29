@@ -32,30 +32,10 @@ import { OFFICE_SIZE } from "./api";
 import { useMapSession, USER_SPEED } from "./useMapSession";
 import { avatarUrl } from "../avatars";
 import { FiMinus, FiPlus } from "react-icons/fi";
-import spriteUrl from "./user-sprite.png";
-import mapUrl from "./map.png";
-import grassUrl from "./tiles/grass.png";
-import sandUrl from "./tiles/sand.png";
-import waterUrl from "./tiles/water.png";
+import spriteUrl from "./assets/user-sprite.png";
+import mapUrl from "./assets/map.png";
+import { createTileRenderer, tileForColor } from "./tiles";
 import { ZOOM_STEP, clampCellPx, easeCellPx, useMapZoom } from "./useMapZoom";
-
-// One pixel of `map.png` per cell -- its color picks the terrain drawn
-// under that cell. Anything not explicitly grass/sand (including black)
-// is water, so an unassigned color reads as water rather than crashing.
-const TILE_GRASS = "grass";
-const TILE_SAND = "sand";
-const TILE_WATER = "water";
-const TILE_URLS = {
-  [TILE_GRASS]: grassUrl,
-  [TILE_SAND]: sandUrl,
-  [TILE_WATER]: waterUrl,
-};
-
-function tileForColor(r, g, b) {
-  if (r === 0 && g === 255 && b === 0) return TILE_GRASS;
-  if (r === 255 && g === 255 && b === 0) return TILE_SAND;
-  return TILE_WATER;
-}
 
 // Sprites are drawn taller than one cell -- a cell is a finer unit of
 // movement/terrain than a person's footprint, so the avatar spans this many
@@ -214,6 +194,8 @@ export default function MapCanvas({ token, orgId, members, myId }) {
       return img.complete && img.naturalWidth > 0 ? img : null;
     };
 
+    const tiles = createTileRenderer(getImage);
+
     let raf;
     let last = performance.now();
 
@@ -309,27 +291,26 @@ export default function MapCanvas({ token, orgId, members, myId }) {
       const tileMap = tileMapRef.current;
       if (tileMap) {
         ctx.imageSmoothingEnabled = false;
-        const tileSizePx = Math.ceil(cellPx) + 1; // 1px overlap so eased scroll never shows a seam
-        for (
-          let row = Math.max(0, firstRow);
-          row < Math.min(tileMap.height, lastRow);
-          row++
-        ) {
-          for (
-            let col = Math.max(0, firstCol);
-            col < Math.min(tileMap.width, lastCol);
-            col++
-          ) {
-            const tile = tileMap.tiles[row * tileMap.width + col];
-            const image = getImage(TILE_URLS[tile]);
-            if (!image) continue;
-            ctx.drawImage(
-              image,
-              Math.round(originPxX + col * cellPx),
-              Math.round(originPxY + row * cellPx),
-              tileSizePx,
-              tileSizePx,
-            );
+        const rows = [Math.max(0, firstRow), Math.min(tileMap.height, lastRow)];
+        const cols = [Math.max(0, firstCol), Math.min(tileMap.width, lastCol)];
+        // Cell edges are rounded from the exact position, so neighbors share
+        // one boundary and eased scroll never shows a seam.
+        const edgeX = (col) => Math.round(originPxX + col * cellPx);
+        const edgeY = (row) => Math.round(originPxY + row * cellPx);
+        for (const pass of [tiles.drawBase, tiles.drawTransitions]) {
+          for (let row = rows[0]; row < rows[1]; row++) {
+            for (let col = cols[0]; col < cols[1]; col++) {
+              pass(
+                ctx,
+                tileMap,
+                col,
+                row,
+                edgeX(col),
+                edgeY(row),
+                edgeX(col + 1),
+                edgeY(row + 1),
+              );
+            }
           }
         }
       }
