@@ -328,10 +328,14 @@ export default function MapCanvas({ token, orgId, members, myId }) {
       const firstRow = Math.floor(-originPxY / cellPx);
       const lastRow = Math.ceil((h - originPxY) / cellPx);
 
-      // Runs each pass over every visible cell, in order.
-      const paintCells = (passes) => {
+      // Runs each pass over every visible cell in rows `fromRow` up to (not
+      // including) `toRow`, in order.
+      const paintCells = (passes, fromRow = 0, toRow = tileMap.height) => {
         ctx.imageSmoothingEnabled = false;
-        const rows = [Math.max(0, firstRow), Math.min(tileMap.height, lastRow)];
+        const rows = [
+          Math.max(0, firstRow, fromRow),
+          Math.min(tileMap.height, lastRow, toRow),
+        ];
         const cols = [Math.max(0, firstCol), Math.min(tileMap.width, lastCol)];
         // Cell edges are rounded from the exact position, to whole *device*
         // pixels, so neighbors share one boundary and eased scroll never
@@ -367,7 +371,7 @@ export default function MapCanvas({ token, orgId, members, myId }) {
       ctx.lineWidth = 1;
       // Faint over the tiles -- a full-opacity grid reads as a fence, not a
       // hint of where cells fall.
-      ctx.globalAlpha = tileMap ? 0.1 : 1;
+      ctx.globalAlpha = tileMap ? 0.015 : 1;
       ctx.beginPath();
       for (
         let col = Math.max(0, firstCol);
@@ -402,145 +406,157 @@ export default function MapCanvas({ token, orgId, members, myId }) {
         byCell.get(key).push(member);
       }
 
+      // Avatars are two cells tall, so they draw top to bottom, with the
+      // top level's rows woven in: an avatar standing on a row above a top
+      // decoration's is covered by it, one on or below that row draws over it.
+      const drawOrder = [...byCell.values()]
+        .flatMap((group) =>
+          group.map((member, index) => ({
+            member,
+            index,
+            count: group.length,
+          })),
+        )
+        .sort((a, b) => rendered[a.member.id].y - rendered[b.member.id].y);
+      let topRow = 0; // top level rows below this are already painted
+
       const renderedOffsets = renderedOffsetRef.current;
-      for (const group of byCell.values()) {
-        group.forEach((member, index) => {
-          const pos = rendered[member.id];
-          const target = stackOffset(index, group.length);
-          const current = renderedOffsets[member.id] ?? target;
-          const odx = target.dx - current.dx;
-          const ody = target.dy - current.dy;
-          const odist = Math.hypot(odx, ody);
-          const maxOffsetStep = STACK_EASE_PER_SEC * dt;
-          const { dx, dy } =
-            odist <= maxOffsetStep
-              ? target
-              : {
-                  dx: current.dx + (odx / odist) * maxOffsetStep,
-                  dy: current.dy + (ody / odist) * maxOffsetStep,
-                };
-          renderedOffsets[member.id] = { dx, dy };
-          const cx = originPxX + (pos.x + 0.5 + dx) * cellPx;
-          const cy = originPxY + (pos.y + 0.5 + dy) * cellPx;
-          const spritePx = cellPx * SPRITE_CELLS;
-          const iconPx = Math.max(MIN_USER_ICON_PX, cellPx * USER_ICON_CELLS);
+      for (const { member, index, count } of drawOrder) {
+        if (tileMap) {
+          const row = Math.round(rendered[member.id].y);
+          paintCells([tiles.drawTop], topRow, row);
+          topRow = Math.max(topRow, row);
+        }
+        const pos = rendered[member.id];
+        const target = stackOffset(index, count);
+        const current = renderedOffsets[member.id] ?? target;
+        const odx = target.dx - current.dx;
+        const ody = target.dy - current.dy;
+        const odist = Math.hypot(odx, ody);
+        const maxOffsetStep = STACK_EASE_PER_SEC * dt;
+        const { dx, dy } =
+          odist <= maxOffsetStep
+            ? target
+            : {
+                dx: current.dx + (odx / odist) * maxOffsetStep,
+                dy: current.dy + (ody / odist) * maxOffsetStep,
+              };
+        renderedOffsets[member.id] = { dx, dy };
+        const cx = originPxX + (pos.x + 0.5 + dx) * cellPx;
+        const cy = originPxY + (pos.y + 0.5 + dy) * cellPx;
+        const spritePx = cellPx * SPRITE_CELLS;
+        const iconPx = Math.max(MIN_USER_ICON_PX, cellPx * USER_ICON_CELLS);
 
-          // Snapped to whole device pixels so the (unsmoothed) sprite
-          // doesn't shimmer as it eases between cells. Anchored to the
-          // bottom of the tile (feet on the ground) rather than centered,
-          // so a sprite taller than one cell grows upward out of it instead
-          // of sinking half into the tile behind.
-          const left = Math.round((cx - spritePx / 2) * ratio) / ratio;
-          const inWater = isWater(
-            tileMap,
-            Math.round(pos.x),
-            Math.round(pos.y),
+        // Snapped to whole device pixels so the (unsmoothed) sprite
+        // doesn't shimmer as it eases between cells. Anchored to the
+        // bottom of the tile (feet on the ground) rather than centered,
+        // so a sprite taller than one cell grows upward out of it instead
+        // of sinking half into the tile behind.
+        const left = Math.round((cx - spritePx / 2) * ratio) / ratio;
+        const inWater = isWater(tileMap, Math.round(pos.x), Math.round(pos.y));
+        const lift = inWater ? 0 : (spritePx * LAND_LIFT_PX) / SPRITE_SRC_PX;
+        const bottom = cy + cellPx / 2 - lift;
+        const top = Math.round((bottom - spritePx) * ratio) / ratio;
+
+        const sprite = getImage(spriteUrl);
+        if (sprite) {
+          const walk = walkRef.current[member.id];
+          const moving = walk && now - walk.movedAt < WALK_GRACE_MS;
+          const declared = positions[member.id]?.facing;
+          // Walking faces where it's going; at rest, whichever way the
+          // last move said (which is how turning in place shows up).
+          const facing =
+            (moving ? walk.facing : declared in FACING_ROW && declared) ||
+            walk?.facing ||
+            "down";
+          const column = moving
+            ? WALK_CYCLE[
+                Math.floor(walk.distance / CELLS_PER_WALK_FRAME) %
+                  WALK_CYCLE.length
+              ]
+            : 0;
+          ctx.save();
+          ctx.imageSmoothingEnabled = false;
+          if (facing === "right") {
+            ctx.translate(left + spritePx, top);
+            ctx.scale(-1, 1);
+          } else {
+            ctx.translate(left, top);
+          }
+          const cropPx = inWater ? WATER_CROP_PX : 0;
+          ctx.drawImage(
+            sprite,
+            column * SPRITE_SRC_PX,
+            FACING_ROW[facing] * SPRITE_SRC_PX,
+            SPRITE_SRC_PX,
+            SPRITE_SRC_PX - cropPx,
+            0,
+            0,
+            spritePx,
+            (spritePx * (SPRITE_SRC_PX - cropPx)) / SPRITE_SRC_PX,
           );
-          const lift = inWater ? 0 : (spritePx * LAND_LIFT_PX) / SPRITE_SRC_PX;
-          const bottom = cy + cellPx / 2 - lift;
-          const top = Math.round((bottom - spritePx) * ratio) / ratio;
+          ctx.restore();
 
-          const sprite = getImage(spriteUrl);
-          if (sprite) {
-            const walk = walkRef.current[member.id];
-            const moving = walk && now - walk.movedAt < WALK_GRACE_MS;
-            const declared = positions[member.id]?.facing;
-            // Walking faces where it's going; at rest, whichever way the
-            // last move said (which is how turning in place shows up).
-            const facing =
-              (moving ? walk.facing : declared in FACING_ROW && declared) ||
-              walk?.facing ||
-              "down";
-            const column = moving
-              ? WALK_CYCLE[
-                  Math.floor(walk.distance / CELLS_PER_WALK_FRAME) %
-                    WALK_CYCLE.length
-                ]
-              : 0;
+          const effect = inWater && getImage(waterEffectUrl);
+          if (effect) {
+            const frame = Math.floor(now / WATER_EFFECT_FRAME_MS) % 2;
+            const effectH =
+              (spritePx * WATER_EFFECT_SRC_H) / WATER_EFFECT_SRC_W / 2;
             ctx.save();
             ctx.imageSmoothingEnabled = false;
-            if (facing === "right") {
-              ctx.translate(left + spritePx, top);
-              ctx.scale(-1, 1);
-            } else {
-              ctx.translate(left, top);
-            }
-            const cropPx = inWater ? WATER_CROP_PX : 0;
             ctx.drawImage(
-              sprite,
-              column * SPRITE_SRC_PX,
-              FACING_ROW[facing] * SPRITE_SRC_PX,
-              SPRITE_SRC_PX,
-              SPRITE_SRC_PX - cropPx,
+              effect,
               0,
-              0,
-              spritePx,
-              (spritePx * (SPRITE_SRC_PX - cropPx)) / SPRITE_SRC_PX,
+              frame * WATER_EFFECT_SRC_H,
+              WATER_EFFECT_SRC_W,
+              WATER_EFFECT_SRC_H,
+              left + spritePx / 4,
+              top +
+                (spritePx * (SPRITE_SRC_PX - cropPx)) / SPRITE_SRC_PX -
+                effectH,
+              spritePx / 2,
+              effectH,
             );
             ctx.restore();
-
-            const effect = inWater && getImage(waterEffectUrl);
-            if (effect) {
-              const frame = Math.floor(now / WATER_EFFECT_FRAME_MS) % 2;
-              const effectH =
-                (spritePx * WATER_EFFECT_SRC_H) / WATER_EFFECT_SRC_W / 2;
-              ctx.save();
-              ctx.imageSmoothingEnabled = false;
-              ctx.drawImage(
-                effect,
-                0,
-                frame * WATER_EFFECT_SRC_H,
-                WATER_EFFECT_SRC_W,
-                WATER_EFFECT_SRC_H,
-                left + spritePx / 4,
-                top +
-                  (spritePx * (SPRITE_SRC_PX - cropPx)) / SPRITE_SRC_PX -
-                  effectH,
-                spritePx / 2,
-                effectH,
-              );
-              ctx.restore();
-            }
           }
+        }
 
-          const ix = left + spritePx - iconPx / 2;
-          const iy = top + iconPx / 2;
-          const image = getImage(avatarUrl(member.picture));
-          ctx.save();
-          ctx.beginPath();
-          ctx.arc(ix, iy, iconPx / 2, 0, Math.PI * 2);
-          ctx.closePath();
-          if (image) {
-            ctx.clip();
-            ctx.drawImage(
-              image,
-              ix - iconPx / 2,
-              iy - iconPx / 2,
-              iconPx,
-              iconPx,
-            );
-          } else {
-            ctx.fillStyle =
-              member.id === myId
-                ? cssVar("--color-brand") || "#5b8def"
-                : cssVar("--color-muted") || "#3a4763";
-            ctx.fill();
-            ctx.fillStyle = "#fff";
-            ctx.font = `600 ${Math.round(iconPx * 0.56)}px sans-serif`;
-            ctx.textAlign = "center";
-            ctx.textBaseline = "middle";
-            ctx.fillText((member.name || "?").charAt(0).toUpperCase(), ix, iy);
-          }
-          ctx.restore();
-          ctx.lineWidth = member.id === myId ? 2 : 1;
-          ctx.strokeStyle =
-            member.id === myId ? cssVar("--color-brand") || "#5b8def" : bg;
-          ctx.stroke();
-        });
+        const ix = left + spritePx - iconPx / 2;
+        const iy = top + iconPx / 2;
+        const image = getImage(avatarUrl(member.picture));
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(ix, iy, iconPx / 2, 0, Math.PI * 2);
+        ctx.closePath();
+        if (image) {
+          ctx.clip();
+          ctx.drawImage(
+            image,
+            ix - iconPx / 2,
+            iy - iconPx / 2,
+            iconPx,
+            iconPx,
+          );
+        } else {
+          ctx.fillStyle =
+            member.id === myId
+              ? cssVar("--color-brand") || "#5b8def"
+              : cssVar("--color-muted") || "#3a4763";
+          ctx.fill();
+          ctx.fillStyle = "#fff";
+          ctx.font = `600 ${Math.round(iconPx * 0.56)}px sans-serif`;
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          ctx.fillText((member.name || "?").charAt(0).toUpperCase(), ix, iy);
+        }
+        ctx.restore();
+        ctx.lineWidth = member.id === myId ? 2 : 1;
+        ctx.strokeStyle =
+          member.id === myId ? cssVar("--color-brand") || "#5b8def" : bg;
+        ctx.stroke();
       }
 
-      // Top level: over the avatars too.
-      if (tileMap) paintCells([tiles.drawTop]);
+      if (tileMap) paintCells([tiles.drawTop], topRow);
 
       raf = requestAnimationFrame(draw);
     };
