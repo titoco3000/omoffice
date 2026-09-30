@@ -7,7 +7,7 @@
 import { useEffect, useState } from "react";
 import floorUrl from "./assets/floor.png";
 import decorationsUrl from "./assets/decorations.png";
-import { TILES, TILE_WATER, tileForColor } from "./tiles";
+import { TILES, TILE_PX, TILE_WATER, tileForColor } from "./tiles";
 
 let loading = null;
 
@@ -31,13 +31,47 @@ function loadPixels(url) {
   });
 }
 
-/// `{width, height, tiles, decorations}` -- one entry per cell, row by row.
+/// Each anchored sprite's footprint: for every cell of its image holding an
+/// opaque pixel (so odd shapes cover only what they touch), `{tile, dx, dy}`
+/// -- which sprite, and which 16px slice of it -- written into `sprites`.
+function spriteCells(sprites, decorationTiles, width, height, images) {
+  for (let i = 0; i < decorationTiles.length; i++) {
+    const tile = decorationTiles[i];
+    const image = tile && images.get(TILES[tile].sprite);
+    if (!image) continue;
+    const col = i % width;
+    const row = Math.floor(i / width);
+    for (let dy = 0; dy * TILE_PX < image.height; dy++) {
+      for (let dx = 0; dx * TILE_PX < image.width; dx++) {
+        if (col + dx >= width || row + dy >= height) continue;
+        let opaque = false;
+        for (
+          let y = dy * TILE_PX;
+          y < Math.min(image.height, (dy + 1) * TILE_PX);
+          y++
+        ) {
+          for (
+            let x = dx * TILE_PX;
+            x < Math.min(image.width, (dx + 1) * TILE_PX);
+            x++
+          ) {
+            if (image.data[(y * image.width + x) * 4 + 3] > 0) opaque = true;
+          }
+        }
+        if (opaque) sprites[(row + dy) * width + col + dx] = { tile, dx, dy };
+      }
+    }
+  }
+}
+
+/// `{width, height, tiles, decorations, sprites}` -- one entry per cell, row by row.
 /// `tiles` holds a `TILES` key from `floor.png`; `decorations` holds a
 /// `TILES` key from `decorations.png`, or `null` where that pixel is
-/// transparent. Rejects if an image fails to load; a later call tries again.
+/// transparent (a sprite's anchor cell, or a wall); `sprites` holds the
+/// slice of a sprite covering that cell, or `null`. Rejects if an image fails to load; a later call tries again.
 export function loadTileMap() {
   loading ??= Promise.all([loadPixels(floorUrl), loadPixels(decorationsUrl)])
-    .then(([floor, decorations]) => {
+    .then(async ([floor, decorations]) => {
       const count = floor.width * floor.height;
       const tiles = new Array(count);
       const decorationTiles = new Array(count).fill(null);
@@ -53,7 +87,18 @@ export function loadTileMap() {
           );
         }
       }
+      const urls = new Set(
+        decorationTiles.map((d) => d && TILES[d].sprite).filter(Boolean),
+      );
+      const images = new Map(
+        await Promise.all(
+          [...urls].map(async (url) => [url, await loadPixels(url)]),
+        ),
+      );
+      const sprites = new Array(count).fill(null);
+      spriteCells(sprites, decorationTiles, floor.width, floor.height, images);
       return {
+        sprites,
         width: floor.width,
         height: floor.height,
         tiles,
@@ -92,7 +137,9 @@ export function isBlocked(tileMap, x, y) {
   if (x < 0 || y < 0 || x >= tileMap.width || y >= tileMap.height) return false;
   const i = y * tileMap.width + x;
   return Boolean(
-    TILES[tileMap.decorations[i]]?.blocked || TILES[tileMap.tiles[i]]?.blocked,
+    TILES[tileMap.decorations[i]]?.blocked ||
+    TILES[tileMap.sprites[i]?.tile]?.blocked ||
+    TILES[tileMap.tiles[i]]?.blocked,
   );
 }
 

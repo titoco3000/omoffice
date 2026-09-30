@@ -4,6 +4,7 @@ import waterUrl from "./assets/floor/water.png";
 import plankLightUrl from "./assets/floor/plank-light.png";
 import plankMediumUrl from "./assets/floor/plank-medium.png";
 import purpleFlowerUrl from "./assets/decorations/purple-flower.png";
+import tableUrl from "./assets/decorations/table-2x2.png";
 import wallBlueTopUrl from "./assets/decorations/wall/blue/top.png";
 import wallBlueMidUrl from "./assets/decorations/wall/blue/mid.png";
 import wallBlueBottomUrl from "./assets/decorations/wall/blue/bottom.png";
@@ -40,11 +41,19 @@ export const TILES = {
     color: [128, 64, 0],
     src: [1, 0, 16, 16],
   },
-  // A single-image decoration, drawn over the floor beneath it.
+  // Sprite decorations: one map pixel marks the sprite's top-left cell and
+  // the image spans as many cells as it needs (16px each, so it may be
+  // larger than 1x1 or an odd shape). See `spriteCells` in `tileMap.js`.
   "purple-flower": {
     organic: false,
     color: [128, 0, 255],
-    decoration: purpleFlowerUrl,
+    sprite: purpleFlowerUrl,
+  },
+  "table-2x2": {
+    organic: false,
+    blocked: true,
+    color: [192, 128, 64],
+    sprite: tableUrl,
   },
   // Wall variants: one map color each, drawn as `top`/`mid`/`bottom` by
   // what sits below the cell (see `wallPart`).
@@ -85,7 +94,8 @@ const ORGANIC_BY_RANK = Object.entries(TILES)
   .sort((a, b) => a[1].rank - b[1].rank)
   .map(([name]) => name);
 
-const MASK_PX = 16; // transitions and organic tiles are 16x16
+export const TILE_PX = 16; // one map cell in source images
+const MASK_PX = TILE_PX; // transitions and organic tiles are 16x16
 
 // Neighbor slots, clockwise from north: N, NE, E, SE, S, SW, W, NW.
 const NEIGHBOR_OFFSETS = [
@@ -205,11 +215,32 @@ export function createTileRenderer(getImage) {
   };
 
   const drawDecorations = (ctx, tileMap, col, row, x0, y0, x1, y1) => {
+    const piece = tileMap.sprites[row * tileMap.width + col];
+    if (piece) {
+      // This cell's slice of a sprite anchored elsewhere (or here); a slice
+      // hanging past the image's edge is drawn proportionally short.
+      const image = getImage(TILES[piece.tile].sprite);
+      if (!image) return;
+      const sx = piece.dx * TILE_PX;
+      const sy = piece.dy * TILE_PX;
+      const sw = Math.min(TILE_PX, image.naturalWidth - sx);
+      const sh = Math.min(TILE_PX, image.naturalHeight - sy);
+      ctx.drawImage(
+        image,
+        sx,
+        sy,
+        sw,
+        sh,
+        x0,
+        y0,
+        ((x1 - x0) * sw) / TILE_PX,
+        ((y1 - y0) * sh) / TILE_PX,
+      );
+    }
     const tile = decorationAt(tileMap, col, row);
-    const { wall, decoration } = (tile && TILES[tile]) || {};
-    const url = wall ? wall[wallPart(tileMap, col, row, tile)] : decoration;
-    if (!url) return;
-    const image = getImage(url);
+    const wall = tile && TILES[tile].wall;
+    if (!wall) return;
+    const image = getImage(wall[wallPart(tileMap, col, row, tile)]);
     if (!image) return;
     ctx.drawImage(image, x0, y0, x1 - x0, y1 - y0);
   };
