@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { AuthProvider, useAuth } from "../core/auth/AuthContext";
 import { ThemeProvider } from "../core/theme/ThemeContext";
+import DebugPanel from "../core/ui/DebugPanel";
 import { RouterProvider, useLocation, navigate } from "../core/Router";
 import {
   MapEditorProvider,
@@ -64,6 +65,7 @@ function Pages() {
 export default function App() {
   return (
     <ThemeProvider>
+      <DebugPanel />
       <MapModeProvider>
         <AuthProvider>
           <RouterProvider>

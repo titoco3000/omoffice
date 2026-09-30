@@ -16,11 +16,26 @@ import {
 } from "../features/avatars";
 import ThemeToggle from "../core/theme/ThemeToggle";
 import { MapModeToggle } from "../features/map";
+import { HowlSettings } from "../features/meetings";
+import OnOffToggle from "../core/ui/OnOffToggle";
+import { setDebugPanelShown, useDebugPanelShown } from "../core/debugLog";
+import { useIsMobile } from "../core/hooks/useViewport";
 import AsyncButton from "../core/ui/AsyncButton";
 import Avatar from "../core/ui/Avatar";
 
+function SettingRow({ label, children }) {
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <span className="text-sm text-ink">{label}</span>
+      {children}
+    </div>
+  );
+}
+
 export default function Profile() {
   const { token, logout } = useAuth();
+  const isMobile = useIsMobile();
+  const debugShown = useDebugPanelShown();
   const {
     orgs,
     orgId,
@@ -236,14 +251,20 @@ export default function Profile() {
         )}
       </section>
 
-      <section className="rounded-card border bg-surface p-5">
-        <label className="block text-sm text-ink-muted">Theme</label>
-        <ThemeToggle className="mt-2" />
-      </section>
-
-      <section className="rounded-card border bg-surface p-5">
-        <label className="block text-sm text-ink-muted">Graphics mode</label>
-        <MapModeToggle className="mt-2" />
+      <section className="flex flex-col gap-3 rounded-card border bg-surface p-5">
+        <h2 className="text-sm text-ink-muted">Settings</h2>
+        <SettingRow label="Theme">
+          <ThemeToggle />
+        </SettingRow>
+        <SettingRow label="Graphics mode">
+          <MapModeToggle />
+        </SettingRow>
+        <HowlSettings Row={SettingRow} />
+        {isMobile && (
+          <SettingRow label="Debug panel">
+            <OnOffToggle value={debugShown} onChange={setDebugPanelShown} />
+          </SettingRow>
+        )}
       </section>
 
       {error && <p className="text-sm text-danger">{error}</p>}

@@ -21,6 +21,8 @@ import {
   MeetingSessionConfiguration,
 } from "amazon-chime-sdk-js";
 
+import { startHowlGuard } from "./howlGuard";
+
 const logger = new ConsoleLogger("omoffice", LogLevel.WARN);
 
 // One device controller for the whole tab -- see the module doc.
@@ -42,6 +44,8 @@ let onRemoteTilesChange = () => {};
 let onScreenShareEnded = () => {};
 let onSpeakingIdsChange = () => {};
 let onMutedIdsChange = () => {};
+let onHowlDetected = () => {};
+let stopHowlGuard = () => {};
 
 function notifyRemoteTiles() {
   onRemoteTilesChange(
@@ -133,16 +137,29 @@ const SPEAKING_THRESHOLD = 0.4;
 // stuck silently for every meeting after, since nothing ever retried it.
 async function ensureAudioInput() {
   const mics = await deviceController.listAudioInputDevices();
+  if (!mics[0]) return;
   // Explicit constraints: B on speakers otherwise re-captures A's voice and
   // sends it back to A as echo.
-  if (mics[0]) {
-    await deviceController.startAudioInput({
-      deviceId: { exact: mics[0].deviceId },
-      echoCancellation: true,
-      noiseSuppression: true,
-      autoGainControl: true,
-    });
-  }
+  const stream = await deviceController.startAudioInput({
+    deviceId: { exact: mics[0].deviceId },
+    echoCancellation: true,
+    noiseSuppression: true,
+    autoGainControl: true,
+  });
+  // Re-armed with every fresh grab, since the stream is a new one each time.
+  stopHowlGuard();
+  stopHowlGuard = startHowlGuard(
+    stream,
+    () => !micMuted,
+    () => onHowlDetected(),
+  );
+}
+
+// Called when sustained feedback is heard on this tab's own mic. This
+// module does not mute itself -- the caller decides, so its own mute state
+// (React) stays in step.
+export function onHowl(callback) {
+  onHowlDetected = callback;
 }
 
 /// Release this tab's microphone hardware -- called on a full leave. Without this the mic device
@@ -151,6 +168,8 @@ async function ensureAudioInput() {
 /// `micMuted` is left alone, same as `cameraOn` is for the camera, so the
 /// next join still respects whatever mute preference was set.
 export async function releaseMic() {
+  stopHowlGuard();
+  stopHowlGuard = () => {};
   await deviceController.stopAudioInput();
 }
 

@@ -111,6 +111,10 @@ export function useMeetingSession(token, orgId) {
   // back.
   const [allInvites, setAllInvites] = useState([]);
   const [error, setError] = useState(null);
+  // When the howl guard last muted this mic (`Date.now()`), until dismissed --
+  // `NotificationsOverlay` shows it as a bubble. Keyed by time so a repeat
+  // after a dismiss (or before one) re-alerts.
+  const [howlAt, setHowlAt] = useState(null);
   // In-meeting chat -- frontend state only, the backend never stores a
   // message, just relays it to whoever else is currently an attendee, so
   // this array is the only copy that exists anywhere. Reset whenever
@@ -178,6 +182,10 @@ export function useMeetingSession(token, orgId) {
     chime.onScreenShareStopped(() => setSharingScreen(false));
     chime.onSpeakingChange(setSpeakingUserIds);
     chime.onMutedChange(setMutedUserIds);
+    chime.onHowl(() => {
+      applyMicMuted(true);
+      setHowlAt(Date.now());
+    });
   }, []);
 
   useEffect(() => {
@@ -834,6 +842,8 @@ export function useMeetingSession(token, orgId) {
     error,
     chatMessages,
     accessRequests,
+    howlAt,
+    dismissHowl: () => setHowlAt(null),
     waves,
     wavedUserIds,
     wave,

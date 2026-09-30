@@ -171,6 +171,17 @@ function WaveBubble({ userId, members, onAnswer, onDismiss }) {
   );
 }
 
+function HowlBubble({ onDismiss }) {
+  return (
+    <Bubble onClose={onDismiss}>
+      <p className="text-sm text-ink">
+        Feedback detected, so your mic was muted. Use headphones or mute your
+        speakers if someone nearby is in the meeting.
+      </p>
+    </Bubble>
+  );
+}
+
 export default function NotificationsOverlay() {
   const { token } = useAuth();
   const { reloadOrgs, selectOrg, roster } = useOrgSession();
@@ -183,6 +194,8 @@ export default function NotificationsOverlay() {
     accessRequests,
     admitAccessRequest,
     dismissAccessRequest,
+    howlAt,
+    dismissHowl,
     waves,
     answerWave,
     dismissWave,
@@ -214,6 +227,7 @@ export default function NotificationsOverlay() {
     ...meetingInviteList.map((invite) => `meeting:${invite.id}`),
     ...accessRequests.map((r) => `access:${r.userId}:${r.at}`),
     ...waves.map((w) => `wave:${w.userId}:${w.at}`),
+    ...(howlAt ? [`howl:${howlAt}`] : []),
   ]);
 
   const empty =
@@ -221,7 +235,8 @@ export default function NotificationsOverlay() {
     orgInviteList.length === 0 &&
     meetingInviteList.length === 0 &&
     accessRequests.length === 0 &&
-    waves.length === 0;
+    waves.length === 0 &&
+    !howlAt;
   if (empty) return null;
 
   // Which edge/bottom the bar currently claiming "navbar" sits on -- see
@@ -296,6 +311,7 @@ export default function NotificationsOverlay() {
           onDismiss={() => dismissWave(w.userId)}
         />
       ))}
+      {howlAt && <HowlBubble onDismiss={dismissHowl} />}
       {orgInvites.error && (
         <li className="pointer-events-none text-sm text-danger">
           {orgInvites.error}
