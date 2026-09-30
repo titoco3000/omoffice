@@ -1,4 +1,6 @@
-- map editing
+- global admin panel
+- user tile uploads
+- billing
 - avatar editing
 - gong
 - raise hands
