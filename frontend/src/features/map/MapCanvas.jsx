@@ -328,7 +328,8 @@ export default function MapCanvas({ token, orgId, members, myId }) {
       const firstRow = Math.floor(-originPxY / cellPx);
       const lastRow = Math.ceil((h - originPxY) / cellPx);
 
-      if (tileMap) {
+      // Runs each pass over every visible cell, in order.
+      const paintCells = (passes) => {
         ctx.imageSmoothingEnabled = false;
         const rows = [Math.max(0, firstRow), Math.min(tileMap.height, lastRow)];
         const cols = [Math.max(0, firstCol), Math.min(tileMap.width, lastCol)];
@@ -340,11 +341,7 @@ export default function MapCanvas({ token, orgId, members, myId }) {
           Math.round((originPxX + col * cellPx) * ratio) / ratio;
         const edgeY = (row) =>
           Math.round((originPxY + row * cellPx) * ratio) / ratio;
-        for (const pass of [
-          tiles.drawBase,
-          tiles.drawTransitions,
-          tiles.drawDecorations,
-        ]) {
+        for (const pass of passes) {
           for (let row = rows[0]; row < rows[1]; row++) {
             for (let col = cols[0]; col < cols[1]; col++) {
               pass(
@@ -360,6 +357,10 @@ export default function MapCanvas({ token, orgId, members, myId }) {
             }
           }
         }
+      };
+
+      if (tileMap) {
+        paintCells([tiles.drawBase, tiles.drawTransitions, tiles.drawMid]);
       }
 
       ctx.strokeStyle = border;
@@ -537,6 +538,9 @@ export default function MapCanvas({ token, orgId, members, myId }) {
           ctx.stroke();
         });
       }
+
+      // Top level: over the avatars too.
+      if (tileMap) paintCells([tiles.drawTop]);
 
       raf = requestAnimationFrame(draw);
     };

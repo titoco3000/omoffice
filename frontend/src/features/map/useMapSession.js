@@ -143,7 +143,7 @@ function bumpPlacements(prev, ids) {
   return next;
 }
 
-// `tileMap` (see `tileMap.js`) is `null` until `floor.png`/`decorations.png` has loaded, and
+// `tileMap` (see `tileMap.js`) is `null` until `map.png` has loaded, and
 // everything is walkable until then.
 export function useMapSession(token, orgId, members, tileMap) {
   const myId = decodeJwt(token)?.sub;

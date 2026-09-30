@@ -1,13 +1,17 @@
-//! `floor.png` and `decorations.png` decoded into per-cell grids, shared by
+//! `map.png` (three 100x100 levels side by side) decoded into per-cell grids, shared by
 //! everything that needs to know what's on a cell: `MapCanvas` to draw it,
 //! `useMapSession` and `MapRelocationProvider` to keep avatars off walls.
 //! Decoded once per page load -- an offscreen canvas is the only way to read
 //! pixel colors back out of an `<img>`.
 
 import { useEffect, useState } from "react";
-import floorUrl from "./assets/floor.png";
-import decorationsUrl from "./assets/decorations.png";
+import mapUrl from "./assets/map.png";
 import { TILES, TILE_PX, TILE_WATER, tileForColor } from "./tiles";
+
+// Levels left to right, each `LEVEL_PX` wide: `base` is the ground, `mid`
+// holds walls, tables and the like (blocking or not), `top` holds
+// decorations drawn over everything and never blocking.
+const LEVEL_PX = 100;
 
 let loading = null;
 
@@ -64,45 +68,58 @@ function spriteCells(sprites, decorationTiles, width, height, images) {
   }
 }
 
-/// `{width, height, tiles, decorations, sprites}` -- one entry per cell, row by row.
-/// `tiles` holds a `TILES` key from `floor.png`; `decorations` holds a
-/// `TILES` key from `decorations.png`, or `null` where that pixel is
-/// transparent (a sprite's anchor cell, or a wall); `sprites` holds the
-/// slice of a sprite covering that cell, or `null`. Rejects if an image fails to load; a later call tries again.
+/// One of `mid`/`top`, read from the `index`th `LEVEL_PX` strip of `map`:
+/// `{cells, sprites}` -- `cells` holds a `TILES` key per cell, or `null`
+/// where that pixel is transparent (a sprite's anchor cell, or a wall);
+/// `sprites` holds the slice of a sprite covering that cell, or `null`.
+async function decodeLayer(map, index) {
+  const count = LEVEL_PX * LEVEL_PX;
+  const cells = new Array(count).fill(null);
+  for (let i = 0; i < count; i++) {
+    const p = pixelIndex(map, index, i);
+    if (map.data[p + 3] > 0) {
+      cells[i] = tileForColor(map.data[p], map.data[p + 1], map.data[p + 2]);
+    }
+  }
+  const urls = new Set(cells.map((d) => d && TILES[d].sprite).filter(Boolean));
+  const images = new Map(
+    await Promise.all(
+      [...urls].map(async (url) => [url, await loadPixels(url)]),
+    ),
+  );
+  const sprites = new Array(count).fill(null);
+  spriteCells(sprites, cells, LEVEL_PX, LEVEL_PX, images);
+  return { cells, sprites };
+}
+
+/// Byte offset in `map.data` of cell `i` (row by row) of level `index`.
+function pixelIndex(map, index, i) {
+  const x = index * LEVEL_PX + (i % LEVEL_PX);
+  const y = Math.floor(i / LEVEL_PX);
+  return (y * map.width + x) * 4;
+}
+
+/// `{width, height, tiles, mid, top}` -- one entry per cell, row by row.
+/// `tiles` holds a `TILES` key from the base level; `mid` and `top` are
+/// `{cells, sprites}` (see `decodeLayer`). Rejects if the image fails to load;
+/// a later call tries again.
 export function loadTileMap() {
-  loading ??= Promise.all([loadPixels(floorUrl), loadPixels(decorationsUrl)])
-    .then(async ([floor, decorations]) => {
-      const count = floor.width * floor.height;
-      const tiles = new Array(count);
-      const decorationTiles = new Array(count).fill(null);
-      for (let i = 0; i < count; i++) {
-        const d = floor.data;
-        tiles[i] = tileForColor(d[i * 4], d[i * 4 + 1], d[i * 4 + 2]);
-        const e = decorations.data;
-        if (e[i * 4 + 3] > 0) {
-          decorationTiles[i] = tileForColor(
-            e[i * 4],
-            e[i * 4 + 1],
-            e[i * 4 + 2],
-          );
-        }
+  loading ??= loadPixels(mapUrl)
+    .then(async (map) => {
+      if (map.width !== LEVEL_PX * 3 || map.height !== LEVEL_PX) {
+        throw new Error(`map.png must be ${LEVEL_PX * 3}x${LEVEL_PX}`);
       }
-      const urls = new Set(
-        decorationTiles.map((d) => d && TILES[d].sprite).filter(Boolean),
-      );
-      const images = new Map(
-        await Promise.all(
-          [...urls].map(async (url) => [url, await loadPixels(url)]),
-        ),
-      );
-      const sprites = new Array(count).fill(null);
-      spriteCells(sprites, decorationTiles, floor.width, floor.height, images);
+      const tiles = new Array(LEVEL_PX * LEVEL_PX);
+      for (let i = 0; i < tiles.length; i++) {
+        const p = pixelIndex(map, 0, i);
+        tiles[i] = tileForColor(map.data[p], map.data[p + 1], map.data[p + 2]);
+      }
       return {
-        sprites,
-        width: floor.width,
-        height: floor.height,
+        width: LEVEL_PX,
+        height: LEVEL_PX,
         tiles,
-        decorations: decorationTiles,
+        mid: await decodeLayer(map, 1),
+        top: await decodeLayer(map, 2),
       };
     })
     .catch((error) => {
@@ -137,8 +154,8 @@ export function isBlocked(tileMap, x, y) {
   if (x < 0 || y < 0 || x >= tileMap.width || y >= tileMap.height) return false;
   const i = y * tileMap.width + x;
   return Boolean(
-    TILES[tileMap.decorations[i]]?.blocked ||
-    TILES[tileMap.sprites[i]?.tile]?.blocked ||
+    TILES[tileMap.mid.cells[i]]?.blocked ||
+    TILES[tileMap.mid.sprites[i]?.tile]?.blocked ||
     TILES[tileMap.tiles[i]]?.blocked,
   );
 }
