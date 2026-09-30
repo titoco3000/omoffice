@@ -29,6 +29,7 @@ function MapView() {
         orgId={currentOrg.id}
         members={online}
         myId={myId}
+        meetings={meetingSession.meetings}
       />
       {isMobile && (
         <>

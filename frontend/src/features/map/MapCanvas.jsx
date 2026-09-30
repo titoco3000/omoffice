@@ -40,6 +40,7 @@ import spriteUrl from "./assets/user-sprite.png";
 import waterEffectUrl from "./assets/effects/water.png";
 import { TILE_PX, createTileRenderer, tilePreview } from "./tiles";
 import { findRoute } from "./navigation";
+import { drawMeetingZones } from "./meetingZones";
 import { isWater } from "./tileMap";
 import { useMapEditor } from "./MapEditorContext";
 import MapEditorPanel from "./MapEditorPanel";
@@ -145,7 +146,13 @@ function stackOffset(index, total) {
   };
 }
 
-export default function MapCanvas({ token, orgId, members, myId }) {
+export default function MapCanvas({
+  token,
+  orgId,
+  members,
+  myId,
+  meetings = [],
+}) {
   const canvasRef = useRef(null);
   const imagesRef = useRef(new Map()); // url -> HTMLImageElement
   const plansRef = useRef({}); // user_id -> the route being walked, see `walkPlan`
@@ -184,6 +191,7 @@ export default function MapCanvas({ token, orgId, members, myId }) {
     positions,
     members,
     myId,
+    meetings,
     loaded,
     placements,
     tileMap,
@@ -195,6 +203,7 @@ export default function MapCanvas({ token, orgId, members, myId }) {
       positions,
       members,
       myId,
+      meetings,
       loaded,
       placements,
       tileMap,
@@ -373,7 +382,24 @@ export default function MapCanvas({ token, orgId, members, myId }) {
       };
 
       if (tileMap) {
-        paintCells([tiles.drawBase, tiles.drawTransitions, tiles.drawMid]);
+        paintCells([tiles.drawBase, tiles.drawTransitions]);
+      }
+
+      // Just above the ground, under decorations and avatars.
+      drawMeetingZones(
+        ctx,
+        stateRef.current.meetings,
+        rendered,
+        new Set(members.map((member) => member.id)),
+        { originPxX, originPxY, cellPx },
+        {
+          accent: cssVar("--color-brand") || "#5b8def",
+          surface: cssVar("--color-surface") || "#111827",
+        },
+      );
+
+      if (tileMap) {
+        paintCells([tiles.drawMid]);
       }
 
       ctx.strokeStyle = border;
