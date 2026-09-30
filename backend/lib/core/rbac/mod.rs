@@ -36,6 +36,8 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use chrono::{DateTime, Utc};
+use futures_util::future::BoxFuture;
+use linkme::distributed_slice;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use uuid::Uuid;
@@ -788,6 +790,16 @@ pub async fn notify_removed(messenger: &Messenger, org_id: &str, user_id: &str) 
         .await;
 }
 
+/// A feature's reaction to a new membership: `(db, org_id, user_id)`.
+pub type MemberAddedHook =
+    for<'a> fn(&'a Db, &'a str, &'a str) -> BoxFuture<'a, Result<(), DbError>>;
+
+/// Features register here (`#[distributed_slice(MEMBER_ADDED)]`) to set up
+/// their own per-member state when [`add_member`] inserts a new row, so
+/// `core::rbac` never has to know which features exist.
+#[distributed_slice]
+pub static MEMBER_ADDED: [MemberAddedHook] = [..];
+
 /// Add `user_id` to `org_id` -- a bare membership row, no roles yet. What an
 /// accepted invite calls before [`assign_role`] for each invited role.
 pub async fn add_member(db: &Db, org_id: &str, user_id: &str) -> Result<(), RbacError> {
@@ -807,6 +819,9 @@ pub async fn add_member(db: &Db, org_id: &str, user_id: &str) -> Result<(), Rbac
         .map(|_| ())
     })
     .await?;
+    for hook in MEMBER_ADDED {
+        hook(db, org_id, user_id).await?;
+    }
     Ok(())
 }
 

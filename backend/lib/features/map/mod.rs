@@ -35,6 +35,7 @@ use axum::extract::{Extension, Path};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use linkme::distributed_slice;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -61,6 +62,9 @@ pub const MOVE_CHANNEL: web_messenger::Channel = "map_move";
 /// The frontend's own report of the canvas mounting/unmounting:
 /// `{"org_id", "active"}`.
 pub const ACTIVE_CHANNEL: web_messenger::Channel = "map_active";
+
+/// A new member spawns within this many cells of the office centre
+pub const SPAWN_RADIUS: i32 = 1;
 
 fn clamp(value: i32) -> i32 {
     value.clamp(0, OFFICE_SIZE - 1)
@@ -215,6 +219,36 @@ async fn set_position(
     .await?;
     Ok((x, y))
 }
+
+/// Give a just-added member a random starting cell within [`SPAWN_RADIUS`]
+/// of the office centre (`OFFICE_SIZE / 2`), instead of the `(0, 0)` default.
+/// Insert-only (`ON CONFLICT DO NOTHING`), so re-adding an existing member
+/// never teleports them.
+async fn place_new_member(db: &Db, org_id: &str, user_id: &str) -> Result<(), DbError> {
+    let centre = OFFICE_SIZE / 2;
+    let x = clamp(centre + fastrand::i32(-SPAWN_RADIUS..=SPAWN_RADIUS));
+    let y = clamp(centre + fastrand::i32(-SPAWN_RADIUS..=SPAWN_RADIUS));
+    let pool = db.pool().await?;
+    retry_on_conflict(|| async move {
+        sqlx::query(
+            "INSERT INTO map_positions (org_id, user_id, x, y) VALUES ($1, $2, $3, $4) \
+             ON CONFLICT (org_id, user_id) DO NOTHING",
+        )
+        .bind(org_id)
+        .bind(user_id)
+        .bind(x)
+        .bind(y)
+        .execute(pool)
+        .await
+        .map(|_| ())
+    })
+    .await?;
+    Ok(())
+}
+
+#[distributed_slice(rbac::MEMBER_ADDED)]
+static PLACE_NEW_MEMBER: rbac::MemberAddedHook =
+    |db, org_id, user_id| Box::pin(place_new_member(db, org_id, user_id));
 
 /// Same fallback shape as [`set_position`], for `map_active` instead.
 async fn set_map_active(
