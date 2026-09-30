@@ -19,8 +19,7 @@ import outerTopLeftUrl from "./assets/transitions/outer-top-left.png";
 //
 // `organic` tiles blend into one another: the tile with the higher `rank`
 // bleeds over the lower one's edge through the masks in `assets/transitions`.
-// Non-organic ("artificial") tiles instead get a gray + black border line
-// wherever they meet a different tile.
+// Non-organic ("artificial") tiles have no transition.
 export const TILE_WATER = "water";
 export const TILES = {
   water: { url: waterUrl, organic: true, rank: 0 },
@@ -41,7 +40,7 @@ export const TILES = {
     src: [1, 0, 16, 16],
   },
   // Wall variants: one map color each, drawn as `top`/`mid`/`bottom` by
-  // what sits below the cell (see `wallPart`). They carry no edge lines.
+  // what sits below the cell (see `wallPart`).
   "wall-blue": {
     organic: false,
     blocked: true,
@@ -80,18 +79,8 @@ const ORGANIC_BY_RANK = Object.entries(TILES)
   .map(([name]) => name);
 
 const MASK_PX = 16; // transitions and organic tiles are 16x16
-const EDGE_LINE_GRAY = "#8a8a8a";
-const EDGE_LINE_BLACK = "#000000";
 
-// Neighbor slots, clockwise from north.
-const N = 0;
-const NE = 1;
-const E = 2;
-const SE = 3;
-const S = 4;
-const SW = 5;
-const W = 6;
-const NW = 7;
+// Neighbor slots, clockwise from north: N, NE, E, SE, S, SW, W, NW.
 const NEIGHBOR_OFFSETS = [
   [0, -1],
   [1, -1],
@@ -207,91 +196,21 @@ export function createTileRenderer(getImage) {
 
   const drawTransitions = (ctx, tileMap, col, row, x0, y0, x1, y1) => {
     const tile = tileAt(tileMap, col, row);
-    if (TILES[tile].wall) return;
+    if (!TILES[tile].organic) return;
     const around = neighbors(tileMap, col, row, tile);
 
-    if (TILES[tile].organic) {
-      for (const other of ORGANIC_BY_RANK) {
-        if (TILES[other].rank <= TILES[tile].rank) continue;
-        const same = around.map((n) => n === other);
-        if (!same.includes(true)) continue;
-        const key = `${other}|${same.map(Number).join("")}`;
-        let blend = blends.get(key);
-        if (!blend) {
-          blend = buildBlend(other, same, getImage);
-          if (!blend) continue;
-          blends.set(key, blend);
-        }
-        ctx.drawImage(blend, x0, y0, x1 - x0, y1 - y0);
+    for (const other of ORGANIC_BY_RANK) {
+      if (TILES[other].rank <= TILES[tile].rank) continue;
+      const same = around.map((n) => n === other);
+      if (!same.includes(true)) continue;
+      const key = `${other}|${same.map(Number).join("")}`;
+      let blend = blends.get(key);
+      if (!blend) {
+        blend = buildBlend(other, same, getImage);
+        if (!blend) continue;
+        blends.set(key, blend);
       }
-      return;
-    }
-
-    // Artificial tile: a gray line inside a black one along every edge that
-    // meets a different tile. Gray goes down first so the black wins where
-    // two edges cross at a corner. Between two artificial tiles the lines
-    // are split across the boundary as gray - black - gray: the cell
-    // on the north/west side draws gray then black at its S/E edge, and the
-    // cell beyond adds one gray line at its own N/W edge.
-    const px = Math.max(1, Math.round((x1 - x0) / MASK_PX));
-    const open = (slot) => around[slot] !== tile;
-    const artificial = (slot) => !TILES[around[slot]].organic;
-    const rect = (slot, width, inset, color) => {
-      if (!open(slot)) return;
-      ctx.fillStyle = color;
-      switch (slot) {
-        case N:
-          ctx.fillRect(x0, y0 + inset, x1 - x0, width);
-          break;
-        case S:
-          ctx.fillRect(x0, y1 - inset - width, x1 - x0, width);
-          break;
-        case W:
-          ctx.fillRect(x0 + inset, y0, width, y1 - y0);
-          break;
-        default:
-          ctx.fillRect(x1 - inset - width, y0, width, y1 - y0);
-      }
-    };
-    const ownsBlack = (slot) => slot === S || slot === E;
-    for (const slot of [N, E, S, W]) {
-      if (!artificial(slot) || ownsBlack(slot)) {
-        rect(slot, px, px, EDGE_LINE_GRAY);
-      }
-    }
-    for (const slot of [N, E, S, W]) {
-      if (!artificial(slot)) rect(slot, px, 0, EDGE_LINE_BLACK);
-      else if (ownsBlack(slot)) rect(slot, px, 0, EDGE_LINE_BLACK);
-      else rect(slot, px, 0, EDGE_LINE_GRAY);
-    }
-
-    // Inside corner: both sides continue but the diagonal doesn't. Black
-    // dot in the corner, gray around it, to close the line's turn.
-    const corners = [
-      [NW, N, W, x0, y0, 1, 1],
-      [NE, N, E, x1, y0, -1, 1],
-      [SE, S, E, x1, y1, -1, -1],
-      [SW, S, W, x0, y1, 1, -1],
-    ];
-    for (const [diag, a, b, cx, cy, sx, sy] of corners) {
-      if (!open(diag) || open(a) || open(b)) continue;
-      const cell = (i, j, color) => {
-        ctx.fillStyle = color;
-        const ox = sx > 0 ? cx + i * px : cx - (i + 1) * px;
-        const oy = sy > 0 ? cy + j * px : cy - (j + 1) * px;
-        ctx.fillRect(ox, oy, px, px);
-      };
-      // The diagonal tile's own S/E black already sits next to this corner
-      // when it is another artificial tile, leaving just the gray that
-      // closes the gray - black - gray run.
-      if (diag === NW && artificial(diag)) {
-        cell(0, 0, EDGE_LINE_GRAY);
-        continue;
-      }
-      cell(1, 0, EDGE_LINE_GRAY);
-      cell(0, 1, EDGE_LINE_GRAY);
-      cell(1, 1, EDGE_LINE_GRAY);
-      cell(0, 0, EDGE_LINE_BLACK);
+      ctx.drawImage(blend, x0, y0, x1 - x0, y1 - y0);
     }
   };
 
