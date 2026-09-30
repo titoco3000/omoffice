@@ -37,6 +37,7 @@ import { useMapSession, USER_SPEED } from "./useMapSession";
 import { avatarUrl } from "../avatars";
 import { FiMinus, FiPlus } from "react-icons/fi";
 import spriteUrl from "./assets/user-sprite.png";
+import waterEffectUrl from "./assets/effects/water.png";
 import { createTileRenderer } from "./tiles";
 import { findRoute } from "./navigation";
 import { isWater, useTileMap } from "./tileMap";
@@ -57,6 +58,13 @@ const MIN_USER_ICON_PX = 6;
 // Source px cut off the bottom of an avatar standing in water, as if it
 // were wading through shallows.
 const WATER_CROP_PX = 4;
+// The water effect sheet is 16x16: its top and bottom halves are the two
+// animation frames, overlaid on the avatar's lower body while in water and
+// drawn centered on the sprite at half its width, at the height it had
+// when full width.
+const WATER_EFFECT_SRC_W = 16;
+const WATER_EFFECT_SRC_H = 8;
+const WATER_EFFECT_FRAME_MS = 400;
 // Source px an avatar on dry land is drawn higher than the tile's bottom
 // edge (in water it sits at it, cropped instead).
 const LAND_LIFT_PX = 3;
@@ -452,13 +460,7 @@ export default function MapCanvas({ token, orgId, members, myId }) {
             } else {
               ctx.translate(left, top);
             }
-            const cropPx = isWater(
-              tileMap,
-              Math.round(pos.x),
-              Math.round(pos.y),
-            )
-              ? WATER_CROP_PX
-              : 0;
+            const cropPx = inWater ? WATER_CROP_PX : 0;
             ctx.drawImage(
               sprite,
               column * SPRITE_SRC_PX,
@@ -471,6 +473,29 @@ export default function MapCanvas({ token, orgId, members, myId }) {
               (spritePx * (SPRITE_SRC_PX - cropPx)) / SPRITE_SRC_PX,
             );
             ctx.restore();
+
+            const effect = inWater && getImage(waterEffectUrl);
+            if (effect) {
+              const frame = Math.floor(now / WATER_EFFECT_FRAME_MS) % 2;
+              const effectH =
+                (spritePx * WATER_EFFECT_SRC_H) / WATER_EFFECT_SRC_W / 2;
+              ctx.save();
+              ctx.imageSmoothingEnabled = false;
+              ctx.drawImage(
+                effect,
+                0,
+                frame * WATER_EFFECT_SRC_H,
+                WATER_EFFECT_SRC_W,
+                WATER_EFFECT_SRC_H,
+                left + spritePx / 4,
+                top +
+                  (spritePx * (SPRITE_SRC_PX - cropPx)) / SPRITE_SRC_PX -
+                  effectH,
+                spritePx / 2,
+                effectH,
+              );
+              ctx.restore();
+            }
           }
 
           const ix = left + spritePx - iconPx / 2;
