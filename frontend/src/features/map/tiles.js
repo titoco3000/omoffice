@@ -1,14 +1,15 @@
-import grassUrl from "./assets/tiles/grass.png";
-import sandUrl from "./assets/tiles/sand.png";
-import waterUrl from "./assets/tiles/water.png";
-import plankLightUrl from "./assets/tiles/plank-light.png";
-import plankMediumUrl from "./assets/tiles/plank-medium.png";
-import wallBlueTopUrl from "./assets/tiles/wall/blue/top.png";
-import wallBlueMidUrl from "./assets/tiles/wall/blue/mid.png";
-import wallBlueBottomUrl from "./assets/tiles/wall/blue/bottom.png";
-import wallCreamTopUrl from "./assets/tiles/wall/cream/top.png";
-import wallCreamMidUrl from "./assets/tiles/wall/cream/mid.png";
-import wallCreamBottomUrl from "./assets/tiles/wall/cream/bottom.png";
+import grassUrl from "./assets/floor/grass.png";
+import sandUrl from "./assets/floor/sand.png";
+import waterUrl from "./assets/floor/water.png";
+import plankLightUrl from "./assets/floor/plank-light.png";
+import plankMediumUrl from "./assets/floor/plank-medium.png";
+import purpleFlowerUrl from "./assets/decorations/purple-flower.png";
+import wallBlueTopUrl from "./assets/decorations/wall/blue/top.png";
+import wallBlueMidUrl from "./assets/decorations/wall/blue/mid.png";
+import wallBlueBottomUrl from "./assets/decorations/wall/blue/bottom.png";
+import wallCreamTopUrl from "./assets/decorations/wall/cream/top.png";
+import wallCreamMidUrl from "./assets/decorations/wall/cream/mid.png";
+import wallCreamBottomUrl from "./assets/decorations/wall/cream/bottom.png";
 import topUrl from "./assets/transitions/top.png";
 import topLeftUrl from "./assets/transitions/top-left.png";
 import outerTopLeftUrl from "./assets/transitions/outer-top-left.png";
@@ -38,6 +39,12 @@ export const TILES = {
     organic: false,
     color: [128, 64, 0],
     src: [1, 0, 16, 16],
+  },
+  // A single-image decoration, drawn over the floor beneath it.
+  "purple-flower": {
+    organic: false,
+    color: [128, 0, 255],
+    decoration: purpleFlowerUrl,
   },
   // Wall variants: one map color each, drawn as `top`/`mid`/`bottom` by
   // what sits below the cell (see `wallPart`).
@@ -199,9 +206,10 @@ export function createTileRenderer(getImage) {
 
   const drawDecorations = (ctx, tileMap, col, row, x0, y0, x1, y1) => {
     const tile = decorationAt(tileMap, col, row);
-    const wall = tile && TILES[tile].wall;
-    if (!wall) return;
-    const image = getImage(wall[wallPart(tileMap, col, row, tile)]);
+    const { wall, decoration } = (tile && TILES[tile]) || {};
+    const url = wall ? wall[wallPart(tileMap, col, row, tile)] : decoration;
+    if (!url) return;
+    const image = getImage(url);
     if (!image) return;
     ctx.drawImage(image, x0, y0, x1 - x0, y1 - y0);
   };
