@@ -156,7 +156,7 @@ export default function MapCanvas({ token, orgId, members, myId }) {
   const { cellPxRef, zoomBy, atLimit } = useMapZoom(canvasRef);
   const shownCellPxRef = useRef(null); // eased toward `cellPxRef`
 
-  const tileMap = useTileMap(); // null until map.png is decoded
+  const tileMap = useTileMap(); // null until the map images are decoded
   const { positions, moveTo, loaded, placements } = useMapSession(
     token,
     orgId,
@@ -340,7 +340,11 @@ export default function MapCanvas({ token, orgId, members, myId }) {
           Math.round((originPxX + col * cellPx) * ratio) / ratio;
         const edgeY = (row) =>
           Math.round((originPxY + row * cellPx) * ratio) / ratio;
-        for (const pass of [tiles.drawBase, tiles.drawTransitions]) {
+        for (const pass of [
+          tiles.drawBase,
+          tiles.drawTransitions,
+          tiles.drawDecorations,
+        ]) {
           for (let row = rows[0]; row < rows[1]; row++) {
             for (let col = cols[0]; col < cols[1]; col++) {
               pass(

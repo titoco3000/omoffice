@@ -13,8 +13,8 @@ import topUrl from "./assets/transitions/top.png";
 import topLeftUrl from "./assets/transitions/top-left.png";
 import outerTopLeftUrl from "./assets/transitions/outer-top-left.png";
 
-// One pixel of `map.png` per cell -- its color picks the tile drawn in that
-// cell. Anything not listed (including black) is water, so an unassigned
+// One pixel of `floor.png` (and of `decorations.png`, where opaque) per cell --
+// its color picks the tile drawn in that cell. Anything not listed (including black) is water, so an unassigned
 // color reads as water rather than crashing.
 //
 // `organic` tiles blend into one another: the tile with the higher `rank`
@@ -154,10 +154,11 @@ function buildBlend(tile, same, getImage) {
   return out;
 }
 
-// Returns `{ drawBase, drawTransitions }`, both taking `(ctx, tileMap, col,
+// Returns `{ drawBase, drawTransitions, drawDecorations }`, all taking `(ctx, tileMap, col,
 // row, x0, y0, x1, y1)` for one cell's on-screen rect. Call `drawBase` for
 // every visible cell first, then `drawTransitions` for every one, so a
-// transition is never covered by a later cell's base tile.
+// transition is never covered by a later cell's base tile; `drawDecorations`
+// goes last, over both.
 export function createTileRenderer(getImage) {
   const blends = new Map(); // `${tile}|${same bitmask}` -> canvas
 
@@ -165,6 +166,11 @@ export function createTileRenderer(getImage) {
     col < 0 || row < 0 || col >= tileMap.width || row >= tileMap.height
       ? null
       : tileMap.tiles[row * tileMap.width + col];
+
+  const decorationAt = (tileMap, col, row) =>
+    col < 0 || row < 0 || col >= tileMap.width || row >= tileMap.height
+      ? null
+      : tileMap.decorations[row * tileMap.width + col];
 
   // Off-map neighbors count as the cell's own tile: no edge to draw.
   const neighbors = (tileMap, col, row, own) =>
@@ -175,16 +181,13 @@ export function createTileRenderer(getImage) {
   // A wall column reads bottom-up: the cell with no same wall below is the
   // bottom, the one above a bottom is the mid, every cell above that a top.
   const wallPart = (tileMap, col, row, tile) => {
-    if (tileAt(tileMap, col, row + 1) !== tile) return "bottom";
-    return tileAt(tileMap, col, row + 2) !== tile ? "mid" : "top";
+    if (decorationAt(tileMap, col, row + 1) !== tile) return "bottom";
+    return decorationAt(tileMap, col, row + 2) !== tile ? "mid" : "top";
   };
 
   const drawBase = (ctx, tileMap, col, row, x0, y0, x1, y1) => {
     const tile = tileAt(tileMap, col, row);
-    const wall = TILES[tile].wall;
-    const image = getImage(
-      wall ? wall[wallPart(tileMap, col, row, tile)] : TILES[tile].url,
-    );
+    const image = getImage(TILES[tile].url);
     if (!image) return;
     const src = TILES[tile].src;
     if (src) {
@@ -192,6 +195,15 @@ export function createTileRenderer(getImage) {
     } else {
       ctx.drawImage(image, x0, y0, x1 - x0, y1 - y0);
     }
+  };
+
+  const drawDecorations = (ctx, tileMap, col, row, x0, y0, x1, y1) => {
+    const tile = decorationAt(tileMap, col, row);
+    const wall = tile && TILES[tile].wall;
+    if (!wall) return;
+    const image = getImage(wall[wallPart(tileMap, col, row, tile)]);
+    if (!image) return;
+    ctx.drawImage(image, x0, y0, x1 - x0, y1 - y0);
   };
 
   const drawTransitions = (ctx, tileMap, col, row, x0, y0, x1, y1) => {
@@ -214,5 +226,5 @@ export function createTileRenderer(getImage) {
     }
   };
 
-  return { drawBase, drawTransitions };
+  return { drawBase, drawTransitions, drawDecorations };
 }

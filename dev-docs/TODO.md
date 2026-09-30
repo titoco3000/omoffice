@@ -1,5 +1,3 @@
-- shared drawing
-- walls
 - map editing
 - avatar editing
 - gong
