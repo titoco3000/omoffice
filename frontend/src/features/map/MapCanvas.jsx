@@ -38,9 +38,11 @@ import { avatarUrl } from "../avatars";
 import { FiMinus, FiPlus } from "react-icons/fi";
 import spriteUrl from "./assets/user-sprite.png";
 import waterEffectUrl from "./assets/effects/water.png";
-import { createTileRenderer } from "./tiles";
+import { TILE_PX, createTileRenderer, tilePreview } from "./tiles";
 import { findRoute } from "./navigation";
-import { isWater, useTileMap } from "./tileMap";
+import { isWater } from "./tileMap";
+import { useMapEditor } from "./MapEditorContext";
+import MapEditorPanel from "./MapEditorPanel";
 import { ZOOM_STEP, clampCellPx, easeCellPx, useMapZoom } from "./useMapZoom";
 
 // Sprites are drawn taller than one cell -- a cell is a finer unit of
@@ -155,8 +157,11 @@ export default function MapCanvas({ token, orgId, members, myId }) {
   const viewRef = useRef({ cellPx: 0, originPxX: 0, originPxY: 0 });
   const { cellPxRef, zoomBy, atLimit } = useMapZoom(canvasRef);
   const shownCellPxRef = useRef(null); // eased toward `cellPxRef`
+  const hoverRef = useRef(null); // cell under the pointer, for the edit ghost
+  const paintingRef = useRef(null); // last cell painted while a drag is on
 
-  const tileMap = useTileMap(); // null until the map images are decoded
+  const editor = useMapEditor();
+  const { tileMap } = editor; // null until the map is loaded and decoded
   const { positions, moveTo, loaded, placements } = useMapSession(
     token,
     orgId,
@@ -182,6 +187,8 @@ export default function MapCanvas({ token, orgId, members, myId }) {
     loaded,
     placements,
     tileMap,
+    editing: editor.editing,
+    tool: editor.tool,
   });
   useEffect(() => {
     stateRef.current = {
@@ -191,6 +198,8 @@ export default function MapCanvas({ token, orgId, members, myId }) {
       loaded,
       placements,
       tileMap,
+      editing: editor.editing,
+      tool: editor.tool,
     };
   });
 
@@ -558,6 +567,39 @@ export default function MapCanvas({ token, orgId, members, myId }) {
 
       if (tileMap) paintCells([tiles.drawTop], topRow);
 
+      // Edit mode: the selected tile as a ghost under the pointer.
+      const { editing, tool } = stateRef.current;
+      const hover = hoverRef.current;
+      if (editing && hover) {
+        const gx = originPxX + hover.x * cellPx;
+        const gy = originPxY + hover.y * cellPx;
+        ctx.save();
+        ctx.imageSmoothingEnabled = false;
+        const preview = tool.tile && tilePreview(tool.tile);
+        const ghost = preview && getImage(preview.url);
+        if (ghost) {
+          ctx.globalAlpha = 0.6;
+          if (preview.src) {
+            ctx.drawImage(ghost, ...preview.src, gx, gy, cellPx, cellPx);
+          } else {
+            ctx.drawImage(
+              ghost,
+              gx,
+              gy,
+              (ghost.naturalWidth * cellPx) / TILE_PX,
+              (ghost.naturalHeight * cellPx) / TILE_PX,
+            );
+          }
+          ctx.globalAlpha = 1;
+        }
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = tool.tile
+          ? cssVar("--color-brand") || "#5b8def"
+          : cssVar("--color-danger") || "#e5484d";
+        ctx.strokeRect(gx + 1, gy + 1, cellPx - 2, cellPx - 2);
+        ctx.restore();
+      }
+
       raf = requestAnimationFrame(draw);
     };
     raf = requestAnimationFrame(draw);
@@ -570,17 +612,48 @@ export default function MapCanvas({ token, orgId, members, myId }) {
     // ref, so listing it never re-runs this.)
   }, [cellPxRef]);
 
-  const handleClick = (event) => {
+  // The map cell under a pointer event, `null` off the map.
+  const cellAt = (event) => {
     const canvas = canvasRef.current;
-    if (!canvas) return;
+    if (!canvas) return null;
     const rect = canvas.getBoundingClientRect();
     const { cellPx, originPxX, originPxY } = viewRef.current;
-    if (!cellPx) return;
-    const px = event.clientX - rect.left;
-    const py = event.clientY - rect.top;
-    const x = Math.floor((px - originPxX) / cellPx);
-    const y = Math.floor((py - originPxY) / cellPx);
-    moveTo(x, y);
+    if (!cellPx) return null;
+    const x = Math.floor((event.clientX - rect.left - originPxX) / cellPx);
+    const y = Math.floor((event.clientY - rect.top - originPxY) / cellPx);
+    if (x < 0 || y < 0 || x >= OFFICE_SIZE || y >= OFFICE_SIZE) return null;
+    return { x, y };
+  };
+
+  const handleClick = (event) => {
+    if (editor.editing) return;
+    const cell = cellAt(event);
+    if (cell) moveTo(cell.x, cell.y);
+  };
+
+  // Edit mode: a press paints its cell, dragging paints every cell along
+  // the way (a fast drag skips cells, so the gaps are filled in as a line).
+  const handlePointerDown = (event) => {
+    if (!editor.editing || !event.isPrimary || event.button !== 0) return;
+    const cell = cellAt(event);
+    if (!cell) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    paintingRef.current = cell;
+    editor.paint(cell, cell);
+  };
+
+  const handlePointerMove = (event) => {
+    if (!editor.editing) return;
+    const cell = cellAt(event);
+    hoverRef.current = cell;
+    if (cell && paintingRef.current) {
+      editor.paint(paintingRef.current, cell);
+      paintingRef.current = cell;
+    }
+  };
+
+  const endPaint = () => {
+    paintingRef.current = null;
   };
 
   return (
@@ -588,9 +661,19 @@ export default function MapCanvas({ token, orgId, members, myId }) {
       <canvas
         ref={canvasRef}
         onClick={handleClick}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={endPaint}
+        onPointerCancel={endPaint}
+        onPointerLeave={() => {
+          hoverRef.current = null;
+        }}
         tabIndex={0}
-        className="block size-full cursor-pointer touch-none outline-none"
+        className={`block size-full touch-none outline-none ${
+          editor.editing ? "cursor-crosshair" : "cursor-pointer"
+        }`}
       />
+      {editor.editing && <MapEditorPanel />}
       <div className="absolute right-4 top-4 flex flex-col overflow-hidden rounded-card border bg-surface shadow-lg">
         <button
           onClick={() => zoomBy(ZOOM_STEP)}

@@ -21,7 +21,7 @@ export class ApiError extends Error {
   }
 }
 
-export async function apiFetch(path, { method = "GET", token, body } = {}) {
+async function request(path, { method = "GET", token, body } = {}) {
   const response = await fetch(`${BASE_URL}${path}`, {
     method,
     headers: {
@@ -34,7 +34,24 @@ export async function apiFetch(path, { method = "GET", token, body } = {}) {
   if (response.status === 401 && token) {
     window.dispatchEvent(new Event(UNAUTHORIZED_EVENT));
   }
+  return response;
+}
 
+// For a route that answers with a file rather than JSON; resolves to the
+// body as a `Blob`.
+export async function apiFetchBlob(path, { token } = {}) {
+  const response = await request(path, { token });
+  if (!response.ok) {
+    throw new ApiError(
+      response.status,
+      await response.json().catch(() => null),
+    );
+  }
+  return response.blob();
+}
+
+export async function apiFetch(path, options = {}) {
+  const response = await request(path, options);
   const data =
     response.status === 204 ? null : await response.json().catch(() => null);
   if (!response.ok) throw new ApiError(response.status, data);

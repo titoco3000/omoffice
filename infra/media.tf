@@ -151,6 +151,15 @@ data "aws_iam_policy_document" "api_media" {
     actions   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
     resources = ["${aws_s3_bucket.media.arn}/*"]
   }
+
+  # Without list rights S3 answers a HEAD/GET on a missing key with 403, not
+  # 404 -- and an org that never saved a map (`maps/<org-id>.png`) must read
+  # as "not found", so the frontend falls back to the default map.
+  statement {
+    sid       = "ListMediaBucket"
+    actions   = ["s3:ListBucket"]
+    resources = [aws_s3_bucket.media.arn]
+  }
 }
 
 resource "aws_iam_role_policy" "api_media" {

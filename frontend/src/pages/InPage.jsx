@@ -6,7 +6,7 @@ import { useIsMobile } from "../core/hooks/useViewport";
 import AsyncButton from "../core/ui/AsyncButton";
 import Spinner from "../core/ui/Spinner";
 import { useOrgSession, OrgOnlineView } from "../features/org";
-import { useMapMode, MapCanvas } from "../features/map";
+import { EditMapButton, useMapMode, MapCanvas } from "../features/map";
 import { useMeetingSessionContext } from "../features/meetings";
 
 // Map mode "map": the canvas is the whole page. Desktop gets the
@@ -41,6 +41,7 @@ function MapView() {
           </button>
           {rosterOpen && (
             <div className="absolute bottom-20 right-4 max-h-[70%] w-64 overflow-y-auto rounded-card border bg-surface p-3 shadow-lg">
+              <EditMapButton className="mb-2 w-full" />
               <OrgOnlineView meetingSession={meetingSession} />
             </div>
           )}

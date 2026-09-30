@@ -24,18 +24,32 @@ import outerTopLeftUrl from "./assets/transitions/outer-top-left.png";
 // Non-organic ("artificial") tiles have no transition.
 export const TILE_WATER = "water";
 export const TILES = {
-  water: { url: waterUrl, organic: true, rank: 0 },
-  sand: { url: sandUrl, organic: true, rank: 1, color: [255, 255, 0] },
-  grass: { url: grassUrl, organic: true, rank: 2, color: [0, 255, 0] },
+  water: { url: waterUrl, organic: true, rank: 0, level: "base" },
+  sand: {
+    url: sandUrl,
+    organic: true,
+    rank: 1,
+    level: "base",
+    color: [255, 255, 0],
+  },
+  grass: {
+    url: grassUrl,
+    organic: true,
+    rank: 2,
+    level: "base",
+    color: [0, 255, 0],
+  },
   // The plank images carry a 1px darker column either side of the 16px
   // body, so only that body is drawn (`src`: x, y, w, h).
   "plank-light": {
+    level: "base",
     url: plankLightUrl,
     organic: false,
     color: [255, 128, 0],
     src: [1, 0, 16, 16],
   },
   "plank-medium": {
+    level: "base",
     url: plankMediumUrl,
     organic: false,
     color: [128, 64, 0],
@@ -45,11 +59,13 @@ export const TILES = {
   // the image spans as many cells as it needs (16px each, so it may be
   // larger than 1x1 or an odd shape). See `spriteCells` in `tileMap.js`.
   "purple-flower": {
+    level: "top",
     organic: false,
     color: [128, 0, 255],
     sprite: purpleFlowerUrl,
   },
   "table-2x2": {
+    level: "mid",
     organic: false,
     blocked: true,
     color: [192, 128, 64],
@@ -58,6 +74,7 @@ export const TILES = {
   // Wall variants: one map color each, drawn as `top`/`mid`/`bottom` by
   // what sits below the cell (see `wallPart`).
   "wall-blue": {
+    level: "mid",
     organic: false,
     blocked: true,
     color: [0, 0, 255],
@@ -68,6 +85,7 @@ export const TILES = {
     },
   },
   "wall-cream": {
+    level: "mid",
     organic: false,
     blocked: true,
     color: [255, 255, 128],
@@ -78,6 +96,23 @@ export const TILES = {
     },
   },
 };
+
+// The map color that draws `name` -- water has none (any unlisted color
+// reads as water), so it is written as black.
+export const paintColor = (name) => TILES[name].color ?? [0, 0, 0];
+
+// The image (and, for a plank, the part of it) that shows what `name` looks
+// like, for the editor's palette and ghost.
+export function tilePreview(name) {
+  const tile = TILES[name];
+  if (tile.wall) return { url: tile.wall.mid };
+  if (tile.sprite) return { url: tile.sprite };
+  return { url: tile.url, src: tile.src };
+}
+
+// The `TILES` names that belong on `level` ("base", "mid" or "top").
+export const tilesOnLevel = (level) =>
+  Object.keys(TILES).filter((name) => TILES[name].level === level);
 
 export function tileForColor(r, g, b) {
   for (const [name, { color }] of Object.entries(TILES)) {

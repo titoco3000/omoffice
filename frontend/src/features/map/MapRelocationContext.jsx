@@ -21,7 +21,8 @@ import { getMapRealtime, listMapPositions, moveInMap } from "./api";
 import { publishMapMove } from "./realtime";
 import { facingBetween } from "./navigation";
 import { relocationCell } from "./relocation";
-import { isBlocked, loadTileMap } from "./tileMap";
+import { isBlocked } from "./tileMap";
+import { useTileMap } from "./MapEditorContext";
 
 const MapRelocationContext = createContext(null);
 
@@ -29,11 +30,12 @@ export function MapRelocationProvider({ children }) {
   const { token } = useAuth();
   const { myId, currentOrg, roster } = useOrgSession();
   const session = useMeetingSessionContext();
+  const tileMap = useTileMap();
   const claimRef = useRef(null); // the open map's handler, if any
 
   const latestRef = useRef(null);
   useEffect(() => {
-    latestRef.current = { token, myId, currentOrg, roster, session };
+    latestRef.current = { token, myId, currentOrg, roster, session, tileMap };
   });
 
   const { onIntent } = session;
@@ -41,7 +43,8 @@ export function MapRelocationProvider({ children }) {
     () =>
       onIntent(async (intent) => {
         if (claimRef.current) return claimRef.current(intent);
-        const { token, myId, currentOrg, roster, session } = latestRef.current;
+        const { token, myId, currentOrg, roster, session, tileMap } =
+          latestRef.current;
         const orgId = currentOrg?.id;
         if (!orgId) return;
         try {
@@ -49,7 +52,6 @@ export function MapRelocationProvider({ children }) {
           const positions = {};
           for (const position of data.positions ?? [])
             positions[position.user_id] = { x: position.x, y: position.y };
-          const tileMap = await loadTileMap();
           const from = positions[myId] ?? { x: 0, y: 0 };
           const cell = relocationCell(intent, {
             from,

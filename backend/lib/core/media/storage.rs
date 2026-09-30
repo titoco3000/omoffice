@@ -86,7 +86,7 @@ impl MediaState {
             .to_string())
     }
 
-    pub(super) async fn fetch(&self, key: &str) -> Result<(Vec<u8>, String), MediaError> {
+    pub(crate) async fn fetch(&self, key: &str) -> Result<(Vec<u8>, String), MediaError> {
         let inner = self.inner()?;
 
         let head = inner

@@ -3,7 +3,7 @@
 //! `/rbac/*` -- initial positions come from its own `GET .../positions`
 //! rather than riding along on the roster.
 
-import { apiFetch } from "../../core/api";
+import { apiFetch, apiFetchBlob } from "../../core/api";
 
 // Mirrors `features::map`: cells per side of the (square) office grid,
 // `MAP_MOVE_CHANNEL` for one live cell change (`{org_id, user_id, x, y, facing}`),
@@ -14,6 +14,9 @@ import { apiFetch } from "../../core/api";
 export const OFFICE_SIZE = 100;
 export const MAP_MOVE_CHANNEL = "map_move";
 export const MAP_ACTIVE_CHANNEL = "map_active";
+// `{org_id}`: the org's map was just replaced, fetch it again -- see
+// `features::map::tilemap::UPDATED_CHANNEL`.
+export const MAP_UPDATED_CHANNEL = "map_updated";
 // Cells in each direction someone counts as nearby -- see
 // `features::map::proximity::PROXIMITY_RANGE`.
 export const PROXIMITY_RANGE = 2;
@@ -53,3 +56,14 @@ export const moveInMap = (token, orgId, x, y, persist = false, facing) =>
     token,
     body: { x, y, persist, facing },
   });
+
+// The org's saved map (a PNG blob); rejects with a 404 `ApiError` when the
+// org never saved one, and the bundled default applies instead.
+export const getOrgMap = (token, orgId) =>
+  apiFetchBlob(`/map/org/${orgId}/tilemap`, { token });
+
+// Replaces the org's map with the caller's staged upload (see
+// `avatars/api.js`' `requestUploadUrl`/`uploadToPresignedUrl`); the backend
+// resizes it if needed and tells every online member to fetch it again.
+export const saveOrgMap = (token, orgId) =>
+  apiFetch(`/map/org/${orgId}/tilemap`, { method: "PUT", token });

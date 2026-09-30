@@ -1,21 +1,22 @@
-//! `map.png` (three 100x100 levels side by side) decoded into per-cell grids, shared by
-//! everything that needs to know what's on a cell: `MapCanvas` to draw it,
-//! `useMapSession` and `MapRelocationProvider` to keep avatars off walls.
-//! Decoded once per page load -- an offscreen canvas is the only way to read
-//! pixel colors back out of an `<img>`.
+//! `map.png` (three 100x100 levels side by side) as raw pixels
+//! (`{width, height, data}`, see `loadPixels`) and decoded into per-cell
+//! grids (`tileMapFromPixels`), shared by everything that needs to know
+//! what's on a cell: `MapCanvas` to draw it, `useMapSession` and
+//! `MapRelocationProvider` to keep avatars off walls. The pixels are also
+//! what the map editor edits (`paintCell`) and saves -- an offscreen canvas
+//! is the only way to read pixel colors back out of an `<img>`.
 
-import { useEffect, useState } from "react";
 import mapUrl from "./assets/map.png";
-import { TILES, TILE_PX, TILE_WATER, tileForColor } from "./tiles";
+import { TILES, TILE_PX, TILE_WATER, paintColor, tileForColor } from "./tiles";
 
 // Levels left to right, each `LEVEL_PX` wide: `base` is the ground, `mid`
 // holds walls, tables and the like (blocking or not), `top` holds
 // decorations drawn over everything and never blocking.
-const LEVEL_PX = 100;
+export const LEVELS = ["base", "mid", "top"];
+export const LEVEL_PX = 100;
+export const MAP_WIDTH_PX = LEVEL_PX * LEVELS.length;
 
-let loading = null;
-
-function loadPixels(url) {
+export function loadPixels(url) {
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.onload = () => {
@@ -33,6 +34,93 @@ function loadPixels(url) {
     img.onerror = () => reject(new Error(`${url} failed to load`));
     img.src = url;
   });
+}
+
+/// The map bundled with the app, used by any org that hasn't saved its own.
+export const loadDefaultPixels = () => loadPixels(mapUrl);
+
+/// `blob` (an image) as pixels, e.g. an org's saved map.
+export async function pixelsFromBlob(blob) {
+  const url = URL.createObjectURL(blob);
+  try {
+    return await loadPixels(url);
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+/// `pixels` as a PNG blob, what the editor uploads.
+export function pixelsToBlob({ width, height, data }) {
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  canvas
+    .getContext("2d")
+    .putImageData(
+      new ImageData(new Uint8ClampedArray(data), width, height),
+      0,
+      0,
+    );
+  return new Promise((resolve, reject) =>
+    canvas.toBlob(
+      (blob) =>
+        blob ? resolve(blob) : reject(new Error("could not encode map")),
+      "image/png",
+    ),
+  );
+}
+
+export const clonePixels = ({ width, height, data }) => ({
+  width,
+  height,
+  data: new Uint8ClampedArray(data),
+});
+
+export function samePixels(a, b) {
+  if (a.data.length !== b.data.length) return false;
+  for (let i = 0; i < a.data.length; i++) {
+    if (a.data[i] !== b.data[i]) return false;
+  }
+  return true;
+}
+
+/// Byte offset in `map.data` of cell (col, row) of level `index`.
+function pixelOffset(map, index, col, row) {
+  return (row * map.width + index * LEVEL_PX + col) * 4;
+}
+
+/// Writes `tile` (a `TILES` key) into cell (col, row) of `level`, or clears
+/// it when `tile` is `null` -- transparent on `mid`/`top`, and on `base`
+/// (which has no "empty") the water code. Returns whether anything changed.
+export function paintCell(map, level, col, row, tile) {
+  if (col < 0 || row < 0 || col >= LEVEL_PX || row >= LEVEL_PX) return false;
+  const p = pixelOffset(map, LEVELS.indexOf(level), col, row);
+  let rgba;
+  if (tile) rgba = [...paintColor(tile), 255];
+  else rgba = level === "base" ? [0, 0, 0, 255] : [0, 0, 0, 0];
+  let changed = false;
+  for (let i = 0; i < 4; i++) {
+    if (map.data[p + i] !== rgba[i]) {
+      map.data[p + i] = rgba[i];
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+// Pixels of every sprite image, filled by `preloadSprites` -- decoding a map
+// is synchronous, so what it needs must already be here.
+const spritePixels = new Map();
+
+/// Loads every sprite image `tileMapFromPixels` may need. Call (and await)
+/// before it.
+export async function preloadSprites() {
+  const urls = Object.values(TILES)
+    .map((tile) => tile.sprite)
+    .filter((url) => url && !spritePixels.has(url));
+  await Promise.all(
+    urls.map(async (url) => spritePixels.set(url, await loadPixels(url))),
+  );
 }
 
 /// Each anchored sprite's footprint: for every cell of its image holding an
@@ -72,78 +160,39 @@ function spriteCells(sprites, decorationTiles, width, height, images) {
 /// `{cells, sprites}` -- `cells` holds a `TILES` key per cell, or `null`
 /// where that pixel is transparent (a sprite's anchor cell, or a wall);
 /// `sprites` holds the slice of a sprite covering that cell, or `null`.
-async function decodeLayer(map, index) {
+function decodeLayer(map, index) {
   const count = LEVEL_PX * LEVEL_PX;
   const cells = new Array(count).fill(null);
   for (let i = 0; i < count; i++) {
-    const p = pixelIndex(map, index, i);
+    const p = pixelOffset(map, index, i % LEVEL_PX, Math.floor(i / LEVEL_PX));
     if (map.data[p + 3] > 0) {
       cells[i] = tileForColor(map.data[p], map.data[p + 1], map.data[p + 2]);
     }
   }
-  const urls = new Set(cells.map((d) => d && TILES[d].sprite).filter(Boolean));
-  const images = new Map(
-    await Promise.all(
-      [...urls].map(async (url) => [url, await loadPixels(url)]),
-    ),
-  );
   const sprites = new Array(count).fill(null);
-  spriteCells(sprites, cells, LEVEL_PX, LEVEL_PX, images);
+  spriteCells(sprites, cells, LEVEL_PX, LEVEL_PX, spritePixels);
   return { cells, sprites };
-}
-
-/// Byte offset in `map.data` of cell `i` (row by row) of level `index`.
-function pixelIndex(map, index, i) {
-  const x = index * LEVEL_PX + (i % LEVEL_PX);
-  const y = Math.floor(i / LEVEL_PX);
-  return (y * map.width + x) * 4;
 }
 
 /// `{width, height, tiles, mid, top}` -- one entry per cell, row by row.
 /// `tiles` holds a `TILES` key from the base level; `mid` and `top` are
-/// `{cells, sprites}` (see `decodeLayer`). Rejects if the image fails to load;
-/// a later call tries again.
-export function loadTileMap() {
-  loading ??= loadPixels(mapUrl)
-    .then(async (map) => {
-      if (map.width !== LEVEL_PX * 3 || map.height !== LEVEL_PX) {
-        throw new Error(`map.png must be ${LEVEL_PX * 3}x${LEVEL_PX}`);
-      }
-      const tiles = new Array(LEVEL_PX * LEVEL_PX);
-      for (let i = 0; i < tiles.length; i++) {
-        const p = pixelIndex(map, 0, i);
-        tiles[i] = tileForColor(map.data[p], map.data[p + 1], map.data[p + 2]);
-      }
-      return {
-        width: LEVEL_PX,
-        height: LEVEL_PX,
-        tiles,
-        mid: await decodeLayer(map, 1),
-        top: await decodeLayer(map, 2),
-      };
-    })
-    .catch((error) => {
-      loading = null;
-      throw error;
-    });
-  return loading;
-}
-
-/// The decoded map, `null` until it has loaded.
-export function useTileMap() {
-  const [tileMap, setTileMap] = useState(null);
-  useEffect(() => {
-    let cancelled = false;
-    loadTileMap()
-      .then((loaded) => {
-        if (!cancelled) setTileMap(loaded);
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-  return tileMap;
+/// `{cells, sprites}` (see `decodeLayer`). Needs `preloadSprites` done.
+export function tileMapFromPixels(map) {
+  if (map.width !== MAP_WIDTH_PX || map.height !== LEVEL_PX) {
+    throw new Error(`map must be ${MAP_WIDTH_PX}x${LEVEL_PX}`);
+  }
+  const tiles = new Array(LEVEL_PX * LEVEL_PX);
+  for (let i = 0; i < tiles.length; i++) {
+    const p = pixelOffset(map, 0, i % LEVEL_PX, Math.floor(i / LEVEL_PX));
+    tiles[i] = tileForColor(map.data[p], map.data[p + 1], map.data[p + 2]);
+  }
+  return {
+    width: LEVEL_PX,
+    height: LEVEL_PX,
+    tiles,
+    mid: decodeLayer(map, 1),
+    top: decodeLayer(map, 2),
+  };
 }
 
 /// Whether nobody can stand on cell (x, y): a wall. Off the map

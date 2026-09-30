@@ -24,6 +24,9 @@
 //! [`proximity`] is the map's other half: walking into someone starts or
 //! joins a meeting with them.
 //!
+//! [`tilemap`] is the org's editable terrain: one PNG per org in the media
+//! bucket, fetched by the frontend and replaced from a staged upload.
+//!
 //! [`realtime`] takes live moves off this Lambda altogether when an AppSync
 //! Events API is configured: clients publish to it and subscribe to it
 //! directly, and `POST .../move` only stores. [`MOVE_CHANNEL`] is then
@@ -32,6 +35,7 @@
 use std::collections::{HashMap, HashSet};
 
 use axum::extract::{Extension, Path};
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -42,11 +46,13 @@ use serde_json::{json, Value};
 use crate::core::auth::{AuthError, Claims};
 use crate::core::communication::web_messenger::{self, Messenger};
 use crate::core::data::db::{retry_on_conflict, Db, DbError};
+use crate::core::media::MediaError;
 use crate::core::rbac::{self, RbacError};
 use crate::features::meetings::MeetingError;
 
 pub mod proximity;
 pub mod realtime;
+pub mod tilemap;
 
 /// Cells per side of the (square) office grid -- a position is always
 /// bound to `0..OFFICE_SIZE`, see [`set_position`].
@@ -76,6 +82,17 @@ pub enum MapError {
     Rbac(RbacError),
     Meeting(MeetingError),
     Auth(AuthError),
+    Media(MediaError),
+    /// The staged upload isn't an image at all.
+    UnsupportedMediaType,
+    /// The staged upload is an image nobody can decode.
+    InvalidImage,
+}
+
+impl From<MediaError> for MapError {
+    fn from(err: MediaError) -> Self {
+        Self::Media(err)
+    }
 }
 
 impl From<AuthError> for MapError {
@@ -117,6 +134,23 @@ impl IntoResponse for MapError {
             Self::Rbac(err) => err.into_response(),
             Self::Meeting(err) => err.into_response(),
             Self::Auth(err) => err.into_response(),
+            Self::Media(err) => err.into_response(),
+            Self::UnsupportedMediaType => (
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                Json(json!({
+                    "error": "unsupported_media_type",
+                    "message": "that upload isn't an image",
+                })),
+            )
+                .into_response(),
+            Self::InvalidImage => (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": "invalid_image",
+                    "message": "uploaded object is not a decodable image",
+                })),
+            )
+                .into_response(),
         }
     }
 }
@@ -420,6 +454,10 @@ pub fn routes() -> Router {
         .route("/org/{org_id}/move", post(move_route))
         .route("/org/{org_id}/proximity", post(proximity::route))
         .route("/org/{org_id}/realtime", get(realtime::route))
+        .route(
+            "/org/{org_id}/tilemap",
+            get(tilemap::get_route).put(tilemap::confirm_route),
+        )
 }
 
 /// Wire `map_active` to the messenger: a clean disconnect clears it

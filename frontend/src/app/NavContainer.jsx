@@ -14,7 +14,7 @@ import { useIsMobile, useIsPortrait } from "../core/hooks/useViewport";
 import Avatar from "../core/ui/Avatar";
 import AsyncButton from "../core/ui/AsyncButton";
 import { useOrgSession, OrgOnlineView } from "../features/org";
-import { useMapMode } from "../features/map";
+import { EditMapButton, useMapMode } from "../features/map";
 import {
   useMeetingSessionContext,
   useMeetingLayout,
@@ -158,6 +158,9 @@ function DesktopSidebar() {
                 <FiHome />
               </Link>
             </div>
+            {path === "/in" && mode === "map" && (
+              <EditMapButton compact={collapsed} className="mb-2 w-full" />
+            )}
             <OrgOnlineView meetingSession={meetingSession} />
           </>
         )}

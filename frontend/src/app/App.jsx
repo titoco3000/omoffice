@@ -2,7 +2,11 @@ import { useEffect } from "react";
 import { AuthProvider, useAuth } from "../core/auth/AuthContext";
 import { ThemeProvider } from "../core/theme/ThemeContext";
 import { RouterProvider, useLocation, navigate } from "../core/Router";
-import { MapModeProvider, MapRelocationProvider } from "../features/map";
+import {
+  MapEditorProvider,
+  MapModeProvider,
+  MapRelocationProvider,
+} from "../features/map";
 import { OrgSessionProvider } from "../features/org";
 import {
   MeetingSessionProvider,
@@ -32,15 +36,17 @@ function AuthenticatedApp({ path }) {
   const Page = AUTHENTICATED_ROUTES[path];
   return (
     <OrgSessionProvider>
-      <MeetingSessionProvider>
-        <MapRelocationProvider>
-          <MeetingLayoutProvider>
-            <NavContainer>
-              {Page ? <Page /> : <RedirectTo to="/in" />}
-            </NavContainer>
-          </MeetingLayoutProvider>
-        </MapRelocationProvider>
-      </MeetingSessionProvider>
+      <MapEditorProvider>
+        <MeetingSessionProvider>
+          <MapRelocationProvider>
+            <MeetingLayoutProvider>
+              <NavContainer>
+                {Page ? <Page /> : <RedirectTo to="/in" />}
+              </NavContainer>
+            </MeetingLayoutProvider>
+          </MapRelocationProvider>
+        </MeetingSessionProvider>
+      </MapEditorProvider>
     </OrgSessionProvider>
   );
 }
