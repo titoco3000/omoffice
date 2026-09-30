@@ -46,14 +46,14 @@ import { ZOOM_STEP, clampCellPx, easeCellPx, useMapZoom } from "./useMapZoom";
 // Sprites are drawn taller than one cell -- a cell is a finer unit of
 // movement/terrain than a person's footprint, so the avatar spans this many
 // of them.
-const SPRITE_CELLS = 1.5;
+const SPRITE_CELLS = 2;
 // At the default zoom, 1.5x the source, so pixel-exact on 2x displays (3
 // device px per sprite px).
 const SPRITE_SRC_PX = 32;
 // The user icon's diameter, as a fraction of a cell -- but never smaller
 // than `MIN_USER_ICON_PX`, so it stays a recognizable dot zoomed all the
 // way out.
-const USER_ICON_CELLS = 1 / 3;
+const USER_ICON_CELLS = 1 / 2;
 const MIN_USER_ICON_PX = 6;
 // Source px cut off the bottom of an avatar standing in water, as if it
 // were wading through shallows.

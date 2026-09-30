@@ -23,7 +23,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { OFFICE_SIZE } from "./api";
 
 export const DEFAULT_CELL_PX = 48;
-const MIN_CELLS_ACROSS = 5;
+const MIN_CELLS_ACROSS = 15;
 // Factor per +/- button press or keyboard shortcut.
 export const ZOOM_STEP = 1.25;
 // Per unit of wheel `deltaY` -- trackpad pinches send small deltas, a mouse
