@@ -133,7 +133,16 @@ const SPEAKING_THRESHOLD = 0.4;
 // stuck silently for every meeting after, since nothing ever retried it.
 async function ensureAudioInput() {
   const mics = await deviceController.listAudioInputDevices();
-  if (mics[0]) await deviceController.startAudioInput(mics[0].deviceId);
+  // Explicit constraints: B on speakers otherwise re-captures A's voice and
+  // sends it back to A as echo.
+  if (mics[0]) {
+    await deviceController.startAudioInput({
+      deviceId: { exact: mics[0].deviceId },
+      echoCancellation: true,
+      noiseSuppression: true,
+      autoGainControl: true,
+    });
+  }
 }
 
 /// Release this tab's microphone hardware -- called on a full leave. Without this the mic device
