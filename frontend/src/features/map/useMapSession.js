@@ -76,7 +76,7 @@ import {
   routeLength,
   routePosition,
 } from "./navigation";
-import { isBlocked } from "./tileMap";
+import { isBlocked, nearestOpenCell } from "./tileMap";
 
 // Cells per second -- governs both the move cooldown (one cell every
 // `1 / USER_SPEED` seconds) and, so the two stay in sync, how fast
@@ -390,6 +390,25 @@ export function useMapSession(token, orgId, members, tileMap) {
     },
     [token, orgId, myId],
   );
+
+  // Spawned (or stored) on a wall or water tile: warp to the nearest
+  // walkable cell, once per load, and place there rather than ease over.
+  // Waits for both the positions and the tile map, whichever lands last.
+  const warpCheckedRef = useRef(false);
+  useEffect(() => {
+    if (!loaded || !tileMap || !myId) {
+      if (!loaded) warpCheckedRef.current = false;
+      return;
+    }
+    if (warpCheckedRef.current) return;
+    warpCheckedRef.current = true;
+    const stored = basePositions[myId] ?? { x: 0, y: 0 };
+    if (!isBlocked(tileMap, stored.x, stored.y)) return;
+    const open = nearestOpenCell(tileMap, stored);
+    if (!open) return;
+    applyMove(open.x, open.y, myFacingRef.current);
+    setPlacements((prev) => bumpPlacements(prev, [myId]));
+  }, [loaded, tileMap, myId, basePositions, applyMove]);
 
   // Store the current cell if any move since the last stored one wasn't --
   // movement stopping, or the canvas going away.

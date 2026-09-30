@@ -44,6 +44,7 @@ export const TILES = {
   // what sits below the cell (see `wallPart`). They carry no edge lines.
   "wall-blue": {
     organic: false,
+    blocked: true,
     color: [0, 0, 255],
     wall: {
       top: wallBlueTopUrl,
@@ -53,6 +54,7 @@ export const TILES = {
   },
   "wall-cream": {
     organic: false,
+    blocked: true,
     color: [255, 255, 128],
     wall: {
       top: wallCreamTopUrl,

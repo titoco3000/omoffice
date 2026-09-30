@@ -6,7 +6,7 @@
 
 import { useEffect, useState } from "react";
 import mapUrl from "./assets/map.png";
-import { TILES, tileForColor } from "./tiles";
+import { TILES, TILE_WATER, tileForColor } from "./tiles";
 
 let loading = null;
 
@@ -54,11 +54,38 @@ export function useTileMap() {
   return tileMap;
 }
 
-/// Whether nobody can stand on cell (x, y): a wall. Off the map counts as
-/// open (positions are clamped to the grid separately), and so does
-/// everything while `tileMap` is still `null`.
+/// Whether nobody can stand on cell (x, y): a wall. Off the map
+/// counts as open (positions are clamped to the grid separately), and so
+/// does everything while `tileMap` is still `null`.
 export function isBlocked(tileMap, x, y) {
   if (!tileMap) return false;
   if (x < 0 || y < 0 || x >= tileMap.width || y >= tileMap.height) return false;
-  return Boolean(TILES[tileMap.tiles[y * tileMap.width + x]]?.wall);
+  return Boolean(TILES[tileMap.tiles[y * tileMap.width + x]]?.blocked);
+}
+
+/// Whether cell (x, y) is water: walkable, but shallow -- avatars standing
+/// in it are drawn with their feet cut off (see `MapCanvas`).
+export function isWater(tileMap, x, y) {
+  if (!tileMap) return false;
+  if (x < 0 || y < 0 || x >= tileMap.width || y >= tileMap.height) return false;
+  return tileMap.tiles[y * tileMap.width + x] === TILE_WATER;
+}
+
+/// The walkable cell closest to `from` (straight-line distance, ties by
+/// row then column so every tab agrees), or `null` if the whole map is
+/// blocked.
+export function nearestOpenCell(tileMap, from) {
+  let best = null;
+  let bestDistance = Infinity;
+  for (let y = 0; y < tileMap.height; y++) {
+    for (let x = 0; x < tileMap.width; x++) {
+      if (isBlocked(tileMap, x, y)) continue;
+      const distance = (x - from.x) ** 2 + (y - from.y) ** 2;
+      if (distance < bestDistance) {
+        best = { x, y };
+        bestDistance = distance;
+      }
+    }
+  }
+  return best;
 }

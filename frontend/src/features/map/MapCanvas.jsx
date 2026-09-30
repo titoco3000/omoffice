@@ -39,7 +39,7 @@ import { FiMinus, FiPlus } from "react-icons/fi";
 import spriteUrl from "./assets/user-sprite.png";
 import { createTileRenderer } from "./tiles";
 import { findRoute } from "./navigation";
-import { useTileMap } from "./tileMap";
+import { isWater, useTileMap } from "./tileMap";
 import { ZOOM_STEP, clampCellPx, easeCellPx, useMapZoom } from "./useMapZoom";
 
 // Sprites are drawn taller than one cell -- a cell is a finer unit of
@@ -54,6 +54,12 @@ const SPRITE_SRC_PX = 32;
 // way out.
 const USER_ICON_CELLS = 1 / 3;
 const MIN_USER_ICON_PX = 6;
+// Source px cut off the bottom of an avatar standing in water, as if it
+// were wading through shallows.
+const WATER_CROP_PX = 4;
+// Source px an avatar on dry land is drawn higher than the tile's bottom
+// edge (in water it sits at it, cropped instead).
+const LAND_LIFT_PX = 3;
 // Spritesheet row per facing; "right" reuses "left", drawn mirrored.
 const FACING_ROW = { down: 0, left: 1, up: 2, right: 1 };
 // Spritesheet columns, in walk order: idle -> walk1 -> idle -> walk2.
@@ -412,7 +418,13 @@ export default function MapCanvas({ token, orgId, members, myId }) {
           // so a sprite taller than one cell grows upward out of it instead
           // of sinking half into the tile behind.
           const left = Math.round((cx - spritePx / 2) * ratio) / ratio;
-          const bottom = cy + cellPx / 2;
+          const inWater = isWater(
+            tileMap,
+            Math.round(pos.x),
+            Math.round(pos.y),
+          );
+          const lift = inWater ? 0 : (spritePx * LAND_LIFT_PX) / SPRITE_SRC_PX;
+          const bottom = cy + cellPx / 2 - lift;
           const top = Math.round((bottom - spritePx) * ratio) / ratio;
 
           const sprite = getImage(spriteUrl);
@@ -440,16 +452,23 @@ export default function MapCanvas({ token, orgId, members, myId }) {
             } else {
               ctx.translate(left, top);
             }
+            const cropPx = isWater(
+              tileMap,
+              Math.round(pos.x),
+              Math.round(pos.y),
+            )
+              ? WATER_CROP_PX
+              : 0;
             ctx.drawImage(
               sprite,
               column * SPRITE_SRC_PX,
               FACING_ROW[facing] * SPRITE_SRC_PX,
               SPRITE_SRC_PX,
-              SPRITE_SRC_PX,
+              SPRITE_SRC_PX - cropPx,
               0,
               0,
               spritePx,
-              spritePx,
+              (spritePx * (SPRITE_SRC_PX - cropPx)) / SPRITE_SRC_PX,
             );
             ctx.restore();
           }
