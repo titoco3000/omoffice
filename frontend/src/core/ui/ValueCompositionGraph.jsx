@@ -6,8 +6,9 @@
 //! stacks use the same top-to-bottom order. An orthogonal connector (only
 //! horizontal and vertical runs) leaves each part's label for its segment in
 //! the first bar that has one, then continues segment to segment through the
-//! following bars. Hovering (or focusing) a part's label bolds it, dims
-//! everything else and prints that part's value on each bar.
+//! following bars. Each bar's total is printed centered on it. Hovering (or
+//! focusing) a part's label bolds it, dims everything else and prints that
+//! part's value on each bar in place of the total.
 //!
 //! `colors` is an optional `{part: cssColor}`. A part without one takes the
 //! next categorical slot (`--om-cat-N`) in order of first appearance, never
@@ -25,6 +26,9 @@ const TOP = 32;
 const MIN_PLOT_H = 220;
 const PAD = 16;
 const CORNER = 4;
+// The graph scales down with its container, but not below this (text stays
+// legible); a narrower container scrolls instead.
+const MIN_WIDTH = 480;
 
 const defaultFormat = (v) => String(Math.round(v * 100) / 100);
 
@@ -74,7 +78,12 @@ function layout(items, colors) {
       segments[key] = { value, y, h, mid: y + h / 2 };
       y += h;
     }
-    return { label: item.label, segments };
+    return {
+      label: item.label,
+      segments,
+      total: totals[b],
+      mid: bottom - (totals[b] * scale) / 2,
+    };
   });
 
   // Connectors: label -> first bar with the part, then bar to next bar with it.
@@ -158,12 +167,15 @@ export default function ValueCompositionGraph({
   return (
     <div className={`overflow-x-auto ${className}`}>
       <svg
-        width={g.width}
-        height={g.height}
         viewBox={`0 0 ${g.width} ${g.height}`}
+        style={{
+          width: "100%",
+          height: "auto",
+          maxWidth: g.width,
+          minWidth: Math.min(g.width, MIN_WIDTH),
+        }}
         role="img"
         aria-label="Composition of each value"
-        className="max-w-none"
       >
         <g fill="none" strokeLinejoin="round">
           {g.connectors.map((c, i) => (
@@ -212,6 +224,19 @@ export default function ValueCompositionGraph({
                 />
               );
             })}
+            {!active && bar.total > 0 && (
+              <text
+                x={g.barX[b] + BAR_W / 2}
+                y={bar.mid}
+                textAnchor="middle"
+                dominantBaseline="central"
+                strokeWidth={3}
+                style={{ paintOrder: "stroke" }}
+                className="fill-ink stroke-surface text-xs font-medium"
+              >
+                {formatValue(bar.total)}
+              </text>
+            )}
             {active && bar.segments[active] && (
               <text
                 x={g.barX[b] + BAR_W / 2}
