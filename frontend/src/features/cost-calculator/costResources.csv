@@ -1,0 +1,23 @@
+id,service,name,unit,price_usd,source_url,fixed,note
+secrets-secret,Secrets Manager,aws_secretsmanager_secret.jwt,secret-month,0.4,https://aws.amazon.com/secrets-manager/pricing/,true,rotation adds no charge; rotator Lambda billed separately
+secrets-api,Secrets Manager,GetSecretValue etc.,"per 10,000 API calls",0.05,https://aws.amazon.com/secrets-manager/pricing/,true,
+appsync-ops,AppSync Events,aws_appsync_api.map_events operations,per million operations,1.0,https://aws.amazon.com/appsync/pricing/,false,publish + onPublish handler + every delivered message; 5 KB metering; connect+subscribe per token refresh
+appsync-conn,AppSync Events,aws_appsync_api.map_events connections,per million connection-minutes,0.08,https://aws.amazon.com/appsync/pricing/,false,
+apigw-http,API Gateway,HTTP API aws_apigatewayv2_api.api,per million requests,1.0,https://aws.amazon.com/api-gateway/pricing/,false,first 300M tier; 512 KB metering
+apigw-ws-msgs,API Gateway,WebSocket aws_apigatewayv2_api.messenger messages,per million messages,1.0,https://aws.amazon.com/api-gateway/pricing/,false,first 1B tier; 32 KB metering
+apigw-ws-conn,API Gateway,WebSocket aws_apigatewayv2_api.messenger connections,per million connection-minutes,0.25,https://aws.amazon.com/api-gateway/pricing/,false,messenger socket only; the AppSync socket is billed in its own row
+chime,Chime SDK,chime:CreateMeeting / CreateAttendee,attendee-minute,0.0017,https://aws.amazon.com/chime/chime-sdk/pricing/,false,audio/video/screen share same rate; no recording
+lambda-api-req,Lambda,aws_lambda_function.api requests,per million requests,0.2,https://aws.amazon.com/lambda/pricing/,false,
+lambda-api-dur,Lambda,aws_lambda_function.api duration (arm64),GB-second,1.33334e-05,https://aws.amazon.com/lambda/pricing/,false,arm64 per infra/variables.tf
+lambda-auth-req,Lambda,aws_lambda_function.map_authorizer requests,per million requests,0.2,https://aws.amazon.com/lambda/pricing/,false,
+lambda-auth-dur,Lambda,aws_lambda_function.map_authorizer duration (arm64),GB-second,1.33334e-05,https://aws.amazon.com/lambda/pricing/,false,
+lambda-rotator,Lambda,aws_lambda_function.rotator duration (x86),GB-second,1.66667e-05,https://aws.amazon.com/lambda/pricing/,true,"weekly rotation, 4 steps, ~2 s, 128 MB; requests cost ~0"
+dsql-dpu,Aurora DSQL,aws_dsql_cluster.main DPUs,per million DPU,8.0,https://aws.amazon.com/rds/aurora/dsql/pricing/,false,
+dsql-storage,Aurora DSQL,aws_dsql_cluster.main storage,GB-month,0.33,https://aws.amazon.com/rds/aurora/dsql/pricing/,true,
+eventbridge,EventBridge,aws_cloudwatch_event_api_destination.chime_webhook,per million invocations,0.2,https://aws.amazon.com/eventbridge/pricing/,false,aws.chime events on the default bus are free; only the API destination call is billed
+cf-data,CloudFront,frontend + media distributions data out,GB,0.085,https://aws.amazon.com/cloudfront/pricing/,false,PriceClass_100 (NA/EU) first-10TB rate; price from memory - verify
+cf-requests,CloudFront,frontend + media distributions requests,"per 10,000 HTTPS requests",0.01,https://aws.amazon.com/cloudfront/pricing/,false,price from memory - verify
+s3-storage,S3,aws_s3_bucket.media storage,GB-month,0.023,https://aws.amazon.com/s3/pricing/,false,
+s3-get,S3,origin GET on CloudFront miss,"per 1,000 GET",0.0004,https://aws.amazon.com/s3/pricing/,false,
+logs-ingest,CloudWatch Logs,Lambda + API Gateway log groups ingestion,GB,0.5,https://aws.amazon.com/cloudwatch/pricing/,false,standard class; price from memory - verify
+logs-storage,CloudWatch Logs,log group storage,GB-month,0.03,https://aws.amazon.com/cloudwatch/pricing/,false,price from memory - verify
