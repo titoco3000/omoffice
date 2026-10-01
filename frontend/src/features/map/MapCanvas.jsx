@@ -34,6 +34,7 @@
 import { useEffect, useRef } from "react";
 import { OFFICE_SIZE } from "./api";
 import { useMapSession, USER_SPEED } from "./useMapSession";
+import { regionsInRect } from "./regions";
 import { avatarUrl } from "../avatars";
 import { FiMinus, FiPlus } from "react-icons/fi";
 import spriteUrl from "./assets/user-sprite.png";
@@ -166,15 +167,21 @@ export default function MapCanvas({
   const shownCellPxRef = useRef(null); // eased toward `cellPxRef`
   const hoverRef = useRef(null); // cell under the pointer, for the edit ghost
   const paintingRef = useRef(null); // last cell painted while a drag is on
+  const seenRegionsRef = useRef(null); // regions last reported in view
 
   const editor = useMapEditor();
   const { tileMap } = editor; // null until the map is loaded and decoded
-  const { positions, moveTo, loaded, placements } = useMapSession(
+  const { positions, moveTo, loaded, placements, setViewport } = useMapSession(
     token,
     orgId,
     members,
     tileMap,
   );
+
+  const setViewportRef = useRef(setViewport);
+  useEffect(() => {
+    setViewportRef.current = setViewport;
+  });
 
   // The draw loop below reads this every frame instead of closing over
   // `positions`/`members`/`myId` directly -- both `positions` (a fresh
@@ -345,6 +352,20 @@ export default function MapCanvas({
       const lastCol = Math.ceil((w - originPxX) / cellPx);
       const firstRow = Math.floor(-originPxY / cellPx);
       const lastRow = Math.ceil((h - originPxY) / cellPx);
+
+      // Tell the session which regions are in view, only when that set
+      // changes rather than every frame.
+      const rect = {
+        minX: Math.max(0, firstCol),
+        maxX: Math.min(OFFICE_SIZE - 1, lastCol - 1),
+        minY: Math.max(0, firstRow),
+        maxY: Math.min(OFFICE_SIZE - 1, lastRow - 1),
+      };
+      const regionsKey = regionsInRect(rect).join(",");
+      if (regionsKey !== seenRegionsRef.current) {
+        seenRegionsRef.current = regionsKey;
+        setViewportRef.current(rect);
+      }
 
       // Runs each pass over every visible cell in rows `fromRow` up to (not
       // including) `toRow`, in order.

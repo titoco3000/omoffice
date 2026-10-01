@@ -105,7 +105,7 @@ resource "aws_lambda_permission" "map_authorizer_appsync" {
   source_arn    = aws_appsync_api.map_events.api_arn
 }
 
-# `/map/{org_id}/{user_id}`. A subscriber's data frame carries no channel,
+# `/map/{org_id}/{region}/{user_id}`. A subscriber's data frame carries no channel,
 # so `onPublish` stamps the sender -- the channel's last segment, which the
 # authorizer has already pinned to the publisher's own id -- onto each
 # event, and passes only `x`/`y`/`facing` through from what the client sent.

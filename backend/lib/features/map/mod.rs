@@ -58,6 +58,18 @@ pub mod tilemap;
 /// bound to `0..OFFICE_SIZE`, see [`set_position`].
 pub const OFFICE_SIZE: i32 = 100;
 
+/// Cells per side of one realtime region -- moves are delivered by region,
+/// see [`realtime`].
+pub const REGION_SIZE: i32 = 10;
+
+/// Regions per side of the office grid.
+pub const REGIONS_PER_SIDE: i32 = OFFICE_SIZE / REGION_SIZE;
+
+/// The realtime region `(rx, ry)` a cell falls in.
+pub fn region_of(x: i32, y: i32) -> (i32, i32) {
+    (x / REGION_SIZE, y / REGION_SIZE)
+}
+
 /// One live cell change: `{"org_id", "user_id", "x", "y", "facing"}`.
 /// `facing` is `"up"`, `"down"`, `"left"` or `"right"` -- a move to the cell
 /// the sender already stands on is a turn in place -- and is left out when
@@ -499,4 +511,21 @@ pub fn register(messenger: &Messenger, db: Db) {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn region_of_cuts_the_office_into_region_size_squares() {
+        assert_eq!(region_of(0, 0), (0, 0));
+        assert_eq!(region_of(9, 9), (0, 0));
+        assert_eq!(region_of(10, 9), (1, 0));
+        assert_eq!(region_of(9, 10), (0, 1));
+        assert_eq!(
+            region_of(99, 99),
+            (REGIONS_PER_SIDE - 1, REGIONS_PER_SIDE - 1)
+        );
+    }
 }

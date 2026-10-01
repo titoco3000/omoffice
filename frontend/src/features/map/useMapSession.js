@@ -48,8 +48,13 @@
 //!
 //! Where a move is broadcast depends on the backend: with an AppSync Events
 //! API (`GET .../realtime` answers with an endpoint), every move is
-//! published there directly (`mapEvents.js`) and received from there, and
-//! only the stored ones are posted to `POST .../move` at all. Without one
+//! published there directly (`realtime.js`) and received from there, and
+//! only the stored ones are posted to `POST .../move` at all. Moves are
+//! delivered by region, so this hook subscribes only to what is wanted: the
+//! 3x3 regions around this user, plus those `MapCanvas` reports in view
+//! (`setViewport`) -- or, zoomed out past `COARSE_ABOVE_REGIONS` regions,
+//! the coarse channel instead. Each newly subscribed channel refetches the
+//! stored positions, which replace any live move older than the fetch. Without one
 //! (a local run), every move is posted, and the backend broadcasts it over
 //! `MAP_MOVE_CHANNEL` -- which is also the path used until `realtime` has
 //! answered.
@@ -65,7 +70,14 @@ import {
   listMapPositions,
   moveInMap,
 } from "./api";
-import { openMapEvents } from "./realtime";
+import { coarseChannel, fineChannel, openMapEvents } from "./realtime";
+import {
+  COARSE_ABOVE_REGIONS,
+  REGIONS_PER_SIDE,
+  regionKey,
+  regionOf,
+  regionsInRect,
+} from "./regions";
 import { useMapProximity } from "./useMapProximity";
 import { relocationCell } from "./relocation";
 import { useMapRelocationClaim } from "./MapRelocationContext";
@@ -151,7 +163,10 @@ export function useMapSession(token, orgId, members, tileMap) {
   // hasn't landed, or they've simply never moved) just defaults to (0, 0),
   // same as the backend's own default for a member with no row.
   const [basePositions, setBasePositions] = useState({}); // user_id -> {x, y}
-  const [overrides, setOverrides] = useState({}); // user_id -> {x, y}
+  const [overrides, setOverrides] = useState({}); // user_id -> {x, y, facing, at}
+  // The visible rect in cells, reported by `MapCanvas` when the regions it
+  // touches change -- see `wantedChannels`.
+  const [viewport, setViewport] = useState(null);
   // Whether `basePositions` has landed -- until then everyone sits at the
   // (0, 0) default, which says nothing about who's actually near whom.
   const [loaded, setLoaded] = useState(false);
@@ -258,7 +273,12 @@ export function useMapSession(token, orgId, members, tileMap) {
       if (userId === myId) return;
       setOverrides((prev) => ({
         ...prev,
-        [userId]: { x, y, facing: facing ?? prev[userId]?.facing },
+        [userId]: {
+          x,
+          y,
+          facing: facing ?? prev[userId]?.facing,
+          at: Date.now(),
+        },
       }));
     },
     [myId],
@@ -279,6 +299,71 @@ export function useMapSession(token, orgId, members, tileMap) {
   // is closed once the new one is subscribed, so no move goes unheard in
   // between.
   const mapEventsRef = useRef(null);
+
+  // What to subscribe to: always the 3x3 regions around this user's own cell
+  // (proximity depends on it), plus whatever the viewport (padded by a cell)
+  // touches -- or, zoomed out past `COARSE_ABOVE_REGIONS` regions, the
+  // coarse channel in place of those.
+  const myPosition = positions[myId] ?? { x: 0, y: 0 };
+  const [myRx, myRy] = regionOf(myPosition.x, myPosition.y);
+  const wantedKey = useMemo(() => {
+    const fine = new Set();
+    for (let ry = myRy - 1; ry <= myRy + 1; ry++)
+      for (let rx = myRx - 1; rx <= myRx + 1; rx++)
+        if (
+          rx >= 0 &&
+          ry >= 0 &&
+          rx < REGIONS_PER_SIDE &&
+          ry < REGIONS_PER_SIDE
+        )
+          fine.add(regionKey(rx, ry));
+    const channels = new Set();
+    const seen = viewport
+      ? regionsInRect({
+          minX: viewport.minX - 1,
+          maxX: viewport.maxX + 1,
+          minY: viewport.minY - 1,
+          maxY: viewport.maxY + 1,
+        })
+      : [];
+    if (seen.length > COARSE_ABOVE_REGIONS) channels.add(coarseChannel(orgId));
+    else for (const key of seen) fine.add(key);
+    for (const key of fine) channels.add(fineChannel(orgId, key));
+    return [...channels].sort().join(" ");
+  }, [viewport, myRx, myRy, orgId]);
+  const wantedRef = useRef([]);
+  useEffect(() => {
+    wantedRef.current = wantedKey.split(" ");
+    mapEventsRef.current?.setSubscriptions(wantedRef.current);
+  }, [wantedKey]);
+
+  // Channels were just subscribed that weren't before: moves made in the
+  // meantime were never heard. Take the stored positions as the base for
+  // everyone whose last live move is older than this fetch.
+  const loadedRef = useRef(false);
+  useEffect(() => {
+    loadedRef.current = loaded;
+  }, [loaded]);
+  const catchUp = useCallback(() => {
+    if (!loadedRef.current) return;
+    const startedAt = Date.now();
+    listMapPositions(token, orgId)
+      .then((data) => {
+        const fresh = {};
+        for (const position of data.positions ?? [])
+          fresh[position.user_id] = { x: position.x, y: position.y };
+        setBasePositions((prev) => ({ ...prev, ...fresh }));
+        setOverrides((prev) => {
+          const next = {};
+          for (const [id, override] of Object.entries(prev))
+            if (id === myId || !fresh[id] || override.at >= startedAt)
+              next[id] = override;
+          return next;
+        });
+      })
+      .catch(() => {});
+  }, [token, orgId, myId]);
+
   useEffect(() => {
     if (!orgId || !myId) return;
     let cancelled = false;
@@ -306,6 +391,7 @@ export function useMapSession(token, orgId, members, tileMap) {
         orgId,
         userId: myId,
         onMove: receiveMove,
+        onSubscribed: catchUp,
         onReady: () => {
           stale.forEach((old) => old.close());
           stale = [];
@@ -317,6 +403,7 @@ export function useMapSession(token, orgId, members, tileMap) {
       });
       current = next;
       mapEventsRef.current = next;
+      next.setSubscriptions(wantedRef.current);
       const expiresAt = (decodeJwt(realtime.token)?.exp ?? 0) * 1000;
       clearTimeout(timer);
       timer = setTimeout(
@@ -335,7 +422,7 @@ export function useMapSession(token, orgId, members, tileMap) {
       stale.forEach((old) => old.close());
       mapEventsRef.current = null;
     };
-  }, [token, orgId, myId, receiveMove]);
+  }, [token, orgId, myId, receiveMove, catchUp]);
 
   // Report this tab's canvas as actually mounted -- narrows who a move
   // reaches to tabs that would actually render it, see `features::map`'s
@@ -347,7 +434,6 @@ export function useMapSession(token, orgId, members, tileMap) {
       messenger.send(MAP_ACTIVE_CHANNEL, { org_id: orgId, active: false });
   }, [orgId]);
 
-  const myPosition = positions[myId] ?? { x: 0, y: 0 };
   // Read inside the metronome/input handlers below without pulling
   // `positions` into their dependencies -- kept current by its own effect
   // rather than written during render. Keyed on the primitive x/y, not
@@ -380,7 +466,10 @@ export function useMapSession(token, orgId, members, tileMap) {
       const persist = Date.now() - lastPersistAtRef.current >= PERSIST_MS;
       if (persist) lastPersistAtRef.current = Date.now();
       dirtyRef.current = !persist;
-      setOverrides((prev) => ({ ...prev, [myId]: { ...target, facing } }));
+      setOverrides((prev) => ({
+        ...prev,
+        [myId]: { ...target, facing, at: Date.now() },
+      }));
       const mapEvents = mapEventsRef.current;
       mapEvents?.publish(target.x, target.y, facing);
       if (persist || !mapEvents)
@@ -579,5 +668,5 @@ export function useMapSession(token, orgId, members, tileMap) {
     moveTo(cell.x, cell.y);
   });
 
-  return { positions, myPosition, moveTo, loaded, placements };
+  return { positions, myPosition, moveTo, loaded, placements, setViewport };
 }

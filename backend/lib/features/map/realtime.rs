@@ -5,11 +5,21 @@
 //! by the separate `map-authorizer` Lambda, `backend/map_authorizer.rs`).
 //! Persistence still goes through `POST /map/org/{org_id}/move`.
 //!
-//! One channel per member per org, `/map/{org_id}/{user_id}`: a member
-//! publishes `{"x", "y", "facing"}` to their own and subscribes to `/map/{org_id}/*`.
-//! Who moved comes from the channel path, never the payload -- the `map`
-//! namespace's `onPublish` handler (`infra/map_events.tf`) stamps it on as
-//! `user_id`, since a subscriber's data frame carries no channel of its own.
+//! Moves are delivered by region, so what a member receives (and what
+//! AppSync bills) doesn't grow with the size of the org. The office is cut
+//! into [`REGION_SIZE`](super::REGION_SIZE)-cell squares, and there are two
+//! kinds of channel:
+//! - fine, `/map/{org_id}/{rx}-{ry}/{user_id}`: published by a member while
+//!   their cell is in region `(rx, ry)`, and subscribed to as
+//!   `/map/{org_id}/{rx}-{ry}/*` by whoever has that region in view;
+//! - coarse, `/map/{org_id}/c/{user_id}`: published (at a lower rate) by
+//!   every moving member, and subscribed to as `/map/{org_id}/c/*` by
+//!   those zoomed out too far to subscribe region by region.
+//!
+//! A move is a `{"x", "y", "facing"}` payload. Who moved comes from the
+//! last path segment, never the payload -- the `map` namespace's
+//! `onPublish` handler (`infra/map_events.tf`) stamps it on as `user_id`,
+//! since a subscriber's data frame carries no channel of its own.
 //!
 //! With [`ENDPOINT_ENV`] unset (a local run, no AppSync to talk to),
 //! [`route`] says so, and the frontend falls back to posting every move and
@@ -20,7 +30,7 @@ use axum::Json;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use super::MapError;
+use super::{MapError, REGIONS_PER_SIDE};
 use crate::core::auth::{self, Claims};
 use crate::core::data::db::Db;
 use crate::core::rbac;
@@ -94,12 +104,35 @@ impl AuthorizerResponse {
     }
 }
 
+/// The coarse channel's region segment.
+const COARSE: &str = "c";
+
+/// `c`, or `{rx}-{ry}` with both in `0..REGIONS_PER_SIDE`.
+fn valid_region(region: &str) -> bool {
+    if region == COARSE {
+        return true;
+    }
+    let Some((rx, ry)) = region.split_once('-') else {
+        return false;
+    };
+    let index = |part: &str| {
+        !part.is_empty()
+            && part.bytes().all(|byte| byte.is_ascii_digit())
+            && part
+                .parse::<i32>()
+                .is_ok_and(|n| (0..REGIONS_PER_SIDE).contains(&n))
+    };
+    index(rx) && index(ry)
+}
+
 /// Decide one AppSync authorizer request: the token must be a valid map
 /// token (signature and expiry, nothing else -- see
 /// [`auth::verify_map_token`]), and then
 /// - connect: allowed, the channel checks come per operation;
-/// - subscribe: `/map/{org_id}/*` only;
-/// - publish: `/map/{org_id}/{sub}` only -- a member's own channel.
+/// - subscribe: `/map/{org_id}/{region}/*` only;
+/// - publish: `/map/{org_id}/{region}/{sub}` only -- a member's own channel;
+///
+/// where `region` is `c` or a valid `{rx}-{ry}` (see [`valid_region`]).
 ///
 /// An allowed answer is cached for the token's remaining lifetime, so it
 /// never outlives the token itself.
@@ -119,11 +152,14 @@ pub fn authorize(request: &AuthorizerRequest, now: u64) -> AuthorizerResponse {
         channel.as_deref(),
     ) {
         ("EVENT_CONNECT", _) => true,
-        ("EVENT_SUBSCRIBE", Some([namespace, org_id, "*"])) => {
-            *namespace == NAMESPACE && *org_id == claims.org_id
+        ("EVENT_SUBSCRIBE", Some([namespace, org_id, region, "*"])) => {
+            *namespace == NAMESPACE && *org_id == claims.org_id && valid_region(region)
         }
-        ("EVENT_PUBLISH", Some([namespace, org_id, user_id])) => {
-            *namespace == NAMESPACE && *org_id == claims.org_id && *user_id == claims.sub
+        ("EVENT_PUBLISH", Some([namespace, org_id, region, user_id])) => {
+            *namespace == NAMESPACE
+                && *org_id == claims.org_id
+                && valid_region(region)
+                && *user_id == claims.sub
         }
         _ => false,
     };
@@ -161,25 +197,81 @@ mod tests {
     }
 
     #[test]
-    fn a_member_publishes_to_their_own_channel_only() {
+    fn a_member_publishes_to_their_own_channels_only() {
         let token = auth::issue_map_token("alice", "org-1").unwrap();
-        assert!(allowed(&token, "EVENT_PUBLISH", Some("/map/org-1/alice")));
-        assert!(!allowed(&token, "EVENT_PUBLISH", Some("/map/org-1/bob")));
-        assert!(!allowed(&token, "EVENT_PUBLISH", Some("/map/org-2/alice")));
-        assert!(!allowed(&token, "EVENT_PUBLISH", Some("/map/org-1/*")));
+        assert!(allowed(
+            &token,
+            "EVENT_PUBLISH",
+            Some("/map/org-1/3-4/alice")
+        ));
+        assert!(allowed(
+            &token,
+            "EVENT_PUBLISH",
+            Some("/map/org-1/0-9/alice")
+        ));
+        assert!(allowed(&token, "EVENT_PUBLISH", Some("/map/org-1/c/alice")));
         assert!(!allowed(
             &token,
             "EVENT_PUBLISH",
-            Some("/other/org-1/alice")
+            Some("/map/org-1/3-4/bob")
+        ));
+        assert!(!allowed(&token, "EVENT_PUBLISH", Some("/map/org-1/c/bob")));
+        assert!(!allowed(
+            &token,
+            "EVENT_PUBLISH",
+            Some("/map/org-2/3-4/alice")
+        ));
+        assert!(!allowed(&token, "EVENT_PUBLISH", Some("/map/org-1/3-4/*")));
+        assert!(!allowed(
+            &token,
+            "EVENT_PUBLISH",
+            Some("/other/org-1/3-4/alice")
         ));
     }
 
     #[test]
-    fn a_member_subscribes_to_their_org_wildcard_only() {
+    fn publishing_needs_a_valid_region() {
         let token = auth::issue_map_token("alice", "org-1").unwrap();
-        assert!(allowed(&token, "EVENT_SUBSCRIBE", Some("/map/org-1/*")));
-        assert!(!allowed(&token, "EVENT_SUBSCRIBE", Some("/map/org-2/*")));
-        assert!(!allowed(&token, "EVENT_SUBSCRIBE", Some("/map/org-1/bob")));
+        for region in [
+            "10-0", "0-10", "-1-0", "a-b", "1-2-3", "", "-", "1-", "+1-0",
+        ] {
+            let channel = format!("/map/org-1/{region}/alice");
+            assert!(
+                !allowed(&token, "EVENT_PUBLISH", Some(&channel)),
+                "{region}"
+            );
+            let channel = format!("/map/org-1/{region}/*");
+            assert!(
+                !allowed(&token, "EVENT_SUBSCRIBE", Some(&channel)),
+                "{region}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_old_three_segment_channels_are_denied() {
+        let token = auth::issue_map_token("alice", "org-1").unwrap();
+        assert!(!allowed(&token, "EVENT_PUBLISH", Some("/map/org-1/alice")));
+        assert!(!allowed(&token, "EVENT_SUBSCRIBE", Some("/map/org-1/*")));
+    }
+
+    #[test]
+    fn a_member_subscribes_to_their_orgs_regions_only() {
+        let token = auth::issue_map_token("alice", "org-1").unwrap();
+        assert!(allowed(&token, "EVENT_SUBSCRIBE", Some("/map/org-1/3-4/*")));
+        assert!(allowed(&token, "EVENT_SUBSCRIBE", Some("/map/org-1/c/*")));
+        assert!(!allowed(
+            &token,
+            "EVENT_SUBSCRIBE",
+            Some("/map/org-2/3-4/*")
+        ));
+        assert!(!allowed(&token, "EVENT_SUBSCRIBE", Some("/map/org-2/c/*")));
+        assert!(!allowed(
+            &token,
+            "EVENT_SUBSCRIBE",
+            Some("/map/org-1/3-4/bob")
+        ));
+        assert!(!allowed(&token, "EVENT_SUBSCRIBE", Some("/map/org-1/*")));
         assert!(!allowed(&token, "EVENT_SUBSCRIBE", Some("/map/*")));
     }
 
@@ -196,7 +288,7 @@ mod tests {
     fn an_allowed_answer_is_cached_no_longer_than_the_token_lives() {
         let token = auth::issue_map_token("alice", "org-1").unwrap();
         let response = authorize(
-            &request(&token, "EVENT_PUBLISH", Some("/map/org-1/alice")),
+            &request(&token, "EVENT_PUBLISH", Some("/map/org-1/3-4/alice")),
             auth::now(),
         );
         assert!(response.ttl_override <= auth::MAP_TOKEN_TTL_SECONDS);
