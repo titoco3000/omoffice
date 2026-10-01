@@ -33,6 +33,16 @@
   --om-danger: oklch(56% 0.19 25);
   --om-on-danger: oklch(99% 0 0);
   --om-speaking: oklch(72% 0.19 145);
+
+  /* Categorical data-viz slots, in fixed order (see `core/ui/ValueCompositionGraph`). */
+  --om-cat-1: #2a78d6;
+  --om-cat-2: #eb6834;
+  --om-cat-3: #1baf7a;
+  --om-cat-4: #eda100;
+  --om-cat-5: #e87ba4;
+  --om-cat-6: #008300;
+  --om-cat-7: #4a3aa7;
+  --om-cat-8: #e34948;
 }
 
 .dark {
@@ -56,6 +66,16 @@
   --om-danger: oklch(68% 0.17 25);
   --om-on-danger: oklch(19% 0.02 260);
   --om-speaking: oklch(80% 0.17 145);
+
+  /* Categorical data-viz slots, in fixed order (see `core/ui/ValueCompositionGraph`). */
+  --om-cat-1: #3987e5;
+  --om-cat-2: #d95926;
+  --om-cat-3: #199e70;
+  --om-cat-4: #c98500;
+  --om-cat-5: #d55181;
+  --om-cat-6: #008300;
+  --om-cat-7: #9085e9;
+  --om-cat-8: #e66767;
 }
 
 @theme inline {
