@@ -57,7 +57,8 @@ function distanceToSegment(p, a, b, rect) {
   const dx = bx - ax;
   const dy = by - ay;
   const lengthSquared = dx * dx + dy * dy;
-  let t = lengthSquared === 0 ? 0 : ((px - ax) * dx + (py - ay) * dy) / lengthSquared;
+  let t =
+    lengthSquared === 0 ? 0 : ((px - ax) * dx + (py - ay) * dy) / lengthSquared;
   t = Math.max(0, Math.min(1, t));
   return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
 }
@@ -105,7 +106,12 @@ export default function BoardCanvas({ meetingId, ownerId, myId, videoRef }) {
       const scale = Math.min(cw / vw, ch / vh);
       const width = vw * scale;
       const height = vh * scale;
-      setRect({ left: (cw - width) / 2, top: (ch - height) / 2, width, height });
+      setRect({
+        left: (cw - width) / 2,
+        top: (ch - height) / 2,
+        width,
+        height,
+      });
     };
 
     recompute();
@@ -186,7 +192,10 @@ export default function BoardCanvas({ meetingId, ownerId, myId, videoRef }) {
 
   const pointFromEvent = (e) => {
     const box = canvasRef.current.getBoundingClientRect();
-    return [(e.clientX - box.left) / rect.width, (e.clientY - box.top) / rect.height];
+    return [
+      (e.clientX - box.left) / rect.width,
+      (e.clientY - box.top) / rect.height,
+    ];
   };
 
   const pixelDistance = (a, b) =>
@@ -196,7 +205,9 @@ export default function BoardCanvas({ meetingId, ownerId, myId, videoRef }) {
     for (const stroke of strokesRef.current.values()) {
       const pts = stroke.points;
       for (let i = 0; i < pts.length - 1; i++) {
-        if (distanceToSegment(point, pts[i], pts[i + 1], rect) <= ERASE_THRESHOLD) {
+        if (
+          distanceToSegment(point, pts[i], pts[i + 1], rect) <= ERASE_THRESHOLD
+        ) {
           applyErase(stroke.id);
           messenger.send(CHANNEL, {
             type: "erase",
@@ -235,7 +246,8 @@ export default function BoardCanvas({ meetingId, ownerId, myId, videoRef }) {
       return;
     }
     const points = drawingRef.current.points;
-    if (pixelDistance(points[points.length - 1], point) < MIN_POINT_DISTANCE) return;
+    if (pixelDistance(points[points.length - 1], point) < MIN_POINT_DISTANCE)
+      return;
     points.push(point);
     // Live local draw, no round trip for your own stroke -- painted
     // straight on top of whatever's already committed.
@@ -296,7 +308,9 @@ export default function BoardCanvas({ meetingId, ownerId, myId, videoRef }) {
           onClick={selectPen}
           title="Draw"
           className={`flex items-center rounded p-1.5 text-xs ${
-            tool === "pen" ? "bg-brand text-on-brand" : "text-ink hover:bg-muted"
+            tool === "pen"
+              ? "bg-brand text-on-brand"
+              : "text-ink hover:bg-muted"
           }`}
         >
           <FiEdit2 />
@@ -307,7 +321,9 @@ export default function BoardCanvas({ meetingId, ownerId, myId, videoRef }) {
               onClick={selectEraser}
               title="Erase"
               className={`flex items-center rounded p-1.5 text-xs ${
-                tool === "eraser" ? "bg-brand text-on-brand" : "text-ink hover:bg-muted"
+                tool === "eraser"
+                  ? "bg-brand text-on-brand"
+                  : "text-ink hover:bg-muted"
               }`}
             >
               <FiTrash2 />
