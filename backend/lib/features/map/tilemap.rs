@@ -36,6 +36,11 @@ fn map_key(org_id: &str) -> String {
     format!("maps/{org_id}.png")
 }
 
+/// Remove `org_id`'s saved map, if it has one.
+pub(super) async fn delete_org_map(media: &MediaState, org_id: &str) {
+    media.delete(&map_key(org_id)).await;
+}
+
 /// `image` as an exactly `MAP_WIDTH` x `MAP_HEIGHT` PNG. Resampled with
 /// nearest-neighbor when the size is off: every pixel is a color code, so
 /// blending neighbors would invent codes that mean something else.

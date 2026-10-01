@@ -46,7 +46,7 @@ use serde_json::{json, Value};
 use crate::core::auth::{AuthError, Claims};
 use crate::core::communication::web_messenger::{self, Messenger};
 use crate::core::data::db::{retry_on_conflict, Db, DbError};
-use crate::core::media::MediaError;
+use crate::core::media::{MediaError, MediaState};
 use crate::core::rbac::{self, RbacError};
 use crate::features::meetings::MeetingError;
 
@@ -295,6 +295,25 @@ async fn place_new_member(db: &Db, org_id: &str, user_id: &str) -> Result<(), Db
 #[distributed_slice(rbac::MEMBER_ADDED)]
 static PLACE_NEW_MEMBER: rbac::MemberAddedHook =
     |db, org_id, user_id| Box::pin(place_new_member(db, org_id, user_id));
+
+/// An org going away takes its stored cells and its saved map with it.
+async fn remove_org_map(db: &Db, media: &MediaState, org_id: &str) -> Result<(), DbError> {
+    let pool = db.pool().await?;
+    retry_on_conflict(|| async move {
+        sqlx::query("DELETE FROM map_positions WHERE org_id = $1")
+            .bind(org_id)
+            .execute(pool)
+            .await
+            .map(|_| ())
+    })
+    .await?;
+    tilemap::delete_org_map(media, org_id).await;
+    Ok(())
+}
+
+#[distributed_slice(rbac::ORG_DELETED)]
+static REMOVE_ORG_MAP: rbac::OrgDeletedHook =
+    |db, media, org_id| Box::pin(remove_org_map(db, media, org_id));
 
 /// Same fallback shape as [`set_position`], for `map_active` instead.
 async fn set_map_active(

@@ -380,14 +380,35 @@ pub async fn create_org(db: &Db, name: &str, creator: &str) -> Result<Org, RbacE
     Ok(org)
 }
 
+/// A feature's cleanup when an org is deleted: `(db, media, org_id)`.
+pub type OrgDeletedHook =
+    for<'a> fn(&'a Db, &'a MediaState, &'a str) -> BoxFuture<'a, Result<(), DbError>>;
+
+/// Features register here (`#[distributed_slice(ORG_DELETED)]`) to remove
+/// their own rows and stored files for an org. [`delete_org`] runs every
+/// hook before the `organizations` row goes, since their tables reference
+/// it, so `core::rbac` never has to know which features exist.
+#[distributed_slice]
+pub static ORG_DELETED: [OrgDeletedHook] = [..];
+
 /// Delete an org: everything with a foreign key into `organizations` (and,
 /// transitively, into its `meetings`) first (DSQL has no cascading deletes),
-/// then the `organizations` row itself.
-pub async fn delete_org(db: &Db, org_id: &str) -> Result<(), RbacError> {
+/// then the `organizations` row itself, then the org's and its members'
+/// stored pictures.
+pub async fn delete_org(db: &Db, media: &MediaState, org_id: &str) -> Result<(), RbacError> {
     if !org_exists(db, org_id).await? {
         return Err(RbacError::OrgNotFound);
     }
     let pool = db.pool().await?;
+    // Read before the rows holding them go.
+    let picture_keys: Vec<String> = sqlx::query_scalar(
+        "SELECT picture FROM organizations WHERE id = $1 AND picture IS NOT NULL
+         UNION ALL
+         SELECT picture FROM org_users WHERE org_id = $1 AND picture IS NOT NULL",
+    )
+    .bind(org_id)
+    .fetch_all(pool)
+    .await?;
     // meeting_rooms.assigned_to only ever references a meeting, never an
     // org -- unassign rather than delete so pooled rooms stay reusable.
     retry_on_conflict(|| async move {
@@ -455,6 +476,9 @@ pub async fn delete_org(db: &Db, org_id: &str) -> Result<(), RbacError> {
             .map(|_| ())
     })
     .await?;
+    for hook in ORG_DELETED {
+        hook(db, media, org_id).await?;
+    }
     retry_on_conflict(|| async move {
         sqlx::query("DELETE FROM organizations WHERE id = $1")
             .bind(org_id)
@@ -463,6 +487,9 @@ pub async fn delete_org(db: &Db, org_id: &str) -> Result<(), RbacError> {
             .map(|_| ())
     })
     .await?;
+    for key in picture_keys {
+        media.delete(&key).await;
+    }
     Ok(())
 }
 
@@ -1302,11 +1329,12 @@ async fn org_brief_route(
 
 async fn delete_org_route(
     Extension(db): Extension<Db>,
+    Extension(media): Extension<MediaState>,
     Extension(claims): Extension<Claims>,
     Path(org_id): Path<String>,
 ) -> Result<Json<serde_json::Value>, RbacError> {
     require_role(&db, &org_id, &claims.sub, roles::ADMIN).await?;
-    delete_org(&db, &org_id).await?;
+    delete_org(&db, &media, &org_id).await?;
     Ok(Json(json!({ "deleted": org_id })))
 }
 
