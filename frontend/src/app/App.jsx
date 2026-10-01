@@ -22,6 +22,7 @@ import Org from "../pages/Org";
 import OrgNew from "../pages/OrgNew";
 import Admin from "../pages/Admin";
 import AdminOrg from "../pages/AdminOrg";
+import DevCosts from "../pages/DevCosts";
 
 const AUTHENTICATED_ROUTES = {
   "/in": InPage,
@@ -29,6 +30,7 @@ const AUTHENTICATED_ROUTES = {
   "/org": Org,
   "/org/new": OrgNew,
   "/admin": Admin,
+  "/dev-costs": DevCosts,
 };
 
 const ADMIN_ORG_PATH = /^\/admin\/org\/([^/]+)$/;

@@ -1,5 +1,5 @@
 import { AdminGate, SysAdminsTable, OrgsTable } from "../features/admin";
-import { CostCalculator, CostResources } from "../features/cost-calculator";
+import { Link } from "../core/Router";
 
 export default function Admin() {
   return (
@@ -7,8 +7,9 @@ export default function Admin() {
       <h1 className="text-2xl font-semibold text-ink">Admin</h1>
       <SysAdminsTable />
       <OrgsTable />
-      <CostCalculator />
-      <CostResources />
+      <Link to="/dev-costs" className="text-sm text-brand hover:underline">
+        Dev costs
+      </Link>
     </AdminGate>
   );
 }
