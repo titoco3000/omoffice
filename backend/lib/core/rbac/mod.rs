@@ -28,7 +28,9 @@
 
 mod avatar;
 pub mod org_invites;
+pub mod sys_admin;
 pub use org_invites::*;
+pub use sys_admin::{is_sys_admin, require_member_or_sys_admin};
 
 use axum::extract::{Extension, Path};
 use axum::http::StatusCode;
@@ -134,6 +136,9 @@ pub enum RbacError {
     /// The org would be left with no admin at all.
     LastAdmin,
     UnknownRole,
+    /// The platform would be left with no sys-admin at all.
+    LastSysAdmin,
+    InvalidEmail,
     InviteNotFound,
     InviteNotPending,
     Database(DbError),
@@ -184,6 +189,16 @@ impl IntoResponse for RbacError {
                 StatusCode::CONFLICT,
                 "last_admin_cannot_leave",
                 "an organization must keep at least one admin".to_string(),
+            ),
+            Self::LastSysAdmin => (
+                StatusCode::CONFLICT,
+                "last_sys_admin",
+                "there must be at least one sys-admin".to_string(),
+            ),
+            Self::InvalidEmail => (
+                StatusCode::BAD_REQUEST,
+                "invalid_email",
+                "an email address is required".to_string(),
             ),
             Self::UnknownRole => (
                 StatusCode::BAD_REQUEST,
@@ -911,14 +926,15 @@ pub async fn leave_org(db: &Db, org_id: &str, user_id: &str) -> Result<(), RbacE
     Ok(())
 }
 
-/// The generic "does this user hold this role" gate.
+/// The generic "does this user hold this role" gate. A sys-admin passes for
+/// every role in every org -- see [`sys_admin`].
 pub async fn require_role(
     db: &Db,
     org_id: &str,
     user_id: &str,
     role: &str,
 ) -> Result<(), RbacError> {
-    if has_role(db, org_id, user_id, role).await? {
+    if has_role(db, org_id, user_id, role).await? || is_sys_admin(db, user_id).await? {
         Ok(())
     } else {
         Err(RbacError::Forbidden)
@@ -1095,6 +1111,7 @@ async fn me_route(
         "email": user.email,
         "name": user.name,
         "picture": user.picture,
+        "sys_admin": is_sys_admin(&db, &claims.sub).await?,
         "orgs": orgs,
     })))
 }
@@ -1272,7 +1289,7 @@ async fn org_brief_route(
     Extension(claims): Extension<Claims>,
     Path(org_id): Path<String>,
 ) -> Result<Json<Value>, RbacError> {
-    require_member(&db, &org_id, &claims.sub).await?;
+    require_member_or_sys_admin(&db, &org_id, &claims.sub).await?;
     let pool = db.pool().await?;
     let row: Option<(String, Option<String>)> =
         sqlx::query_as("SELECT name, picture FROM organizations WHERE id = $1")
@@ -1336,7 +1353,7 @@ async fn list_members_route(
     Extension(claims): Extension<Claims>,
     Path(org_id): Path<String>,
 ) -> Result<Json<serde_json::Value>, RbacError> {
-    require_member(&db, &org_id, &claims.sub).await?;
+    require_member_or_sys_admin(&db, &org_id, &claims.sub).await?;
     let members = list_members(&db, &org_id).await?;
     Ok(Json(json!({ "members": members })))
 }

@@ -4,3 +4,4 @@ export { default as MapCanvas } from "./MapCanvas";
 export { MapRelocationProvider } from "./MapRelocationContext";
 export { MapEditorProvider, useMapEditor } from "./MapEditorContext";
 export { default as EditMapButton } from "./EditMapButton";
+export { default as StaticMapCanvas } from "./StaticMapCanvas";

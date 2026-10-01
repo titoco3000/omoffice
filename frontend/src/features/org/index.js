@@ -13,4 +13,8 @@ export {
   deleteOrg,
 } from "./api";
 export { default as OrgOnlineView } from "./OrgOnlineView";
-export { default as UsersManagement } from "./UsersManagement";
+export {
+  default as UsersManagement,
+  SysAdminUsersManagement,
+} from "./UsersManagement";
+export { useOrgRoster } from "./useOrgRoster";

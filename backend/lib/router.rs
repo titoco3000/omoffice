@@ -1,7 +1,7 @@
 //! Top-level route table: mounts each module's own routes under its prefix.
 //! `/auth/*` and `/chime/*` (EventBridge's webhook, checked by its own
 //! shared secret instead -- see `core::chime`) are public; `/rbac/*`,
-//! `/meeting/*` and `/map/*` require a bearer token
+//! `/admin/*`, `/meeting/*` and `/map/*` require a bearer token
 //! (see [`core::auth::require_bearer`]). The websocket route depends on
 //! which transport this build compiled (see the module doc on
 //! `core::communication::web_messenger`): a local build adds `GET /ws` --
@@ -33,6 +33,10 @@ pub fn app(db: Db, chime: ChimeState, messenger: Messenger, media: MediaState) -
         .nest(
             "/rbac",
             rbac::routes().layer(middleware::from_fn(auth::require_bearer)),
+        )
+        .nest(
+            "/admin",
+            rbac::sys_admin::routes().layer(middleware::from_fn(auth::require_bearer)),
         )
         .nest(
             "/meeting",

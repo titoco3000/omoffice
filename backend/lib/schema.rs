@@ -67,6 +67,20 @@ static ORG_ROLES: Table = Table::new(
 )
 .primary_key(&["org_id", "user_id", "role"]);
 
+// Platform-wide operators (the secret `sys-admin` role), outside any org.
+#[distributed_slice(orm::TABLES)]
+static SYS_ADMINS: Table = Table::new(
+    "sys_admins",
+    &[
+        Column::new("user_id", "text")
+            .primary_key()
+            .references("users", "id"),
+        Column::new("created_at", "timestamptz")
+            .not_null()
+            .default("now()"),
+    ],
+);
+
 #[distributed_slice(orm::TABLES)]
 static ORG_INVITES: Table = Table::new(
     "org_invites",
@@ -220,6 +234,7 @@ mod tests {
                 "org_roles",
                 "org_users",
                 "organizations",
+                "sys_admins",
                 "users",
                 "ws_connections",
             ]

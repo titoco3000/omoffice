@@ -399,7 +399,7 @@ async fn positions_route(
     Extension(claims): Extension<Claims>,
     Path(org_id): Path<String>,
 ) -> Result<Json<Value>, MapError> {
-    rbac::require_member(&db, &org_id, &claims.sub).await?;
+    rbac::require_member_or_sys_admin(&db, &org_id, &claims.sub).await?;
     let member_ids: Vec<String> = rbac::list_members(&db, &org_id)
         .await?
         .into_iter()

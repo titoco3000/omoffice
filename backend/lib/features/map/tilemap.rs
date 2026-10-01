@@ -60,7 +60,7 @@ pub(super) async fn get_route(
     Extension(claims): Extension<Claims>,
     Path(org_id): Path<String>,
 ) -> Result<Response, MapError> {
-    rbac::require_member(&db, &org_id, &claims.sub).await?;
+    rbac::require_member_or_sys_admin(&db, &org_id, &claims.sub).await?;
     let (bytes, _) = media.fetch(&map_key(&org_id)).await?;
     // Never cached: the frontend refetches on `UPDATED_CHANNEL` and must not
     // be handed the previous map.

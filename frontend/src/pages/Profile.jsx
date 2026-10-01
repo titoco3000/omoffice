@@ -48,6 +48,7 @@ export default function Profile() {
 
   const [name, setName] = useState("");
   const [picture, setPicture] = useState(null);
+  const [sysAdmin, setSysAdmin] = useState(false);
   const [error, setError] = useState(null);
   const [editingPhoto, setEditingPhoto] = useState(null); // null | "me" | "org"
   // The caller's own raw name/picture/roles within `currentOrg` -- no
@@ -60,6 +61,7 @@ export default function Profile() {
       .then((data) => {
         setName(data.name ?? "");
         setPicture(data.picture ?? null);
+        setSysAdmin(Boolean(data.sys_admin));
       })
       .catch(() => {});
   }, [token]);
@@ -266,6 +268,15 @@ export default function Profile() {
           </SettingRow>
         )}
       </section>
+
+      {sysAdmin && (
+        <Link
+          to="/admin"
+          className="rounded-card border bg-surface px-4 py-2 text-center text-sm font-medium text-brand hover:bg-muted"
+        >
+          Admin panel
+        </Link>
+      )}
 
       {error && <p className="text-sm text-danger">{error}</p>}
     </main>

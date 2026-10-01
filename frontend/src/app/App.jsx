@@ -20,13 +20,28 @@ import InPage from "../pages/InPage";
 import Profile from "../pages/Profile";
 import Org from "../pages/Org";
 import OrgNew from "../pages/OrgNew";
+import Admin from "../pages/Admin";
+import AdminOrg from "../pages/AdminOrg";
 
 const AUTHENTICATED_ROUTES = {
   "/in": InPage,
   "/profile": Profile,
   "/org": Org,
   "/org/new": OrgNew,
+  "/admin": Admin,
 };
+
+const ADMIN_ORG_PATH = /^\/admin\/org\/([^/]+)$/;
+
+// A path's page: an exact route, or `/admin/org/<id>` (the one route with a
+// parameter -- `core/Router` matches whole paths only).
+function pageFor(path) {
+  const Page = AUTHENTICATED_ROUTES[path];
+  if (Page) return <Page />;
+  const orgId = path.match(ADMIN_ORG_PATH)?.[1];
+  if (orgId) return <AdminOrg orgId={orgId} />;
+  return <RedirectTo to="/in" />;
+}
 
 function RedirectTo({ to }) {
   useEffect(() => navigate(to), [to]);
@@ -34,16 +49,13 @@ function RedirectTo({ to }) {
 }
 
 function AuthenticatedApp({ path }) {
-  const Page = AUTHENTICATED_ROUTES[path];
   return (
     <OrgSessionProvider>
       <MapEditorProvider>
         <MeetingSessionProvider>
           <MapRelocationProvider>
             <MeetingLayoutProvider>
-              <NavContainer>
-                {Page ? <Page /> : <RedirectTo to="/in" />}
-              </NavContainer>
+              <NavContainer>{pageFor(path)}</NavContainer>
             </MeetingLayoutProvider>
           </MapRelocationProvider>
         </MeetingSessionProvider>

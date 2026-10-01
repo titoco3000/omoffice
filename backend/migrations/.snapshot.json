@@ -508,6 +508,31 @@
     ]
   },
   {
+    "name": "sys_admins",
+    "columns": [
+      {
+        "name": "user_id",
+        "sql_type": "text",
+        "not_null": false,
+        "primary_key": true,
+        "default": null,
+        "foreign_key": [
+          "users",
+          "id"
+        ]
+      },
+      {
+        "name": "created_at",
+        "sql_type": "timestamptz",
+        "not_null": true,
+        "primary_key": false,
+        "default": "now()",
+        "foreign_key": null
+      }
+    ],
+    "primary_key": []
+  },
+  {
     "name": "ws_connections",
     "columns": [
       {

@@ -5,6 +5,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useAuth } from "../../core/auth/AuthContext";
 import { useOrgSession } from "./OrgSessionContext";
+import { useOrgRoster } from "./useOrgRoster";
 import { avatarUrl } from "../avatars";
 import AsyncButton from "../../core/ui/AsyncButton";
 import Avatar from "../../core/ui/Avatar";
@@ -18,9 +19,24 @@ import {
   revokeRole,
 } from "./api";
 
+// The `/org` page's people section: the current org, as its own admin.
 export default function UsersManagement() {
-  const { token } = useAuth();
   const { myId, currentOrg, isAdmin, roster } = useOrgSession();
+  return (
+    <OrgPeople org={currentOrg} myId={myId} isAdmin={isAdmin} roster={roster} />
+  );
+}
+
+// The same section for any org by id, as a sys-admin sees it in the admin
+// panel: every action allowed, nothing taken from the org session.
+export function SysAdminUsersManagement({ org }) {
+  const { token } = useAuth();
+  const roster = useOrgRoster(token, org.id);
+  return <OrgPeople org={org} myId={null} isAdmin roster={roster} />;
+}
+
+function OrgPeople({ org: currentOrg, myId, isAdmin, roster }) {
+  const { token } = useAuth();
   const { members, reload: reloadMembers, error: rosterError } = roster;
   const [invites, setInvites] = useState([]);
   const [inviteEmail, setInviteEmail] = useState("");
