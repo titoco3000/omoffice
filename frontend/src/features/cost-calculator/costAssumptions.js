@@ -9,10 +9,10 @@ export const ASSUMPTIONS = [
     note: "PERSIST_MS in useMapSession.js (POST /map/org/{id}/move, persist=true)",
   },
   {
-    id: "meeting_length_min",
-    label: "Average meeting length",
-    unit: "min",
-    value: 30,
+    id: "avg_meeting_size",
+    label: "Average meeting size",
+    unit: "people",
+    value: 3,
     note: "assumption",
   },
   {

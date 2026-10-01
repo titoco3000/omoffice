@@ -30,7 +30,6 @@ const AUTHENTICATED_ROUTES = {
   "/org": Org,
   "/org/new": OrgNew,
   "/admin": Admin,
-  "/dev-costs": DevCosts,
 };
 
 const ADMIN_ORG_PATH = /^\/admin\/org\/([^/]+)$/;
@@ -71,6 +70,7 @@ function Pages() {
   const { token } = useAuth();
 
   if (path === "/") return <Home />;
+  if (path === "/dev-costs") return <DevCosts />;
   if (path === "/login") return token ? <RedirectTo to="/in" /> : <Login />;
   if (!token) return <Login />;
   return <AuthenticatedApp path={path} />;

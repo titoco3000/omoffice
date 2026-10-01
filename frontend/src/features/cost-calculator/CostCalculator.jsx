@@ -1,33 +1,44 @@
 import { useMemo, useState } from "react";
-import { FiPlus, FiTrash2 } from "react-icons/fi";
+import { FiInfo, FiPlus, FiTrash2 } from "react-icons/fi";
 import ValueCompositionGraph from "../../core/ui/ValueCompositionGraph";
 import { estimate } from "./costModel";
 
 // Inputs are edited in display units (percent for shares) and converted to
 // the model's 0..1 in `toUsage`.
 const FIELDS = [
-  { key: "members", label: "Members" },
-  { key: "work_hours_per_month", label: "Work hours / month" },
-  { key: "meeting_time_share", label: "Time in meetings (%)", percent: true },
-  { key: "avg_meeting_size", label: "Avg meeting size" },
-  { key: "chat_messages_per_meeting", label: "Chat messages / meeting" },
+  { key: "members", label: "Members", initial: 10 },
+  { key: "work_days_per_week", label: "Work days / week", initial: 5 },
+  { key: "work_hours_per_day", label: "Work hours / day", initial: 8 },
+  { key: "meeting_minutes", label: "Avg meeting duration (min)", initial: 30 },
+  { key: "meetings_per_day", label: "Avg meetings / day", initial: 3 },
   {
-    key: "second_monitor_share",
-    label: "Always open on 2nd monitor (%)",
-    percent: true,
+    key: "chat_messages_per_meeting",
+    label: "Chat messages / meeting",
+    initial: 10,
   },
-  { key: "walking_share", label: "Time walking (%)", percent: true },
+  {
+    key: "overwatcher_share",
+    label: "Office overwatchers (%)",
+    hint: "Members who keep the office tab visible at all times",
+    percent: true,
+    initial: 10,
+  },
+  {
+    key: "walking_share",
+    label: "Time spent walking (%)",
+    percent: true,
+    initial: 2,
+  },
+  {
+    key: "resource_conscious_share",
+    label: "Resource-conscious users (%)",
+    hint: "Members who keep the office in non-graphic mode",
+    percent: true,
+    initial: 3,
+  },
 ];
 
-const DEFAULTS = {
-  members: 10,
-  work_hours_per_month: 176,
-  meeting_time_share: 20,
-  avg_meeting_size: 3,
-  chat_messages_per_meeting: 10,
-  second_monitor_share: 20,
-  walking_share: 2,
-};
+const DEFAULTS = Object.fromEntries(FIELDS.map((f) => [f.key, f.initial]));
 
 const toUsage = (scenario) =>
   Object.fromEntries(
@@ -191,9 +202,20 @@ export default function CostCalculator() {
               </tr>
             </thead>
             <tbody>
-              {FIELDS.map(({ key, label }) => (
+              {FIELDS.map(({ key, label, hint }) => (
                 <tr key={key} className="border-t">
-                  <td className="py-1 pr-3 text-ink-muted">{label}</td>
+                  <td className="py-1 pr-3 text-ink-muted">
+                    {label}
+                    {hint && (
+                      <span
+                        title={hint}
+                        aria-label={hint}
+                        className="ml-1 inline-block cursor-help align-middle"
+                      >
+                        <FiInfo />
+                      </span>
+                    )}
+                  </td>
                   {scenarios.map((s) => (
                     <td key={s.id} className="px-1 py-1">
                       <input

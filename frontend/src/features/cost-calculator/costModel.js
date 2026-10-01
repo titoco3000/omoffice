@@ -4,11 +4,14 @@
 // `costAssumptions.js`. Free tiers are deliberately not applied (worst case
 // at list price).
 //
-// The one departure from the sheet: its "share of org online" constant is
-// replaced by `second_monitor_share`. People who leave Omoffice open on a
-// second monitor are online (websocket + map connection) for all their work
-// hours; everyone else only while in meetings. At a share of 1 the result
-// matches the sheet's worst case.
+// Usage is per member: work days and hours set the month, meetings per day
+// and their duration set meeting time (Chime attendee-minutes), and two
+// shares decide who is connected how: "overwatchers" keep the office tab
+// visible all day (online for all their work hours; everyone else only
+// during meetings), "resource-conscious" members run it without the map
+// (no map connection, walking or map traffic, just the messenger socket).
+// With 5.0769 days x 8 h (176 h a month), 4.8 meetings of 30 min, 100%
+// overwatchers and 0% resource-conscious the result is the sheet's worst case.
 
 import RESOURCES from "./costResources.csv";
 import { DEFAULT_ASSUMPTIONS } from "./costAssumptions";
@@ -17,40 +20,57 @@ export { RESOURCES };
 
 const PRICES = Object.fromEntries(RESOURCES.map((r) => [r.id, r]));
 
+const WEEKS_PER_MONTH = 52 / 12;
+
 // Shares are 0..1.
 export const DEFAULT_USAGE = {
-  members: 50,
-  work_hours_per_month: 176,
-  meeting_time_share: 0.3,
-  avg_meeting_size: 3,
+  members: 10,
+  work_days_per_week: 5,
+  work_hours_per_day: 8,
+  meeting_minutes: 30,
+  meetings_per_day: 3,
   chat_messages_per_meeting: 10,
-  second_monitor_share: 1,
+  // Members who keep the office tab visible all day.
+  overwatcher_share: 0.2,
   walking_share: 0.02,
+  // Members who run the office without the map (no map connection, no
+  // walking, no map traffic).
+  resource_conscious_share: 0,
 };
 
 const isShare = (v) => v >= 0 && v <= 1;
 
 function validate(u, a) {
   if (!(u.members >= 1)) return "members must be at least 1";
-  if (!(u.work_hours_per_month > 0)) return "work hours must be positive";
-  if (!(u.avg_meeting_size >= 1)) return "avg meeting size must be at least 1";
+  if (!(u.work_days_per_week > 0 && u.work_days_per_week <= 7)) {
+    return "work days per week must be between 0 and 7";
+  }
+  if (!(u.work_hours_per_day > 0 && u.work_hours_per_day <= 24)) {
+    return "work hours must be between 0 and 24";
+  }
+  if (!(u.meeting_minutes > 0)) return "meeting duration must be positive";
+  if (!(u.meetings_per_day >= 0))
+    return "meetings per day must not be negative";
+  if ((u.meetings_per_day * u.meeting_minutes) / 60 > u.work_hours_per_day) {
+    return "meetings take longer than the work day";
+  }
   if (!(u.chat_messages_per_meeting >= 0)) {
     return "chat messages per meeting must not be negative";
   }
   if (
-    !isShare(u.meeting_time_share) ||
-    !isShare(u.second_monitor_share) ||
-    !isShare(u.walking_share)
+    !isShare(u.overwatcher_share) ||
+    !isShare(u.walking_share) ||
+    !isShare(u.resource_conscious_share)
   ) {
     return "percentages must be between 0 and 100";
   }
   if (!(
     a.persist_interval_s > 0 &&
-    a.meeting_length_min > 0 &&
+    a.avg_meeting_size >= 1 &&
     a.token_lifetime_min > 0 &&
     a.payload_kb > 0
   )) {
-    return "persist interval, meeting length, token lifetime and payload must be positive";
+    return "persist interval, meeting size, token lifetime and payload must be sensible";
   }
   return null;
 }
@@ -65,17 +85,22 @@ export function estimate(usage, overrides = {}) {
   if (invalid) throw new Error(invalid);
 
   const g = u.members;
-  const h = u.work_hours_per_month;
-  const size = u.avg_meeting_size;
+  const workdays = u.work_days_per_week * WEEKS_PER_MONTH;
+  const h = workdays * u.work_hours_per_day;
+  const size = a.avg_meeting_size;
+  const meetingShare =
+    (u.meetings_per_day * u.meeting_minutes) / 60 / u.work_hours_per_day;
 
-  // Fraction of work time a member is connected.
-  const online =
-    u.second_monitor_share +
-    (1 - u.second_monitor_share) * u.meeting_time_share;
+  // Fraction of work time a member is connected: all of it for an
+  // overwatcher, only their meetings for everyone else.
+  const online = u.overwatcher_share + (1 - u.overwatcher_share) * meetingShare;
   const onlineUserHours = g * online * h;
   const onlineMinPerUser = h * 60 * online;
-  const viewers = Math.max(0, g * online - 1);
-  const walkSeconds = onlineUserHours * 3600 * u.walking_share;
+  // Members with the map open; the rest have only the messenger socket.
+  const mapUsers = g * (1 - u.resource_conscious_share);
+  const mapMinPerUser = onlineMinPerUser;
+  const viewers = Math.max(0, mapUsers * online - 1);
+  const walkSeconds = mapUsers * online * h * 3600 * u.walking_share;
 
   const finePublished = walkSeconds * a.fine_moves_per_s;
   const fineSubs = viewers * a.fine_audience_share * (1 - a.zoomed_out_share);
@@ -83,10 +108,10 @@ export function estimate(usage, overrides = {}) {
   const coarsePublished = walkSeconds * a.coarse_moves_per_s;
   const coarseDelivered = coarsePublished * viewers * a.zoomed_out_share;
   const persisted = walkSeconds / a.persist_interval_s;
-  const tokenRefreshes = (g * onlineMinPerUser) / a.token_lifetime_min;
+  const tokenRefreshes = (mapUsers * mapMinPerUser) / a.token_lifetime_min;
 
-  const attendeeMin = g * h * 60 * u.meeting_time_share;
-  const meetings = attendeeMin / size / a.meeting_length_min;
+  const attendeeMin = g * workdays * u.meetings_per_day * u.meeting_minutes;
+  const meetings = attendeeMin / size / u.meeting_minutes;
   const chatSent = meetings * u.chat_messages_per_meeting;
   const chatDelivered = chatSent * (size - 1);
 
@@ -96,13 +121,14 @@ export function estimate(usage, overrides = {}) {
     onlineUserHours * a.other_requests_per_online_hour +
     meetings;
   const wsConnMin = g * onlineMinPerUser;
+  const appsyncConnMin = mapUsers * mapMinPerUser;
   const wsMsgs = chatSent + chatDelivered;
-  const wsLambda = chatSent + (2 * g * h) / 8;
+  const wsLambda = chatSent + 2 * g * workdays;
   const apiInvocations = http + wsLambda;
   const authInvocations = tokenRefreshes * a.authorizer_calls_per_token;
   const dbRoundTrips = http + chatSent + wsLambda;
 
-  const pageLoads = ((g * h) / 8) * a.page_loads_per_workday;
+  const pageLoads = g * workdays * a.page_loads_per_workday;
   const cfGb = (pageLoads * (a.bundle_mb + a.media_mb_per_load)) / 1024;
   const cfRequests = pageLoads * a.cf_requests_per_load;
   const mediaGb = (g * a.media_mb_per_user) / 1024;
@@ -126,7 +152,7 @@ export function estimate(usage, overrides = {}) {
     "secrets-secret": a.secrets_count,
     "secrets-api": a.secrets_api_calls / 10_000,
     "appsync-ops": appsyncOps,
-    "appsync-conn": wsConnMin / 1e6,
+    "appsync-conn": appsyncConnMin / 1e6,
     "apigw-http": http / 1e6,
     "apigw-ws-msgs": (wsMsgs * Math.ceil(a.payload_kb / 32)) / 1e6,
     "apigw-ws-conn": wsConnMin / 1e6,
